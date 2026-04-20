@@ -1,0 +1,38 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: http-proxy
+spec:
+  description: "HTTP proxy sidecar for intercepting and routing HTTP traffic"
+  image: fluidbg/http-proxy:v0.1.0
+  topology: sidecar-blue
+  modes: [trigger, passthrough-duplicate, reroute-mock]
+  directions: [ingress, egress]
+  fieldNamespaces: [http]
+  configSchema:
+    type: object
+    required: [proxyPort, realEndpoint, envVarName]
+    properties:
+      proxyPort: { type: integer }
+      realEndpoint: { type: string }
+      envVarName: { type: string }
+      ingressPort: { type: integer }
+      egressPort: { type: integer }
+      testId: { type: object }
+      match: { type: array }
+      filters: { type: array }
+      ingress: { type: object }
+      egress: { type: object }
+  container:
+    ports:
+      - name: proxy
+        containerPort: 8080
+    volumeMounts:
+      - name: plugin-config
+        mountPath: /etc/fluidbg
+        readOnly: true
+  injects:
+    blueContainer:
+      env:
+        - nameFromConfig: envVarName
+          valueTemplate: "http://localhost:{{proxyPort}}"

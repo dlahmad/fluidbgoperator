@@ -1,0 +1,31 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: rabbitmq-duplicator
+spec:
+  description: "RabbitMQ message duplicator for triggering and observing queue traffic"
+  image: fluidbg/rabbitmq-duplicator:v0.1.0
+  topology: standalone
+  modes: [trigger, passthrough-duplicate]
+  directions: [ingress, egress]
+  fieldNamespaces: [queue]
+  configSchema:
+    type: object
+    required: [sourceQueue, shadowQueue]
+    properties:
+      sourceQueue: { type: string }
+      shadowQueue: { type: string }
+      amqpUrl: { type: string }
+      testId: { type: object }
+      match: { type: array }
+      notifyPath: { type: string }
+      trafficPercent: { type: integer }
+      writeEnvVar: { type: string }
+  container:
+    ports:
+      - name: health
+        containerPort: 9090
+    volumeMounts:
+      - name: plugin-config
+        mountPath: /etc/fluidbg
+        readOnly: true

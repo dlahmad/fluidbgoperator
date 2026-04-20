@@ -1,0 +1,7 @@
+auth:
+  username: fluidbg
+  password: fluidbg
+  database: fluidbg
+primary:
+  persistence:
+    enabled: false

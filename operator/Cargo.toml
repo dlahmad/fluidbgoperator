@@ -1,0 +1,36 @@
+[package]
+name = "fluidbg-operator"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fluidbg-operator"
+path = "src/main.rs"
+
+[[bin]]
+name = "gen-crds"
+path = "src/crd/bin/gen_crds.rs"
+
+[dependencies]
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+jsonschema = { workspace = true }
+regex = { workspace = true }
+jsonpath-rust = { workspace = true }
+
+[features]
+integration-tests = []

@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluidbg-operator
+  namespace: fluidbg-system
+  labels:
+    app: fluidbg-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fluidbg-operator
+  template:
+    metadata:
+      labels:
+        app: fluidbg-operator
+    spec:
+      serviceAccountName: fluidbg-operator
+      containers:
+        - name: operator
+          image: fluidbg/operator:latest
+          ports:
+            - containerPort: 8090
+              name: api
+          env:
+            - name: RUST_LOG
+              value: info
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 3
+            periodSeconds: 5

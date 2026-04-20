@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --check --all
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Unit tests
+        run: cargo test --workspace --lib
+
+  integration:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up kind
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: fluidbg-dev
+          config: testenv/kind-config.yaml
+      - name: Install RabbitMQ + Postgres
+        run: just test-env-infra
+      - name: Build images
+        run: |
+          docker build -t fluidbg/operator:ci .
+          kind load docker-image fluidbg/operator:ci --name fluidbg-dev
+      - name: Run integration tests
+        run: cargo test --workspace --test '*' --features integration-tests
+
+  e2e:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up kind
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: fluidbg-dev
+          config: testenv/kind-config.yaml
+      - name: Install RabbitMQ + Postgres
+        run: just test-env-infra
+      - name: Build images
+        run: |
+          docker build -t fluidbg/operator:ci .
+          kind load docker-image fluidbg/operator:ci --name fluidbg-dev
+      - name: Run E2E tests
+        run: cargo test --workspace --test e2e_* --features e2e-tests

@@ -1,0 +1,16 @@
+[package]
+name = "fluidbg-http-writer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+axum = { workspace = true }

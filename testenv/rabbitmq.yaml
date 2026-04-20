@@ -1,0 +1,8 @@
+auth:
+  username: fluidbg
+  password: fluidbg
+  erlangCookie: secretcookie
+persistence:
+  enabled: false
+service:
+  type: ClusterIP
