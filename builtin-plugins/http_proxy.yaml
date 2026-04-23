@@ -5,9 +5,8 @@ metadata:
 spec:
   description: "HTTP proxy sidecar for intercepting and routing HTTP traffic"
   image: fluidbg/http-proxy:v0.1.0
+  supportedRoles: [observer, mock]
   topology: sidecar-blue
-  modes: [trigger, passthrough-duplicate, reroute-mock]
-  directions: [ingress, egress]
   fieldNamespaces: [http]
   configSchema:
     type: object

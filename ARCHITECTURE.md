@@ -4,7 +4,7 @@
 
 FluidBG is a Kubernetes operator that automates **blue-green deployments for message-queue and HTTP consumers**. It validates a new version of a service ("blue") against live traffic before promoting it to production ("green") — or rolling it back — based on configurable acceptance criteria.
 
-The core idea: wire **inception points** around the blue deployment so that traffic is observed, mocked, or injected as needed. Plugins at each inception point forward intercepted data to a **test container** that decides, per test run, whether blue behaved correctly. The operator tracks test runs, counts green/not-green verdicts, and drives promotion.
+The core idea: wire **inception points** around the blue deployment so that traffic is observed, mocked, split, combined, or injected as needed. The operator does not hardcode how a given transport works. Each `InceptionPlugin` declares an orchestration contract, such as `queue-split`, `queue-combine`, or `http-split`; the `BlueGreenDeployment` supplies concrete queue names, service names, env vars, and deployment specs; the operator executes the declared plugin contract. Plugins forward intercepted data to a **test container** that decides, per test run, whether blue behaved correctly. The operator tracks test runs, counts green/not-green verdicts, drives promotion, and restores direct wiring after the decision.
 
 ---
 
@@ -19,6 +19,9 @@ The core idea: wire **inception points** around the blue deployment so that traf
 | **Test Container** | User-supplied HTTP server that holds observation state and answers one question per test run: **green or not green**. |
 | **Test ID** | User-defined correlation key extracted from traffic by a selector. All observations for a test run are grouped by `testId`. |
 | **State Store** | Pluggable persistence for the operator's tracking state (active testIds, verdicts, counts). Backend types: `memory`, `redis`, `postgres`. |
+| **Plugin Orchestration Contract** | The plugin-declared set of lifecycle actions the operator must perform: deploy plugin resources, patch application env vars, create or reference transport resources, and clean up or restore after promotion/rollback. |
+| **Split Plugin** | A plugin that takes one production input and fans it out to green and blue paths. For queues this may mean original queue → green queue + blue queue; for HTTP it may mean proxying one request stream to two backends. |
+| **Combine Plugin** | A plugin that merges blue and green output paths into one result path using plugin-defined rules. For queues this may mean blue output queue + green output queue → production result queue. |
 
 ### The Operator's Logic Is Minimal
 
@@ -28,6 +31,7 @@ The core idea: wire **inception points** around the blue deployment so that traf
 4. **Time out** runs that don't get a verdict in time — these count as not-green.
 5. **Count** green vs not-green verdicts.
 6. **Decide** promotion based on the user-defined success-rate threshold.
+7. **Execute terminal orchestration** defined by the plugin contract: after success, promoted blue is restored to direct production wiring; after failure, green is restored; temporary test/plugin resources are removed in both cases.
 
 The operator does **not** hold observation state. The test container owns all domain knowledge. The operator is a bookkeeper that wires traffic to the test container and counts answers.
 
@@ -38,15 +42,16 @@ The operator does **not** hold observation state. The test container owns all do
 ```mermaid
 flowchart TD
     SRC["Source<br/>(Queue / HTTP Client)"]
-    SRC --> GREEN["Green<br/>(live)"]
-    SRC -->|"trigger plugin:<br/>filter + extract testId"| TRG["Trigger Plugin"]
-    TRG -->|"register testId"| OP["Operator"]
-    TRG -->|"POST /trigger"| TC["Test Container"]
-    TRG -->|"duplicate to blue"| BLUE["Blue<br/>(shadow)"]
+    SRC -->|"split plugin<br/>transport-specific"| SPLIT["Split Inception"]
+    SPLIT -->|"register testId"| OP["Operator"]
+    SPLIT -->|"notify trigger"| TC["Test Container"]
+    SPLIT -->|"green path"| GREEN["Green<br/>(live)"]
+    SPLIT -->|"blue path"| BLUE["Blue<br/>(candidate)"]
 
-    BLUE -->|"egress traffic"| EG["Egress Plugin<br/>(observe / mock)"]
-    EG -->|"observations"| TC
-    EG -->|"passthrough"| REAL["Real Upstream"]
+    BLUE -->|"egress traffic"| OUT["Output Inception<br/>observe / mock / combine"]
+    GREEN -->|"egress traffic"| OUT
+    OUT -->|"observations"| TC
+    OUT -->|"combined result or passthrough"| REAL["Real Output / Upstream"]
 
     TC -->|"write plugin<br/>inject traffic"| BLUE
 
@@ -58,32 +63,43 @@ flowchart TD
 
 ---
 
-## Modes & Directions
+## Capabilities
 
-### The Four Modes
+Plugins are described by two separate ideas:
 
-| Mode | Purpose | Direction Typically | Creates Test Runs? |
+- **Traffic capability**: what the plugin does to traffic.
+- **Orchestration contract**: what Kubernetes and transport setup the operator must perform for that plugin.
+
+### Traffic Capabilities
+
+| Capability | Purpose | Typical Stage | Creates Test Runs? |
 |---|---|---|---|
-| `trigger` | Start a test run when matching traffic arrives | ingress (typical), egress (possible) | **Yes** — only mode that does |
-| `passthrough-duplicate` | Forward traffic normally and send a copy to the test container | egress (typical), ingress (possible) | No |
-| `reroute-mock` | Replace the real upstream — route traffic to the test container, return its response to blue | egress | No |
-| `write` | Expose a URL the test container can call to inject messages/requests | ingress (typical), egress (possible) | No |
+| `split` | Take one production stream and fan it out to green and blue paths | input | Usually |
+| `combine` | Merge blue and green output paths into one result path | output | No |
+| `sink` | Consume a resource branch and intentionally terminate it | input or output | No |
+| `trigger` | Register a test run and notify the test container for matched traffic | input or output | Yes |
+| `passthrough-duplicate` | Forward traffic normally and send a copy to the test container | input or output | Optional |
+| `reroute-mock` | Replace an external dependency with the test container's response | output | No |
+| `write` | Expose a writer endpoint the test container can call to inject traffic | input or output | No |
+
+For backward compatibility, `mode` still names these capabilities in the CRD. New plugin definitions should prefer the simpler capability vocabulary: `split`, `combine`, `sink`, `trigger`, `mock`, `write`, and `observe`. Older names such as `passthrough-duplicate` and `reroute-mock` map to `observe` and `mock`.
 
 ```mermaid
 flowchart LR
-    subgraph T["trigger"]
-        T1["matching traffic"] -->|register testId| T2["Operator"]
-        T1 -->|POST /trigger| T3["Test Container"]
-        T1 -->|deliver| T4["Blue"]
+    subgraph S["split"]
+        S1["production input"] --> S2["Plugin"]
+        S2 --> S3["green path"]
+        S2 --> S4["blue path"]
+        S2 -->|register / notify| S5["Operator + Test Container"]
     end
 ```
 
 ```mermaid
 flowchart LR
-    subgraph PD["passthrough-duplicate"]
-        PD1["Blue"] --> PD2["Plugin"]
-        PD2 -->|forward| PD3["Real Upstream"]
-        PD2 -->|copy| PD4["Test Container"]
+    subgraph C["combine"]
+        C1["green output"] --> C3["Plugin"]
+        C2["blue output"] --> C3
+        C3 --> C4["single result output"]
     end
 ```
 
@@ -103,26 +119,53 @@ flowchart LR
     end
 ```
 
-### Directions
+### Stages
 
-An inception point declares one or more directions:
+The old `direction` field is best understood as the stage where the plugin attaches:
 
-| Direction | What the plugin sees |
+| Stage | What the plugin sees |
 |---|---|
-| `ingress` | Traffic **into** blue — messages arriving on input queues, HTTP requests to blue's endpoint |
-| `egress` | Traffic **out of** blue — outbound HTTP calls, messages blue publishes to output queues |
-| **both** (`[ingress, egress]`) | A single plugin instance handles both flows; config has separate `ingress` and `egress` blocks |
+| `ingress` / input | Traffic entering the application: messages consumed from input queues, HTTP requests to the service |
+| `egress` / output | Traffic leaving the application: output queues, outbound HTTP calls, emitted events |
+| both | A plugin that manages both sides, usually with separate config blocks |
 
-### Mode × Direction Validity
+### Capability × Stage Validity
 
-| Mode | ingress | egress | both |
+| Capability | input | output | both |
 |---|---|---|---|
+| `split` | ✓ | possible, but uncommon | plugin-defined |
+| `combine` | uncommon | ✓ | plugin-defined |
+| `sink` | ✓ | ✓ | plugin-defined |
 | `trigger` | ✓ | ✓ | ✓ |
 | `passthrough-duplicate` | ✓ | ✓ | ✓ |
 | `reroute-mock` | ✗ (would replace blue itself) | ✓ | ✗ |
 | `write` | ✓ | ✓ | ✓ |
 
 The operator rejects invalid combinations at CRD-validation time.
+
+### Orchestration Contracts
+
+The plugin system owns transport-specific lifecycle behavior. The operator only executes the contract declared by the plugin:
+
+| Orchestration Kind | Operator Actions | Plugin Responsibility |
+|---|---|---|
+| `queue-split` | Patch green and blue Deployment env vars to temporary queues; deploy the split plugin; restore direct queue wiring after promotion/rollback; clean up plugin/test resources | Consume from the original queue and publish to the green and blue queues without acknowledging the source message until fanout succeeds |
+| `queue-combine` | Patch output env vars to temporary blue/green output queues; deploy the combine plugin; restore direct output wiring after terminal state | Consume/merge from blue and green output queues and publish to the result queue according to plugin rules |
+| `http-split` | Patch service/env routing to the HTTP split plugin; deploy proxy resources; restore direct service routing after terminal state | Proxy or mirror HTTP traffic according to plugin-specific semantics |
+
+This distinction matters: duplicating HTTP requests is not the same operation as creating two queues, and combining queue outputs is not the same as merging HTTP responses. The `InceptionPlugin` declares the orchestration kind; the `BlueGreenDeployment` supplies concrete names and values; the operator reconciles Kubernetes state from those declarations.
+
+### Plugin-Advertised Capabilities
+
+Progressive shifting and event notifications are not configured ad hoc on an inception point. They are advertised by the plugin and then used by the BGD strategy layer:
+
+| Advertised Capability | Meaning |
+|---|---|
+| `supportsProgressiveShifting` | The plugin can perform weighted traffic shifting. This is a splitter capability only. Combiners do not own progressive shifting. |
+| `canNotifyTestOnEvents` | The plugin can optionally notify the test container for every matching resource that passes through it. This may be used by splitters, combiners, or observers. |
+| `providesSink` | The plugin can expose a sink path that consumes and terminates a resource branch. |
+
+The BGD should only enable progressive strategy steps when the referenced splitter plugin advertises `supportsProgressiveShifting: true`.
 
 ---
 
@@ -461,8 +504,8 @@ spec:
       mode: trigger
       pluginRef: { name: rabbitmq-duplicator }
       config:
-        sourceQueue: orders
-        shadowQueue: orders-blue
+        inputQueue: orders
+        blueInputQueue: orders-blue
         testId:
           field: "queue.body"
           jsonPath: "$.orderId"

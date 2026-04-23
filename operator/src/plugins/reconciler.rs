@@ -8,15 +8,22 @@ use k8s_openapi::api::core::v1::{
 use kube::core::ObjectMeta;
 
 use crate::crd::blue_green::InceptionPoint;
-use crate::crd::inception_plugin::{Direction, InceptionPlugin, Topology};
+use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
 
 pub struct ReconciledResources {
     pub config_maps: Vec<ConfigMap>,
     pub deployments: Vec<Deployment>,
     pub services: Vec<Service>,
     pub sidecar_containers: Vec<Container>,
+    pub green_env_injections: Vec<EnvVar>,
     pub blue_env_injections: Vec<EnvVar>,
     pub test_env_injections: Vec<EnvVar>,
+}
+
+pub struct ContainerEnvInjections {
+    pub green: Vec<EnvVar>,
+    pub blue: Vec<EnvVar>,
+    pub test: Vec<EnvVar>,
 }
 
 pub fn reconcile_inception_point(
@@ -26,51 +33,20 @@ pub fn reconcile_inception_point(
     operator_url: &str,
     test_container_url: &str,
     _blue_deployment_name: &str,
+    blue_green_ref: &str,
 ) -> Result<ReconciledResources, String> {
-    crate::validation::validate_mode_direction(&ip.mode, &ip.directions)?;
-
-    for dir in &ip.directions {
-        if !plugin.spec.directions.contains(dir) {
-            return Err(format!(
-                "inception point '{}' requests direction {:?} but plugin '{}' only supports {:?}",
-                ip.name,
-                dir,
-                plugin.metadata.name.as_deref().unwrap_or(""),
-                plugin.spec.directions
-            ));
-        }
-    }
-
-    if !plugin.spec.modes.contains(&ip.mode) {
-        return Err(format!(
-            "inception point '{}' requests mode {:?} but plugin '{}' only supports {:?}",
-            ip.name,
-            ip.mode,
-            plugin.metadata.name.as_deref().unwrap_or(""),
-            plugin.spec.modes
-        ));
-    }
+    crate::validation::validate_roles(&plugin.spec.supported_roles, &ip.roles)?;
 
     crate::plugins::schema::validate_config_against_schema(&ip.config, &plugin.spec.config_schema)
         .map_err(|errs| format!("config validation failed: {:?}", errs))?;
 
     let config_name = format!("fluidbg-config-{}", ip.name);
-    let directions_str = ip
-        .directions
+    let role_str = ip
+        .roles
         .iter()
-        .map(|d| match d {
-            Direction::Ingress => "ingress",
-            Direction::Egress => "egress",
-        })
+        .map(plugin_role_name)
         .collect::<Vec<_>>()
         .join(",");
-
-    let mode_str = match ip.mode {
-        crate::crd::inception_plugin::PluginMode::Trigger => "trigger",
-        crate::crd::inception_plugin::PluginMode::PassthroughDuplicate => "passthrough-duplicate",
-        crate::crd::inception_plugin::PluginMode::RerouteMock => "reroute-mock",
-        crate::crd::inception_plugin::PluginMode::Write => "write",
-    };
 
     let config_data = if let Some(template) = &plugin.spec.config_template {
         if !template.is_empty() {
@@ -116,13 +92,13 @@ pub fn reconcile_inception_point(
             ..Default::default()
         },
         EnvVar {
-            name: "FLUIDBG_MODE".to_string(),
-            value: Some(mode_str.to_string()),
+            name: "FLUIDBG_BLUE_GREEN_REF".to_string(),
+            value: Some(blue_green_ref.to_string()),
             ..Default::default()
         },
         EnvVar {
-            name: "FLUIDBG_DIRECTIONS".to_string(),
-            value: Some(directions_str),
+            name: "FLUIDBG_ACTIVE_ROLES".to_string(),
+            value: Some(role_str.to_string()),
             ..Default::default()
         },
         EnvVar {
@@ -183,75 +159,20 @@ pub fn reconcile_inception_point(
         ..Default::default()
     }];
 
-    let mut blue_env_injections = Vec::new();
-    let mut test_env_injections = Vec::new();
-
-    if let Some(injects) = &plugin.spec.injects {
-        if let Some(blue_inj) = &injects.blue_container {
-            for env_inj in &blue_inj.env {
-                let env_var_name = ip
-                    .config
-                    .get(&env_inj.name_from_config)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&env_inj.name_from_config);
-
-                let value = crate::plugins::template::render_config_template(
-                    &env_inj.value_template,
-                    &ip.config,
-                )
-                .unwrap_or_else(|_| env_inj.value_template.clone());
-
-                blue_env_injections.push(EnvVar {
-                    name: env_var_name.to_string(),
-                    value: Some(value),
-                    ..Default::default()
-                });
-            }
-        }
-        if let Some(test_inj) = &injects.test_container {
-            for env_inj in &test_inj.env {
-                let env_var_name = ip
-                    .config
-                    .get(&env_inj.name_from_config)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&env_inj.name_from_config);
-
-                let value = crate::plugins::template::render_config_template(
-                    &env_inj.value_template,
-                    &ip.config,
-                )
-                .unwrap_or_else(|_| env_inj.value_template.clone());
-
-                test_env_injections.push(EnvVar {
-                    name: env_var_name.to_string(),
-                    value: Some(value),
-                    ..Default::default()
-                });
-            }
-        }
-    }
+    let env_injections = render_container_env_injections(plugin, ip, false);
 
     match plugin.spec.topology {
         Topology::SidecarBlue => {
             let mut sidecar = plugin_container.clone();
-            sidecar.volume_mounts = Some(
-                vec![VolumeMount {
-                    name: "plugin-config".to_string(),
-                    mount_path: "/etc/fluidbg".to_string(),
-                    read_only: Some(true),
-                    ..Default::default()
-                }]
-                .into_iter()
-                .chain(sidecar.volume_mounts.unwrap_or_default())
-                .collect(),
-            );
+            ensure_config_mount(&mut sidecar);
             Ok(ReconciledResources {
                 config_maps: vec![cm],
                 deployments: vec![],
                 services: vec![],
                 sidecar_containers: vec![sidecar],
-                blue_env_injections,
-                test_env_injections,
+                green_env_injections: env_injections.green,
+                blue_env_injections: env_injections.blue,
+                test_env_injections: env_injections.test,
             })
         }
         Topology::Standalone => {
@@ -264,17 +185,7 @@ pub fn reconcile_inception_point(
             let pod_spec = PodSpec {
                 containers: vec![{
                     let mut c = plugin_container;
-                    c.volume_mounts = Some(
-                        vec![VolumeMount {
-                            name: "plugin-config".to_string(),
-                            mount_path: "/etc/fluidbg".to_string(),
-                            read_only: Some(true),
-                            ..Default::default()
-                        }]
-                        .into_iter()
-                        .chain(c.volume_mounts.unwrap_or_default())
-                        .collect(),
-                    );
+                    ensure_config_mount(&mut c);
                     c
                 }],
                 volumes: Some(volumes),
@@ -342,39 +253,116 @@ pub fn reconcile_inception_point(
                 deployments: vec![deployment],
                 services: vec![service],
                 sidecar_containers: vec![],
-                blue_env_injections,
-                test_env_injections,
+                green_env_injections: env_injections.green,
+                blue_env_injections: env_injections.blue,
+                test_env_injections: env_injections.test,
             })
         }
         Topology::SidecarTest => {
             let mut sidecar = plugin_container.clone();
-            sidecar.volume_mounts = Some(
-                vec![VolumeMount {
-                    name: "plugin-config".to_string(),
-                    mount_path: "/etc/fluidbg".to_string(),
-                    read_only: Some(true),
-                    ..Default::default()
-                }]
-                .into_iter()
-                .chain(sidecar.volume_mounts.unwrap_or_default())
-                .collect(),
-            );
+            ensure_config_mount(&mut sidecar);
             Ok(ReconciledResources {
                 config_maps: vec![cm],
                 deployments: vec![],
                 services: vec![],
                 sidecar_containers: vec![sidecar],
-                blue_env_injections,
-                test_env_injections,
+                green_env_injections: env_injections.green,
+                blue_env_injections: env_injections.blue,
+                test_env_injections: env_injections.test,
             })
         }
     }
 }
 
+fn ensure_config_mount(container: &mut Container) {
+    let mounts = container.volume_mounts.get_or_insert_with(Vec::new);
+    if mounts.iter().any(|mount| mount.mount_path == "/etc/fluidbg") {
+        return;
+    }
+    mounts.push(VolumeMount {
+        name: "plugin-config".to_string(),
+        mount_path: "/etc/fluidbg".to_string(),
+        read_only: Some(true),
+        ..Default::default()
+    });
+}
+
+fn plugin_role_name(role: &PluginRole) -> &'static str {
+    match role {
+        PluginRole::Splitter => "splitter",
+        PluginRole::Combiner => "combiner",
+        PluginRole::Observer => "observer",
+        PluginRole::Mock => "mock",
+        PluginRole::Writer => "writer",
+        PluginRole::Sink => "sink",
+    }
+}
+
+pub fn render_container_env_injections(
+    plugin: &InceptionPlugin,
+    ip: &InceptionPoint,
+    restore_values: bool,
+) -> ContainerEnvInjections {
+    let Some(injects) = &plugin.spec.injects else {
+        return ContainerEnvInjections {
+            green: Vec::new(),
+            blue: Vec::new(),
+            test: Vec::new(),
+        };
+    };
+
+    ContainerEnvInjections {
+        green: render_env_injection_set(
+            injects.green_container.as_ref(),
+            &ip.config,
+            restore_values,
+        ),
+        blue: render_env_injection_set(injects.blue_container.as_ref(), &ip.config, restore_values),
+        test: render_env_injection_set(injects.test_container.as_ref(), &ip.config, restore_values),
+    }
+}
+
+fn render_env_injection_set(
+    injection: Option<&crate::crd::inception_plugin::ContainerInjection>,
+    config: &serde_json::Value,
+    restore_values: bool,
+) -> Vec<EnvVar> {
+    let Some(injection) = injection else {
+        return Vec::new();
+    };
+
+    injection
+        .env
+        .iter()
+        .map(|env_inj| {
+            let env_var_name = config
+                .get(&env_inj.name_from_config)
+                .and_then(|v| v.as_str())
+                .unwrap_or(&env_inj.name_from_config);
+            let template = if restore_values {
+                env_inj
+                    .restore_value_template
+                    .as_ref()
+                    .unwrap_or(&env_inj.value_template)
+            } else {
+                &env_inj.value_template
+            };
+            let value = crate::plugins::template::render_config_template(template, config)
+                .unwrap_or_else(|_| template.clone());
+
+            EnvVar {
+                name: env_var_name.to_string(),
+                value: Some(value),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::crd::inception_plugin::{
-        ContainerPort, Direction, InceptionPlugin, InceptionPluginSpec, Injects, PluginMode,
+        ContainerPort, InceptionPlugin, InceptionPluginSpec, Injects, PluginFeatures, PluginRole,
         Topology, VolumeMount,
     };
 
@@ -386,13 +374,8 @@ mod tests {
             InceptionPluginSpec {
                 description: "HTTP proxy sidecar".to_string(),
                 image: "fluidbg/http-proxy:v0.1.0".to_string(),
+                supported_roles: vec![PluginRole::Observer, PluginRole::Mock],
                 topology: Topology::SidecarBlue,
-                modes: vec![
-                    PluginMode::Trigger,
-                    PluginMode::PassthroughDuplicate,
-                    PluginMode::RerouteMock,
-                ],
-                directions: vec![Direction::Ingress, Direction::Egress],
                 field_namespaces: vec!["http".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
@@ -418,35 +401,45 @@ mod tests {
                         read_only: Some(true),
                     }],
                 },
+                lifecycle: None,
                 injects: Some(Injects {
+                    green_container: None,
                     blue_container: Some(crate::crd::inception_plugin::ContainerInjection {
                         env: vec![crate::crd::inception_plugin::EnvInjection {
                             name_from_config: "envVarName".to_string(),
                             value_template: "http://localhost:{{proxyPort}}".to_string(),
+                            restore_value_template: None,
                         }],
                     }),
                     test_container: None,
                 }),
+                features: None,
             },
         )
     }
 
-    fn make_rabbitmq_duplicator_plugin() -> InceptionPlugin {
+    fn make_rabbitmq_plugin() -> InceptionPlugin {
         InceptionPlugin::new(
-            "rabbitmq-duplicator",
+            "rabbitmq",
             InceptionPluginSpec {
-                description: "RabbitMQ duplicator".to_string(),
-                image: "fluidbg/rabbitmq-duplicator:v0.1.0".to_string(),
+                description: "RabbitMQ transport plugin".to_string(),
+                image: "fluidbg/rabbitmq:v0.1.0".to_string(),
+                supported_roles: vec![
+                    PluginRole::Splitter,
+                    PluginRole::Observer,
+                    PluginRole::Writer,
+                    PluginRole::Sink,
+                    PluginRole::Combiner,
+                ],
                 topology: Topology::Standalone,
-                modes: vec![PluginMode::Trigger, PluginMode::PassthroughDuplicate],
-                directions: vec![Direction::Ingress, Direction::Egress],
                 field_namespaces: vec!["queue".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
-                    "required": ["sourceQueue", "shadowQueue"],
+                    "required": ["inputQueue", "greenInputQueue", "blueInputQueue"],
                     "properties": {
-                        "sourceQueue": { "type": "string" },
-                        "shadowQueue": { "type": "string" },
+                        "inputQueue": { "type": "string" },
+                        "greenInputQueue": { "type": "string" },
+                        "blueInputQueue": { "type": "string" },
                         "testId": { "type": "object" },
                         "match": { "type": "array" },
                         "writeEnvVar": { "type": "string" }
@@ -460,7 +453,11 @@ mod tests {
                     }],
                     volume_mounts: vec![],
                 },
+                lifecycle: None,
                 injects: None,
+                features: Some(PluginFeatures {
+                    supports_progressive_shifting: true,
+                }),
             },
         )
     }
@@ -471,9 +468,8 @@ mod tests {
             InceptionPluginSpec {
                 description: "A test plugin".to_string(),
                 image: "example.com/fake-plugin:1".to_string(),
+                supported_roles: vec![PluginRole::Observer],
                 topology: Topology::Standalone,
-                modes: vec![PluginMode::Trigger],
-                directions: vec![Direction::Ingress],
                 field_namespaces: vec!["custom".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
@@ -494,24 +490,24 @@ mod tests {
                         read_only: Some(true),
                     }],
                 },
+                lifecycle: None,
                 injects: None,
+                features: None,
             },
         )
     }
 
     fn make_inception_point(
         name: &str,
-        mode: PluginMode,
-        directions: Vec<Direction>,
+        roles: Vec<PluginRole>,
         config: serde_json::Value,
     ) -> InceptionPoint {
         InceptionPoint {
             name: name.to_string(),
-            directions,
-            mode,
             plugin_ref: crate::crd::blue_green::PluginRef {
                 name: "test".to_string(),
             },
+            roles,
             config,
             notify_tests: vec![],
             timeout: Some("60s".to_string()),
@@ -523,8 +519,7 @@ mod tests {
         let plugin = make_http_proxy_plugin();
         let ip = make_inception_point(
             "payment-calls",
-            PluginMode::PassthroughDuplicate,
-            vec![Direction::Egress],
+            vec![PluginRole::Observer],
             serde_json::json!({
                 "proxyPort": 8081,
                 "realEndpoint": "https://payment.internal/v1",
@@ -540,6 +535,7 @@ mod tests {
             "http://operator:8090",
             "http://test-container:8080",
             "order-processor-blue",
+            "order-processor-bg",
         )
         .unwrap();
 
@@ -547,6 +543,7 @@ mod tests {
         assert_eq!(resources.sidecar_containers.len(), 1);
         assert_eq!(resources.deployments.len(), 0);
         assert_eq!(resources.services.len(), 0);
+        assert!(resources.green_env_injections.is_empty());
         assert!(!resources.blue_env_injections.is_empty());
         assert_eq!(resources.blue_env_injections[0].name, "PAYMENT_SERVICE_URL");
         assert_eq!(
@@ -557,14 +554,14 @@ mod tests {
 
     #[test]
     fn standalone_produces_deployment_and_service() {
-        let plugin = make_rabbitmq_duplicator_plugin();
+        let plugin = make_rabbitmq_plugin();
         let ip = make_inception_point(
             "incoming-orders",
-            PluginMode::Trigger,
-            vec![Direction::Ingress],
+            vec![PluginRole::Splitter, PluginRole::Observer],
             serde_json::json!({
-                "sourceQueue": "orders",
-                "shadowQueue": "orders-blue",
+                "inputQueue": "orders",
+                "greenInputQueue": "orders-green",
+                "blueInputQueue": "orders-blue",
                 "testId": {"field": "queue.body", "jsonPath": "$.orderId"},
                 "match": [{"field": "queue.body", "jsonPath": "$.type", "matches": "^order$"}],
                 "notifyPath": "/trigger"
@@ -577,6 +574,7 @@ mod tests {
             "http://operator:8090",
             "http://test-container:8080",
             "order-processor-blue",
+            "order-processor-bg",
         )
         .unwrap();
 
@@ -615,7 +613,7 @@ mod tests {
                 .containers[0]
                 .image
                 .as_deref(),
-            Some("fluidbg/rabbitmq-duplicator:v0.1.0")
+            Some("fluidbg/rabbitmq:v0.1.0")
         );
     }
 
@@ -624,8 +622,7 @@ mod tests {
         let plugin = make_fake_plugin();
         let ip = make_inception_point(
             "custom-point",
-            PluginMode::Trigger,
-            vec![Direction::Ingress],
+            vec![PluginRole::Observer],
             serde_json::json!({"target": "custom-queue"}),
         );
         let resources = reconcile_inception_point(
@@ -635,6 +632,7 @@ mod tests {
             "http://operator:8090",
             "http://tc:8080",
             "blue",
+            "order-processor-bg",
         )
         .unwrap();
 
@@ -657,22 +655,18 @@ mod tests {
             Some("example.com/fake-plugin:1")
         );
         assert!(
-            container
-                .env
-                .as_ref()
-                .unwrap()
-                .iter()
-                .any(|e| e.name == "FLUIDBG_MODE" && e.value == Some("trigger".to_string()))
+            container.env.as_ref().unwrap().iter().any(
+                |e| e.name == "FLUIDBG_ACTIVE_ROLES" && e.value == Some("observer".to_string())
+            )
         );
     }
 
     #[test]
-    fn invalid_mode_direction_rejected() {
+    fn unsupported_role_rejected() {
         let plugin = make_http_proxy_plugin();
         let ip = make_inception_point(
             "bad-point",
-            PluginMode::RerouteMock,
-            vec![Direction::Ingress],
+            vec![PluginRole::Splitter],
             serde_json::json!({
                 "proxyPort": 8082,
                 "realEndpoint": "http://upstream",
@@ -686,28 +680,27 @@ mod tests {
                 "ns",
                 "http://op:8090",
                 "http://tc:8080",
-                "blue"
+                "blue",
+                "order-processor-bg"
             )
             .is_err()
         );
     }
 
     #[test]
-    fn unsupported_direction_rejected() {
+    fn sink_role_supported() {
         let ip = make_inception_point(
-            "bad-dir",
-            PluginMode::Trigger,
-            vec![Direction::Ingress],
-            serde_json::json!({"sourceQueue": "q", "shadowQueue": "q-blue"}),
+            "sink",
+            vec![PluginRole::Sink],
+            serde_json::json!({"target": "q"}),
         );
-        let egress_only_plugin = InceptionPlugin::new(
-            "egress-only",
+        let sink_plugin = InceptionPlugin::new(
+            "sink",
             InceptionPluginSpec {
-                description: "Egress only".to_string(),
+                description: "Sink".to_string(),
                 image: "test:v1".to_string(),
+                supported_roles: vec![PluginRole::Sink],
                 topology: Topology::Standalone,
-                modes: vec![PluginMode::PassthroughDuplicate],
-                directions: vec![Direction::Egress],
                 field_namespaces: vec!["queue".to_string()],
                 config_schema: serde_json::json!({"type": "object"}),
                 config_template: None,
@@ -715,19 +708,22 @@ mod tests {
                     ports: vec![],
                     volume_mounts: vec![],
                 },
+                lifecycle: None,
                 injects: None,
+                features: None,
             },
         );
         assert!(
             reconcile_inception_point(
-                &egress_only_plugin,
+                &sink_plugin,
                 &ip,
                 "ns",
                 "http://op:8090",
                 "http://tc:8080",
-                "blue"
+                "blue",
+                "order-processor-bg"
             )
-            .is_err()
+            .is_ok()
         );
     }
 }

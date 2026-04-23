@@ -1030,6 +1030,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "futures",
  "jsonpath-rust",
  "jsonschema",
  "k8s-openapi",
@@ -1048,32 +1049,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluidbg-rabbitmq-duplicator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "futures-lite 2.6.1",
- "lapin",
- "rand 0.9.4",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fluidbg-rabbitmq-writer"
+name = "fluidbg-rabbitmq"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "futures-lite 2.6.1",
  "lapin",
+ "rand 0.9.4",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1154,6 +1139,7 @@ checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",

@@ -1,18 +1,16 @@
-use crate::crd::inception_plugin::{Direction, PluginMode};
+use crate::crd::inception_plugin::PluginRole;
 
-pub fn validate_mode_direction(mode: &PluginMode, directions: &[Direction]) -> Result<(), String> {
-    if matches!(mode, PluginMode::RerouteMock) {
-        if directions.len() == 1 && directions[0] == Direction::Ingress {
-            return Err(
-                "reroute-mock with ingress direction is invalid: it would replace blue itself"
-                    .to_string(),
-            );
-        }
-        if directions.contains(&Direction::Ingress) && directions.contains(&Direction::Egress) {
-            return Err(
-                "reroute-mock with both directions is invalid: ingress would replace blue itself"
-                    .to_string(),
-            );
+pub fn validate_roles(available: &[PluginRole], selected: &[PluginRole]) -> Result<(), String> {
+    if selected.is_empty() {
+        return Err("inception point must select at least one role".to_string());
+    }
+
+    for role in selected {
+        if !available.contains(role) {
+            return Err(format!(
+                "role '{role:?}' is not supported by the selected plugin; supported roles: {:?}",
+                available
+            ));
         }
     }
     Ok(())
@@ -37,44 +35,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reroute_mock_ingress_rejected() {
-        let mode = PluginMode::RerouteMock;
-        let directions = vec![Direction::Ingress];
-        assert!(validate_mode_direction(&mode, &directions).is_err());
+    fn empty_roles_rejected() {
+        assert!(validate_roles(&[PluginRole::Observer], &[]).is_err());
     }
 
     #[test]
-    fn reroute_mock_egress_accepted() {
-        let mode = PluginMode::RerouteMock;
-        let directions = vec![Direction::Egress];
-        assert!(validate_mode_direction(&mode, &directions).is_ok());
+    fn unsupported_role_rejected() {
+        assert!(validate_roles(&[PluginRole::Observer], &[PluginRole::Splitter]).is_err());
     }
 
     #[test]
-    fn reroute_mock_both_rejected() {
-        let mode = PluginMode::RerouteMock;
-        let directions = vec![Direction::Ingress, Direction::Egress];
-        assert!(validate_mode_direction(&mode, &directions).is_err());
-    }
-
-    #[test]
-    fn trigger_ingress_accepted() {
-        let mode = PluginMode::Trigger;
-        let directions = vec![Direction::Ingress];
-        assert!(validate_mode_direction(&mode, &directions).is_ok());
+    fn supported_roles_accepted() {
+        assert!(
+            validate_roles(
+                &[PluginRole::Splitter, PluginRole::Observer],
+                &[PluginRole::Splitter, PluginRole::Observer]
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn field_namespace_valid() {
-        let field = "http.method";
-        let namespaces = vec!["http".to_string()];
-        assert!(validate_field_namespace(field, &namespaces).is_ok());
+        assert!(validate_field_namespace("http.method", &["http".to_string()]).is_ok());
     }
 
     #[test]
     fn field_namespace_invalid() {
-        let field = "queue.body";
-        let namespaces = vec!["http".to_string()];
-        assert!(validate_field_namespace(field, &namespaces).is_err());
+        assert!(validate_field_namespace("queue.body", &["http".to_string()]).is_err());
     }
 }

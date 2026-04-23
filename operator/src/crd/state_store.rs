@@ -13,6 +13,7 @@ pub enum StateStoreType {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PostgresConfig {
     pub url: String,
     #[serde(default = "default_table_name")]
@@ -30,6 +31,7 @@ fn default_ttl_seconds() -> i64 {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RedisConfig {
     pub url: String,
     #[serde(default = "default_ttl_seconds")]

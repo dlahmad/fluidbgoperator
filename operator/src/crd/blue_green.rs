@@ -1,8 +1,10 @@
+use k8s_openapi::api::apps::v1::Deployment;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-use super::inception_plugin::{Direction, PluginMode};
+use super::inception_plugin::PluginRole;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeploymentRef {
@@ -15,12 +17,23 @@ pub struct DeploymentRef {
 pub struct BlueSpec {
     pub deployment: DeploymentRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "arbitrary_object_schema")]
     pub template: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Deployment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GreenSpec {
-    pub deployment: DeploymentRef,
+    pub selector: DeploymentSelector,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentSelector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    pub match_labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -29,6 +42,7 @@ pub struct PluginRef {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct FilterMatch {
     pub field: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,6 +62,7 @@ pub enum PayloadOption {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Filter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub r#match: Vec<FilterMatch>,
@@ -58,6 +73,7 @@ pub struct Filter {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TestIdSelector {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
@@ -70,11 +86,12 @@ pub struct TestIdSelector {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InceptionPoint {
     pub name: String,
-    pub directions: Vec<Direction>,
-    pub mode: PluginMode,
     pub plugin_ref: PluginRef,
+    pub roles: Vec<PluginRole>,
+    #[schemars(schema_with = "arbitrary_object_schema")]
     pub config: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_tests: Vec<String>,
@@ -83,6 +100,7 @@ pub struct InceptionPoint {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TestSpec {
     pub name: String,
     pub image: String,
@@ -102,6 +120,7 @@ pub struct TestEnvVar {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SuccessCriteria {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_cases: Option<i64>,
@@ -112,6 +131,7 @@ pub struct SuccessCriteria {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgressiveStep {
     pub traffic_percent: i32,
     pub observe_cases: i64,
@@ -119,6 +139,7 @@ pub struct ProgressiveStep {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgressiveStrategy {
     pub steps: Vec<ProgressiveStep>,
     #[serde(default = "default_true")]
@@ -147,6 +168,7 @@ pub struct PromotionStrategy {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PromotionSpec {
     pub success_criteria: SuccessCriteria,
     pub strategy: PromotionStrategy,
@@ -163,6 +185,7 @@ pub enum BGDPhase {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BlueGreenDeploymentStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<BGDPhase>,
@@ -189,6 +212,7 @@ pub struct BlueGreenDeploymentStatus {
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 #[kube(
     group = "fluidbg.io",
     version = "v1alpha1",
@@ -206,4 +230,11 @@ pub struct BlueGreenDeploymentSpec {
     pub tests: Vec<TestSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion: Option<PromotionSpec>,
+}
+
+fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "x-kubernetes-preserve-unknown-fields": true
+    })
 }

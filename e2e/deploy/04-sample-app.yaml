@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-processor-green
+  namespace: fluidbg-test
+  labels:
+    app: order-processor-green
+    fluidbg.io/role: green
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-processor-green
+  template:
+    metadata:
+      labels:
+        app: order-processor-green
+        fluidbg.io/role: green
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: order-processor
+          image: fluidbg/green-app:dev
+          imagePullPolicy: Never
+          env:
+            - name: AMQP_URL
+              value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+            - name: INPUT_QUEUE
+              value: "orders"
+            - name: OUTPUT_QUEUE
+              value: "results"
+            - name: HTTP_UPSTREAM
+              value: "http://httpbin.fluidbg-system/post"

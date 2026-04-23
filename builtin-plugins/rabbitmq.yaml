@@ -1,0 +1,53 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: rabbitmq
+spec:
+  description: "RabbitMQ transport plugin"
+  image: fluidbg/rabbitmq:v0.1.0
+  supportedRoles: [splitter, observer, writer, sink, combiner]
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    cleanupPath: /cleanup
+  features:
+    supportsProgressiveShifting: true
+  fieldNamespaces: [queue]
+  configSchema:
+    type: object
+    properties:
+      amqpUrl: { type: string }
+      splitter:
+        type: object
+        properties:
+          inputQueue: { type: string }
+          greenInputQueue: { type: string }
+          blueInputQueue: { type: string }
+          greenInputQueueEnvVar: { type: string }
+          blueInputQueueEnvVar: { type: string }
+      combiner:
+        type: object
+        properties:
+          outputQueue: { type: string }
+          greenOutputQueue: { type: string }
+          blueOutputQueue: { type: string }
+          greenOutputQueueEnvVar: { type: string }
+          blueOutputQueueEnvVar: { type: string }
+      writer:
+        type: object
+        properties:
+          targetQueue: { type: string }
+      sink:
+        type: object
+        properties:
+          inputQueue: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  container:
+    ports:
+      - name: health
+        containerPort: 9090

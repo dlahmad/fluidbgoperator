@@ -31,6 +31,7 @@ reqwest = { workspace = true }
 jsonschema = { workspace = true }
 regex = { workspace = true }
 jsonpath-rust = { workspace = true }
+futures = { workspace = true }
 
 [features]
 integration-tests = []

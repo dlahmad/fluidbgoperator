@@ -1,0 +1,166 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: rabbitmq
+  namespace: fluidbg-test
+spec:
+  description: "RabbitMQ transport plugin"
+  image: fluidbg/rabbitmq:dev
+  supportedRoles: [splitter, observer, writer, sink, combiner]
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    cleanupPath: /cleanup
+  features:
+    supportsProgressiveShifting: true
+  fieldNamespaces: [queue]
+  configSchema:
+    type: object
+    properties:
+      amqpUrl: { type: string }
+      splitter:
+        type: object
+        properties:
+          inputQueue: { type: string }
+          greenInputQueue: { type: string }
+          blueInputQueue: { type: string }
+          greenInputQueueEnvVar: { type: string }
+          blueInputQueueEnvVar: { type: string }
+      combiner:
+        type: object
+        properties:
+          outputQueue: { type: string }
+          greenOutputQueue: { type: string }
+          blueOutputQueue: { type: string }
+          greenOutputQueueEnvVar: { type: string }
+          blueOutputQueueEnvVar: { type: string }
+      writer:
+        type: object
+        properties:
+          targetQueue: { type: string }
+      sink:
+        type: object
+        properties:
+          inputQueue: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  container:
+    ports:
+      - name: health
+        containerPort: 9090
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: StateStore
+metadata:
+  name: memory-store
+  namespace: fluidbg-test
+spec:
+  type: memory
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-bg
+  namespace: fluidbg-test
+spec:
+  stateStoreRef:
+    name: memory-store
+  green:
+    selector:
+      matchLabels:
+        fluidbg.io/role: green
+  blue:
+    deployment:
+      name: order-processor-blue
+    manifest:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: order-processor-blue
+        namespace: fluidbg-test
+        labels:
+          app: order-processor-blue
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: order-processor-blue
+        template:
+          metadata:
+            labels:
+              app: order-processor-blue
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: order-processor
+                image: fluidbg/blue-app:dev
+                imagePullPolicy: Never
+                env:
+                  - name: AMQP_URL
+                    value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                  - name: INPUT_QUEUE
+                    value: "orders"
+                  - name: OUTPUT_QUEUE
+                    value: "results"
+                  - name: HTTP_UPSTREAM
+                    value: "http://httpbin.fluidbg-system/post"
+  inceptionPoints:
+    - name: incoming-orders
+      pluginRef:
+        name: rabbitmq
+      roles: [splitter, observer]
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        splitter:
+          inputQueue: orders
+          greenInputQueue: orders-green
+          blueInputQueue: orders-blue
+          greenInputQueueEnvVar: INPUT_QUEUE
+          blueInputQueueEnvVar: INPUT_QUEUE
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          match:
+            - field: queue.body
+              jsonPath: $.type
+              matches: "^order$"
+          notifyPath: /observe/{testId}/incoming-orders
+    - name: outgoing-results
+      pluginRef:
+        name: rabbitmq
+      roles: [combiner, observer]
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        combiner:
+          greenOutputQueueEnvVar: OUTPUT_QUEUE
+          blueOutputQueueEnvVar: OUTPUT_QUEUE
+          greenOutputQueue: results-green
+          blueOutputQueue: results-blue
+          outputQueue: results
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          notifyPath: /observe/{testId}/outgoing-results
+  tests:
+    - name: test-container
+      image: fluidbg/test-app:dev
+      port: 8080
+      triggerPath: /trigger
+      resultPath: /result/{testId}
+      env:
+        - name: PORT
+          value: "8080"
+        - name: AMQP_URL
+          value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+  promotion:
+    successCriteria:
+      minCases: 3
+      successRate: 0.80
+    strategy:
+      type: hard-switch

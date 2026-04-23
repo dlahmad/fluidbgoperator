@@ -1,3 +1,4 @@
+pub mod controller;
 pub mod crd;
 pub mod evaluator;
 pub mod http_api;

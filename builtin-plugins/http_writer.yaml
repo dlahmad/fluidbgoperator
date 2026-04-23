@@ -5,9 +5,8 @@ metadata:
 spec:
   description: "HTTP writer gateway for injecting HTTP requests into blue"
   image: fluidbg/http-writer:v0.1.0
+  supportedRoles: [writer]
   topology: standalone
-  modes: [write]
-  directions: [ingress, egress]
   fieldNamespaces: [http]
   configSchema:
     type: object
