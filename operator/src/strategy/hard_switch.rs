@@ -14,11 +14,28 @@ impl HardSwitchStrategy {
             success_rate: criteria.success_rate.unwrap_or(0.98),
         }
     }
+
+    fn best_possible_rate(&self, counts: &Counts) -> Option<f64> {
+        let best_total = counts.passed + counts.failed + counts.timed_out + counts.pending;
+        if best_total < self.min_test_cases || best_total == 0 {
+            return None;
+        }
+        Some((counts.passed + counts.pending) as f64 / best_total as f64)
+    }
 }
 
 #[async_trait::async_trait]
 impl PromotionStrategy for HardSwitchStrategy {
     async fn decide(&self, counts: &Counts, _current_step: Option<i32>) -> PromotionAction {
+        if counts.pending > 0 {
+            if let Some(best_possible_rate) = self.best_possible_rate(counts)
+                && best_possible_rate < self.success_rate
+            {
+                return PromotionAction::Rollback;
+            }
+            return PromotionAction::ContinueObserving;
+        }
+
         let total = counts.passed + counts.failed + counts.timed_out;
         if total < self.min_test_cases {
             return PromotionAction::ContinueObserving;
@@ -77,6 +94,39 @@ mod tests {
             strategy.decide(&counts, None).await,
             PromotionAction::Promote
         );
+    }
+
+    #[tokio::test]
+    async fn continue_observing_when_pending_cases_exist() {
+        let strategy = HardSwitchStrategy {
+            min_test_cases: 3,
+            success_rate: 0.8,
+        };
+        let counts = Counts {
+            passed: 4,
+            failed: 0,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(
+            strategy.decide(&counts, None).await,
+            PromotionAction::ContinueObserving
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_when_pending_cases_cannot_recover_threshold() {
+        let strategy = HardSwitchStrategy {
+            min_test_cases: 3,
+            success_rate: 0.8,
+        };
+        let counts = Counts {
+            passed: 0,
+            failed: 4,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(strategy.decide(&counts, None).await, PromotionAction::Rollback);
     }
 
     #[tokio::test]

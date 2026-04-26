@@ -60,10 +60,25 @@ def observe(test_id, inception_point):
     with cases_lock:
         if test_id not in cases:
             cases[test_id] = {"status": "observing"}
+        current_status = cases[test_id].get("status")
+        if current_status in ("passed", "failed"):
+            return jsonify({"testId": test_id, "status": current_status})
         cases[test_id]["observation"] = data
         if inception_point == "outgoing-results":
-            cases[test_id]["status"] = "passed"
-            cases[test_id]["result_message"] = data.get("payload")
+            payload = data.get("payload") or {}
+            original = payload.get("originalMessage") or {}
+            processed_by = payload.get("processedBy")
+            cases[test_id]["result_message"] = payload
+            if processed_by != "blue":
+                cases[test_id]["status"] = "observing"
+            elif original.get("shouldPass", True):
+                cases[test_id]["status"] = "passed"
+                cases[test_id]["error_message"] = None
+            else:
+                cases[test_id]["status"] = "failed"
+                cases[test_id]["error_message"] = original.get(
+                    "failureReason", "candidate verification failed"
+                )
         else:
             cases[test_id]["status"] = "observing"
     return jsonify({"testId": test_id, "status": "observing"})

@@ -5190,12 +5190,16 @@ spec:
                     config:
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+                    drain:
+                      nullable: true
+                      properties:
+                        maxWaitSeconds:
+                          format: int64
+                          nullable: true
+                          type: integer
+                      type: object
                     name:
                       type: string
-                    notifyTests:
-                      items:
-                        type: string
-                      type: array
                     pluginRef:
                       properties:
                         name:
@@ -5203,6 +5207,11 @@ spec:
                       required:
                       - name
                       type: object
+                    resources:
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      type: array
                     roles:
                       items:
                         enum:
@@ -5215,9 +5224,6 @@ spec:
                         - consumer
                         type: string
                       type: array
-                    timeout:
-                      nullable: true
-                      type: string
                   required:
                   - config
                   - name
@@ -5398,9 +5404,34 @@ spec:
                 format: int32
                 nullable: true
                 type: integer
+              drainStartedAt:
+                nullable: true
+                type: string
               generatedDeploymentName:
                 nullable: true
                 type: string
+              inceptionPointDrains:
+                items:
+                  properties:
+                    completedAt:
+                      nullable: true
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    name:
+                      type: string
+                    phase:
+                      enum:
+                      - pending
+                      - successful
+                      - timedOutMaybeSuccessful
+                      type: string
+                  required:
+                  - name
+                  - phase
+                  type: object
+                type: array
               lastCaseAt:
                 nullable: true
                 type: string
@@ -5416,11 +5447,16 @@ spec:
                 - Pending
                 - Observing
                 - Promoting
+                - Draining
                 - Completed
                 - RolledBack
                 - null
                 nullable: true
                 type: string
+              rolloutGeneration:
+                format: int64
+                nullable: true
+                type: integer
               startedAt:
                 nullable: true
                 type: string

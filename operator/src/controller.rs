@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
@@ -9,27 +10,32 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::runtime::controller::Action;
 use kube::runtime::{Controller, watcher};
-use rand::distr::{Alphanumeric, SampleString};
-use serde_json::json;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::{error, info, warn};
 
 use crate::crd::blue_green::{
-    BGDPhase, BlueGreenDeployment, DeploymentRef, DeploymentSelector, ManagedDeploymentSpec,
+    BGDPhase, BlueGreenDeployment, DeploymentRef, DeploymentSelector, InceptionPointDrainPhase,
+    InceptionPointDrainStatus, ManagedDeploymentSpec,
 };
 use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
-use crate::plugins::reconciler::{reconcile_inception_point, render_container_env_injections};
+use crate::plugins::reconciler::{
+    inception_instance_base_name, inception_service_name, reconcile_inception_point,
+    render_container_env_injections,
+};
 use crate::state_store::StateStore;
 use crate::strategy::hard_switch::HardSwitchStrategy;
 use crate::strategy::progressive::ProgressiveStrategy;
 use crate::strategy::{PromotionAction, PromotionStrategy};
 use crate::state_store::VerificationMode;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum AssignmentTarget {
     Green,
@@ -41,6 +47,13 @@ enum AssignmentTarget {
 #[serde(rename_all = "camelCase")]
 enum AssignmentKind {
     Env,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PluginLifecycleStage {
+    Prepare,
+    Drain,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -59,6 +72,14 @@ struct PropertyAssignment {
 struct PluginLifecycleResponse {
     #[serde(default)]
     assignments: Vec<PropertyAssignment>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginDrainStatusResponse {
+    drained: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -151,6 +172,7 @@ async fn reconcile(
 
     match phase {
         BGDPhase::Pending => {
+            ensure_rollout_generation(&bgd, &client, &namespace).await;
             let Some(generated_name) =
                 ensure_generated_candidate_name(&bgd, &client, &namespace).await?
             else {
@@ -231,9 +253,9 @@ async fn reconcile(
                 }
                 PromotionAction::Rollback => {
                     info!("BGD '{}' rolling back: rate={:.4}", name, success_rate);
-                    restore_after_rollback(&bgd, &client, &namespace).await?;
-                    update_status_phase(&bgd, &client, &namespace, BGDPhase::RolledBack).await;
-                    cleanup_test_resources(&bgd, &client, &namespace).await?;
+                    begin_draining_after_rollback(&bgd, &client, &namespace).await?;
+                    update_status_phase(&bgd, &client, &namespace, BGDPhase::Draining).await;
+                    update_drain_started_at(&bgd, &client, &namespace).await;
                 }
                 PromotionAction::AdvanceStep {
                     step,
@@ -252,11 +274,15 @@ async fn reconcile(
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Promoting => {
-            promote(&bgd, &client, &namespace).await?;
-            restore_after_promotion(&bgd, &client, &namespace).await?;
-            update_status_phase(&bgd, &client, &namespace, BGDPhase::Completed).await;
-            cleanup_test_resources(&bgd, &client, &namespace).await?;
-            Ok(Action::requeue(std::time::Duration::from_secs(300)))
+            let previous_green = promote(&bgd, &client, &namespace).await?;
+            begin_draining_after_promotion(&bgd, &client, &namespace, &previous_green).await?;
+            update_status_phase(&bgd, &client, &namespace, BGDPhase::Draining).await;
+            update_drain_started_at(&bgd, &client, &namespace).await;
+            Ok(Action::requeue(std::time::Duration::from_secs(5)))
+        }
+        BGDPhase::Draining => {
+            reconcile_draining(&bgd, &client, &namespace).await?;
+            Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Completed | BGDPhase::RolledBack => {
             info!("BGD '{}' in terminal state {:?}", name, phase);
@@ -463,7 +489,8 @@ async fn apply_splitter_traffic_percent(
         if !matches!(plugin.spec.topology, Topology::Standalone) {
             continue;
         }
-        let deployment_name = format!("fluidbg-{}", ip.name);
+        let deployment_name =
+            inception_instance_base_name(bgd.metadata.name.as_deref().unwrap_or(""), &ip.name);
         patch_targeted_deployment_env(
             client,
             namespace,
@@ -487,7 +514,7 @@ async fn promote(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
-) -> std::result::Result<(), ReconcileError> {
+) -> std::result::Result<DeploymentRef, ReconcileError> {
     let current_green = resolve_current_green(client, namespace, &bgd.spec.selector).await?;
     let candidate = candidate_ref(bgd);
     let candidate_namespace = deployment_namespace(&candidate, namespace);
@@ -506,8 +533,7 @@ async fn promote(
         candidate_namespace, candidate.name
     );
 
-    delete_current_green(client, namespace, &candidate, &current_green).await?;
-    Ok(())
+    Ok(current_green)
 }
 
 async fn ensure_declared_deployments(
@@ -571,27 +597,30 @@ async fn bootstrap_initial_green_if_empty(
     Ok(true)
 }
 
-async fn restore_after_promotion(
+async fn begin_draining_after_promotion(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    previous_green: &DeploymentRef,
 ) -> std::result::Result<(), ReconcileError> {
-    restore_injected_envs(bgd, client, namespace, false, true).await
+    start_plugin_draining(bgd, client, namespace, &[AssignmentTarget::Blue]).await?;
+    delete_current_green(client, namespace, &candidate_ref(bgd), previous_green).await?;
+    Ok(())
 }
 
-async fn restore_after_rollback(
+async fn begin_draining_after_rollback(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
-    restore_injected_envs(bgd, client, namespace, true, false).await?;
-
+    start_plugin_draining(bgd, client, namespace, &[AssignmentTarget::Green]).await?;
     delete_deployment(
         client,
         &deployment_namespace(&candidate_ref(bgd), namespace),
         &candidate_ref(bgd).name,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn ensure_test_resources(
@@ -710,6 +739,7 @@ async fn ensure_inception_resources(
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        ensure_inception_point_owned_resources(client, namespace, ip).await?;
         let resources = reconcile_inception_point(
             &plugin,
             ip,
@@ -721,6 +751,7 @@ async fn ensure_inception_resources(
             bgd.metadata.name.as_deref().unwrap_or(""),
         )
         .map_err(ReconcileError::Store)?;
+        let mut plugin_deployments = Vec::new();
 
         for cm in resources.config_maps {
             let name =
@@ -734,12 +765,21 @@ async fn ensure_inception_resources(
                 deployment.metadata.name.clone().ok_or_else(|| {
                     ReconcileError::Store("generated Deployment has no name".into())
                 })?;
+            let deployment_namespace = deployment
+                .metadata
+                .namespace
+                .clone()
+                .unwrap_or_else(|| namespace.to_string());
             apply_resource(
-                Api::namespaced(client.clone(), namespace),
+                Api::namespaced(client.clone(), &deployment_namespace),
                 &name,
                 &deployment,
             )
             .await?;
+            plugin_deployments.push(DeploymentIdentity {
+                namespace: deployment_namespace,
+                name,
+            });
         }
         for service in resources.services {
             let name = service
@@ -748,6 +788,10 @@ async fn ensure_inception_resources(
                 .clone()
                 .ok_or_else(|| ReconcileError::Store("generated Service has no name".into()))?;
             apply_resource(Api::namespaced(client.clone(), namespace), &name, &service).await?;
+        }
+
+        if !plugin_deployments.is_empty() {
+            wait_for_deployments_ready(client, &plugin_deployments).await?;
         }
 
         let mut assignments = Vec::new();
@@ -774,7 +818,15 @@ async fn ensure_inception_resources(
         }));
 
         if let Some(mut lifecycle_assignments) =
-            invoke_plugin_lifecycle(client, namespace, ip.name.as_str(), &plugin, true).await?
+            invoke_plugin_lifecycle(
+                client,
+                bgd.metadata.name.as_deref().unwrap_or(""),
+                namespace,
+                ip.name.as_str(),
+                &plugin,
+                PluginLifecycleStage::Prepare,
+            )
+            .await?
         {
             assignments.append(&mut lifecycle_assignments.assignments);
         }
@@ -785,6 +837,59 @@ async fn ensure_inception_resources(
         }
     }
 
+    Ok(())
+}
+
+async fn ensure_inception_point_owned_resources(
+    client: &kube::Client,
+    default_namespace: &str,
+    ip: &crate::crd::blue_green::InceptionPoint,
+) -> std::result::Result<(), ReconcileError> {
+    for manifest in &ip.resources {
+        apply_dynamic_manifest(client, default_namespace, manifest).await?;
+    }
+    Ok(())
+}
+
+async fn apply_dynamic_manifest(
+    client: &kube::Client,
+    default_namespace: &str,
+    manifest: &Value,
+) -> std::result::Result<(), ReconcileError> {
+    let api_version = manifest
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ReconcileError::Store("resource manifest is missing apiVersion".into()))?;
+    let kind = manifest
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ReconcileError::Store("resource manifest is missing kind".into()))?;
+    let name = manifest
+        .get("metadata")
+        .and_then(|value| value.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ReconcileError::Store("resource manifest is missing metadata.name".into()))?;
+    let namespace = manifest
+        .get("metadata")
+        .and_then(|value| value.get("namespace"))
+        .and_then(Value::as_str)
+        .unwrap_or(default_namespace);
+
+    let (group, version) = match api_version.split_once('/') {
+        Some((group, version)) => (group, version),
+        None => ("", api_version),
+    };
+    let gvk = GroupVersionKind::gvk(group, version, kind);
+    let ar = ApiResource::from_gvk(&gvk);
+    let mut object: DynamicObject = serde_json::from_value(manifest.clone()).map_err(|err| {
+        ReconcileError::Store(format!(
+            "failed to deserialize dynamic resource {api_version}/{kind}/{name}: {err}"
+        ))
+    })?;
+    object.metadata.namespace.get_or_insert_with(|| namespace.to_string());
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
+    let pp = PatchParams::apply("fluidbg-operator").force();
+    api.patch(name, &pp, &Patch::Apply(&object)).await?;
     Ok(())
 }
 
@@ -921,7 +1026,15 @@ async fn restore_injected_envs(
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
         if let Some(assignments) =
-            invoke_plugin_lifecycle(client, namespace, ip.name.as_str(), &plugin, false).await?
+            invoke_plugin_lifecycle(
+                client,
+                bgd.metadata.name.as_deref().unwrap_or(""),
+                namespace,
+                ip.name.as_str(),
+                &plugin,
+                PluginLifecycleStage::Cleanup,
+            )
+            .await?
         {
             let touched =
                 apply_assignments(bgd, client, namespace, &assignments.assignments, true).await?;
@@ -973,23 +1086,24 @@ async fn restore_injected_envs(
 
 async fn invoke_plugin_lifecycle(
     _client: &kube::Client,
+    blue_green_ref: &str,
     namespace: &str,
     inception_point: &str,
     plugin: &InceptionPlugin,
-    prepare: bool,
+    stage: PluginLifecycleStage,
 ) -> std::result::Result<Option<PluginLifecycleResponse>, ReconcileError> {
     let Some(lifecycle) = &plugin.spec.lifecycle else {
         return Ok(None);
     };
-    let path = if prepare {
-        lifecycle.prepare_path.as_deref()
-    } else {
-        lifecycle.cleanup_path.as_deref()
+    let path = match stage {
+        PluginLifecycleStage::Prepare => lifecycle.prepare_path.as_deref(),
+        PluginLifecycleStage::Drain => lifecycle.drain_path.as_deref(),
+        PluginLifecycleStage::Cleanup => lifecycle.cleanup_path.as_deref(),
     };
     let Some(path) = path else {
         return Ok(None);
     };
-    let service_name = format!("fluidbg-{}-svc", inception_point);
+    let service_name = inception_service_name(blue_green_ref, inception_point);
     let port = plugin
         .spec
         .container
@@ -1029,6 +1143,213 @@ async fn invoke_plugin_lifecycle(
     }
 
     Ok(None)
+}
+
+async fn invoke_plugin_drain_status(
+    blue_green_ref: &str,
+    namespace: &str,
+    inception_point: &str,
+    plugin: &InceptionPlugin,
+) -> std::result::Result<Option<PluginDrainStatusResponse>, ReconcileError> {
+    let Some(lifecycle) = &plugin.spec.lifecycle else {
+        return Ok(None);
+    };
+    let Some(path) = lifecycle.drain_status_path.as_deref() else {
+        return Ok(None);
+    };
+    let service_name = inception_service_name(blue_green_ref, inception_point);
+    let port = plugin
+        .spec
+        .container
+        .ports
+        .first()
+        .map(|port| port.container_port)
+        .unwrap_or(9090);
+    let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| ReconcileError::Store(format!("plugin drain status call failed for {url}: {err}")))?
+        .error_for_status()
+        .map_err(|err| {
+            ReconcileError::Store(format!("plugin drain status call failed for {url}: {err}"))
+        })?;
+    let payload = response.json::<PluginDrainStatusResponse>().await.map_err(|err| {
+        ReconcileError::Store(format!(
+            "plugin drain status response deserialization failed for {url}: {err}"
+        ))
+    })?;
+    Ok(Some(payload))
+}
+
+fn filter_assignments(
+    assignments: &[PropertyAssignment],
+    targets: &[AssignmentTarget],
+) -> Vec<PropertyAssignment> {
+    assignments
+        .iter()
+        .filter(|assignment| targets.contains(&assignment.target))
+        .cloned()
+        .collect()
+}
+
+async fn start_plugin_draining(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    restore_targets: &[AssignmentTarget],
+) -> std::result::Result<(), ReconcileError> {
+    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+
+    for ip in &bgd.spec.inception_points {
+        let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        if let Some(assignments) = invoke_plugin_lifecycle(
+            client,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip.name.as_str(),
+            &plugin,
+            PluginLifecycleStage::Drain,
+        )
+        .await?
+        {
+            let filtered = filter_assignments(&assignments.assignments, restore_targets);
+            if !filtered.is_empty() {
+                let touched = apply_assignments(bgd, client, namespace, &filtered, false).await?;
+                wait_for_deployments_ready(client, &touched).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn reconcile_draining(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let drain_started_at = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.drain_started_at.as_deref())
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let elapsed_seconds = (Utc::now() - drain_started_at).num_seconds().max(0);
+
+    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let mut statuses = Vec::new();
+    let mut all_final = true;
+
+    for ip in &bgd.spec.inception_points {
+        let max_wait_seconds = ip
+            .drain
+            .as_ref()
+            .and_then(|drain| drain.max_wait_seconds)
+            .unwrap_or(60);
+
+        if elapsed_seconds >= max_wait_seconds {
+            statuses.push(InceptionPointDrainStatus {
+                name: ip.name.clone(),
+                phase: InceptionPointDrainPhase::TimedOutMaybeSuccessful,
+                message: Some(format!(
+                    "max drain wait of {}s elapsed before plugin confirmed completion",
+                    max_wait_seconds
+                )),
+                completed_at: Some(Utc::now().to_rfc3339()),
+            });
+            continue;
+        }
+
+        let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        let status = match invoke_plugin_drain_status(
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip.name.as_str(),
+            &plugin,
+        )
+        .await?
+        {
+            Some(plugin_status) if plugin_status.drained => InceptionPointDrainStatus {
+                name: ip.name.clone(),
+                phase: InceptionPointDrainPhase::Successful,
+                message: plugin_status.message,
+                completed_at: Some(Utc::now().to_rfc3339()),
+            },
+            Some(plugin_status) => {
+                all_final = false;
+                InceptionPointDrainStatus {
+                    name: ip.name.clone(),
+                    phase: InceptionPointDrainPhase::Pending,
+                    message: plugin_status.message,
+                    completed_at: None,
+                }
+            }
+            None => InceptionPointDrainStatus {
+                name: ip.name.clone(),
+                phase: InceptionPointDrainPhase::Successful,
+                message: Some("plugin does not expose drainStatusPath".to_string()),
+                completed_at: Some(Utc::now().to_rfc3339()),
+            },
+        };
+        statuses.push(status);
+    }
+
+    update_inception_point_drain_statuses(bgd, client, namespace, &statuses).await;
+
+    if !all_final
+        && statuses
+            .iter()
+            .any(|status| matches!(status.phase, InceptionPointDrainPhase::Pending))
+    {
+        return Ok(());
+    }
+
+    finalize_draining(bgd, client, namespace).await
+}
+
+async fn finalize_draining(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    for ip in &bgd.spec.inception_points {
+        let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        let _ = invoke_plugin_lifecycle(
+            client,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip.name.as_str(),
+            &plugin,
+            PluginLifecycleStage::Cleanup,
+        )
+        .await?;
+    }
+
+    cleanup_test_resources(bgd, client, namespace).await?;
+
+    let final_phase = if bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.test_cases_failed)
+        .unwrap_or_default()
+        > 0
+        || bgd
+            .status
+            .as_ref()
+            .and_then(|status| status.test_cases_timed_out)
+            .unwrap_or_default()
+            > 0
+    {
+        BGDPhase::RolledBack
+    } else {
+        BGDPhase::Completed
+    };
+    update_status_phase(bgd, client, namespace, final_phase).await;
+    Ok(())
 }
 
 async fn apply_assignments(
@@ -1421,6 +1742,43 @@ fn candidate_ref(bgd: &BlueGreenDeployment) -> DeploymentRef {
     }
 }
 
+fn generated_candidate_name_seed(bgd: &BlueGreenDeployment) -> String {
+    let bgd_name = bgd.metadata.name.as_deref().unwrap_or("bgd");
+    let uid = bgd.metadata.uid.as_deref().unwrap_or("");
+    let generation = current_rollout_generation(bgd);
+    format!("{bgd_name}:{uid}:{generation}")
+}
+
+fn candidate_name_with_suffix(base: &str, suffix: &str) -> String {
+    let max_base_len = 253usize.saturating_sub(suffix.len() + 1);
+    let trimmed_base = if base.len() > max_base_len {
+        &base[..max_base_len]
+    } else {
+        base
+    };
+    format!("{trimmed_base}-{suffix}")
+}
+
+fn deterministic_candidate_suffixes(seed: &str) -> Vec<String> {
+    (0..32)
+        .map(|attempt| {
+            let digest = Sha256::digest(format!("{seed}:{attempt}").as_bytes());
+            let mut suffix = String::with_capacity(6);
+            for byte in digest.iter() {
+                let ch = match byte % 36 {
+                    value @ 0..=9 => (b'0' + value) as char,
+                    value => (b'a' + (value - 10)) as char,
+                };
+                suffix.push(ch);
+                if suffix.len() == 6 {
+                    break;
+                }
+            }
+            suffix
+        })
+        .collect()
+}
+
 async fn ensure_generated_candidate_name(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
@@ -1437,19 +1795,10 @@ async fn ensure_generated_candidate_name(
     let deploy_namespace = deployment_namespace_spec(&bgd.spec.deployment, namespace);
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &deploy_namespace);
     let bgd_name = bgd.metadata.name.as_deref().unwrap_or("bgd");
+    let seed = generated_candidate_name_seed(bgd);
 
-    for _ in 0..32 {
-        let suffix = {
-            let mut rng = rand::rng();
-            Alphanumeric.sample_string(&mut rng, 6).to_ascii_lowercase()
-        };
-        let max_base_len = 253usize.saturating_sub(suffix.len() + 1);
-        let base = if bgd_name.len() > max_base_len {
-            &bgd_name[..max_base_len]
-        } else {
-            bgd_name
-        };
-        let candidate_name = format!("{base}-{suffix}");
+    for candidate_suffix in deterministic_candidate_suffixes(&seed) {
+        let candidate_name = candidate_name_with_suffix(bgd_name, &candidate_suffix);
 
         match deploy_api.get(&candidate_name).await {
             Ok(_) => continue,
@@ -1482,12 +1831,6 @@ async fn cleanup_test_resources(
     for test in &bgd.spec.tests {
         delete_deployment(client, namespace, &test.name).await?;
         delete_service(client, namespace, &test.name).await?;
-    }
-
-    for ip in &bgd.spec.inception_points {
-        delete_deployment(client, namespace, &format!("fluidbg-{}", ip.name)).await?;
-        delete_service(client, namespace, &format!("fluidbg-{}-svc", ip.name)).await?;
-        delete_config_map(client, namespace, &format!("fluidbg-config-{}", ip.name)).await?;
     }
 
     Ok(())
@@ -1556,15 +1899,55 @@ async fn update_status_phase(
         None => return,
     };
     let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let observed_generation = current_rollout_generation(bgd);
     let patch = json!({
         "status": {
             "phase": phase,
-            "observedGeneration": bgd.metadata.generation
+            "observedGeneration": observed_generation
         }
     });
     let pp = PatchParams::default();
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!("failed to update status for '{}': {}", name, e);
+    }
+}
+
+fn current_rollout_generation(bgd: &BlueGreenDeployment) -> i64 {
+    bgd.status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .or(bgd.metadata.generation)
+        .unwrap_or_default()
+}
+
+async fn ensure_rollout_generation(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) {
+    if bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .is_some()
+    {
+        return;
+    }
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({
+        "status": {
+            "rolloutGeneration": bgd.metadata.generation.unwrap_or_default()
+        }
+    });
+    if let Err(e) = api
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        warn!("failed to set rollout generation for '{}': {}", name, e);
     }
 }
 
@@ -1583,12 +1966,62 @@ async fn reset_status_for_new_rollout(
             "phase": "Pending",
             "generatedDeploymentName": null,
             "currentStep": null,
-            "currentTrafficPercent": null
+            "currentTrafficPercent": null,
+            "drainStartedAt": null,
+            "inceptionPointDrains": [],
+            "rolloutGeneration": bgd.metadata.generation.unwrap_or_default()
         }
     });
     let pp = PatchParams::default();
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!("failed to reset rollout status for '{}': {}", name, e);
+    }
+}
+
+async fn update_drain_started_at(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({
+        "status": {
+            "drainStartedAt": Utc::now().to_rfc3339()
+        }
+    });
+    if let Err(e) = api
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        warn!("failed to update drain start for '{}': {}", name, e);
+    }
+}
+
+async fn update_inception_point_drain_statuses(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    statuses: &[InceptionPointDrainStatus],
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({
+        "status": {
+            "inceptionPointDrains": statuses
+        }
+    });
+    if let Err(e) = api
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        warn!("failed to update drain statuses for '{}': {}", name, e);
     }
 }
 
@@ -1640,6 +2073,72 @@ async fn update_status_counts(
     let pp = PatchParams::default();
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!("failed to update status counts for '{}': {}", name, e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BlueGreenDeployment, ManagedDeploymentSpec, candidate_name_with_suffix,
+        deterministic_candidate_suffixes, generated_candidate_name_seed,
+    };
+    use crate::crd::blue_green::{BlueGreenDeploymentSpec, DeploymentSelector, PluginRef, TestSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::BTreeMap;
+
+    fn sample_bgd(generation: i64) -> BlueGreenDeployment {
+        BlueGreenDeployment {
+            metadata: ObjectMeta {
+                name: Some("order-processor-upgrade".to_string()),
+                uid: Some("12345678-1234-5678-1234-567812345678".to_string()),
+                generation: Some(generation),
+                ..Default::default()
+            },
+            spec: BlueGreenDeploymentSpec {
+                deployment: ManagedDeploymentSpec {
+                    namespace: Some("fluidbg-test".to_string()),
+                    spec: Default::default(),
+                },
+                selector: DeploymentSelector {
+                    namespace: None,
+                    match_labels: BTreeMap::new(),
+                },
+                inception_points: Vec::new(),
+                tests: Vec::<TestSpec>::new(),
+                state_store_ref: PluginRef {
+                    name: "memory-store".to_string(),
+                },
+                promotion: None,
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn deterministic_candidate_suffixes_are_stable_for_a_rollout() {
+        let bgd = sample_bgd(3);
+        let seed = generated_candidate_name_seed(&bgd);
+        let first = deterministic_candidate_suffixes(&seed);
+        let second = deterministic_candidate_suffixes(&seed);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 32);
+        assert!(first.iter().all(|suffix| suffix.len() == 6));
+    }
+
+    #[test]
+    fn deterministic_candidate_suffixes_change_across_generations() {
+        let first = deterministic_candidate_suffixes(&generated_candidate_name_seed(&sample_bgd(3)));
+        let second =
+            deterministic_candidate_suffixes(&generated_candidate_name_seed(&sample_bgd(4)));
+        assert_ne!(first[0], second[0]);
+    }
+
+    #[test]
+    fn candidate_name_respects_dns_length_limit() {
+        let base = "a".repeat(300);
+        let candidate = candidate_name_with_suffix(&base, "abcdef");
+        assert_eq!(candidate.len(), 253);
+        assert!(candidate.ends_with("-abcdef"));
     }
 }
 

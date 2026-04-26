@@ -24,6 +24,67 @@ need_cmd() {
     fi
 }
 
+target_arch() {
+    local arch
+    arch="${TARGET_ARCH:-}"
+    if [ -z "$arch" ]; then
+        arch="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null || true)"
+    fi
+    if [ -z "$arch" ]; then
+        arch="amd64"
+    fi
+    printf '%s\n' "$arch"
+}
+
+build_linux_rust_binaries() {
+    local arch="$1"
+    local platform="linux/$arch"
+    mkdir -p \
+        "$ROOT_DIR/dist" \
+        "$ROOT_DIR/.docker-target" \
+        "$ROOT_DIR/.docker-cargo-home/registry" \
+        "$ROOT_DIR/.docker-cargo-home/git"
+    docker run --rm --platform "$platform" \
+        -v "$ROOT_DIR":/work \
+        -v "$ROOT_DIR/.docker-target":/cargo-target \
+        -v "$ROOT_DIR/.docker-cargo-home":/cargo-home \
+        -e CARGO_HOME=/cargo-home \
+        -e CARGO_TARGET_DIR=/cargo-target \
+        -e CARGO_HTTP_TIMEOUT=600 \
+        -e CARGO_NET_RETRY=10 \
+        -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+        -w /work \
+        rust:bookworm \
+        bash -lc '
+            set -euo pipefail
+            export PATH=/usr/local/cargo/bin:$PATH
+            cargo build --release --bin fluidbg-operator
+            cargo build --release -p fluidbg-rabbitmq
+            cp /cargo-target/release/fluidbg-operator /work/dist/fluidbg-operator
+            cp /cargo-target/release/fluidbg-rabbitmq /work/dist/fluidbg-rabbitmq
+        '
+}
+
+prefetch_linux_rust_dependencies() {
+    local arch="$1"
+    local platform="linux/$arch"
+    mkdir -p "$ROOT_DIR/.docker-cargo-home/registry" "$ROOT_DIR/.docker-cargo-home/git"
+    docker run --rm --platform "$platform" \
+        -v "$ROOT_DIR":/work \
+        -v "$ROOT_DIR/.docker-cargo-home":/cargo-home \
+        -e CARGO_HOME=/cargo-home \
+        -e CARGO_HTTP_TIMEOUT=600 \
+        -e CARGO_NET_RETRY=10 \
+        -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+        -w /work \
+        rust:bookworm \
+        bash -lc '
+            set -euo pipefail
+            export PATH=/usr/local/cargo/bin:$PATH
+            cargo fetch --locked
+        '
+}
+
 apply_namespace() {
     kubectl create namespace "$1" --dry-run=client -o yaml | kubectl apply -f -
 }
@@ -41,6 +102,42 @@ wait_http() {
     done
     echo "$name did not become ready" >&2
     return 1
+}
+
+queue_contains_processed_message() {
+    local queue="$1"
+    local recovery_token="$2"
+    local instance_prefix="$3"
+    local payload
+    payload="$(curl -sf -u fluidbg:fluidbg \
+        -H "Content-Type: application/json" \
+        -X POST "http://localhost:15672/api/queues/%2F/$queue/get" \
+        -d '{"count":100,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' || true)"
+    if [ -z "$payload" ]; then
+        return 1
+    fi
+    PAYLOAD_JSON="$payload" python3 - "$recovery_token" "$instance_prefix" <<'PY'
+import json
+import os
+import sys
+
+token = sys.argv[1]
+instance_prefix = sys.argv[2]
+messages = json.loads(os.environ.get("PAYLOAD_JSON", "[]"))
+for message in messages:
+    payload = message.get("payload")
+    if not isinstance(payload, str):
+        continue
+    try:
+        decoded = json.loads(payload)
+    except Exception:
+        continue
+    original = decoded.get("originalMessage") or {}
+    instance_name = decoded.get("instanceName", "")
+    if original.get("recoveryToken") == token and instance_name.startswith(instance_prefix + "-"):
+        sys.exit(0)
+sys.exit(1)
+PY
 }
 
 wait_deleted() {
@@ -110,6 +207,25 @@ wait_bgd_generated_name() {
     return 1
 }
 
+wait_inception_deployment_name() {
+    local bgd="$1"
+    local inception_point="$2"
+    local namespace="$3"
+    for i in $(seq 1 60); do
+        local value
+        value="$(kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd,fluidbg.io/inception-point=$inception_point" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        if [ -n "$value" ]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        echo "Waiting for inception deployment bgd=$bgd point=$inception_point... ($i/60)" >&2
+        sleep 1
+    done
+    echo "inception deployment not found for bgd=$bgd point=$inception_point in namespace $namespace" >&2
+    kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" >&2 || true
+    return 1
+}
+
 reset_deployment() {
     local namespace="$1"
     local deployment="$2"
@@ -149,9 +265,14 @@ if [ "$BUILD_IMAGES" = "1" ]; then
     need_cmd docker
 
     echo ""
-    echo "--- Step 0b: Build local images ---"
-    docker build -t fluidbg/operator:dev "$ROOT_DIR"
-    docker build -f "$ROOT_DIR/plugins/rabbitmq/Dockerfile" -t fluidbg/rabbitmq:dev "$ROOT_DIR"
+    echo "--- Step 0b: Prefetch Linux Rust dependencies ---"
+    IMAGE_ARCH="$(target_arch)"
+    prefetch_linux_rust_dependencies "$IMAGE_ARCH"
+    echo ""
+    echo "--- Step 0c: Build local images ---"
+    build_linux_rust_binaries "$IMAGE_ARCH"
+    docker build --platform "linux/$IMAGE_ARCH" -t fluidbg/operator:dev "$ROOT_DIR"
+    docker build --platform "linux/$IMAGE_ARCH" -f "$ROOT_DIR/plugins/rabbitmq/Dockerfile" -t fluidbg/rabbitmq:dev "$ROOT_DIR"
     docker build -t fluidbg/blue-app:dev "$ROOT_DIR/e2e/blue-app"
     docker build -t fluidbg/green-app:dev "$ROOT_DIR/e2e/green-app"
     docker build -t fluidbg/test-app:dev "$ROOT_DIR/e2e/test-app"
@@ -169,7 +290,7 @@ if [ "$BUILD_IMAGES" = "1" ]; then
 
     if command -v kind >/dev/null 2>&1 && kind get clusters | grep -qx "$KIND_CLUSTER"; then
         echo ""
-        echo "--- Step 0c: Load images into kind cluster '$KIND_CLUSTER' ---"
+        echo "--- Step 0d: Load images into kind cluster '$KIND_CLUSTER' ---"
         kind load docker-image fluidbg/operator:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/rabbitmq:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/blue-app:dev --name "$KIND_CLUSTER"
@@ -198,30 +319,21 @@ kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-statestore-crd.
 kubectl delete bluegreendeployment order-processor-bg -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-bootstrap -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-upgrade -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-failing-upgrade -n "$NS" --ignore-not-found
 kubectl delete statestore memory-store -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
 kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
 kubectl delete service test-container -n "$NS" --ignore-not-found
-kubectl delete deployment fluidbg-incoming-orders -n "$NS" --ignore-not-found
-kubectl delete service fluidbg-incoming-orders-svc -n "$NS" --ignore-not-found
-kubectl delete configmap fluidbg-config-incoming-orders -n "$NS" --ignore-not-found
-kubectl delete deployment fluidbg-outgoing-results -n "$NS" --ignore-not-found
-kubectl delete service fluidbg-outgoing-results-svc -n "$NS" --ignore-not-found
-kubectl delete configmap fluidbg-config-outgoing-results -n "$NS" --ignore-not-found
+kubectl delete deployment,service,configmap -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 wait_deleted bluegreendeployment order-processor-bg "$NS"
 wait_deleted bluegreendeployment order-processor-bootstrap "$NS"
 wait_deleted bluegreendeployment order-processor-upgrade "$NS"
+wait_deleted bluegreendeployment order-processor-failing-upgrade "$NS"
 wait_deleted statestore memory-store "$NS"
 wait_deleted inceptionplugin rabbitmq "$NS"
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
-wait_deleted deployment fluidbg-incoming-orders "$NS"
-wait_deleted service fluidbg-incoming-orders-svc "$NS"
-wait_deleted configmap fluidbg-config-incoming-orders "$NS"
-wait_deleted deployment fluidbg-outgoing-results "$NS"
-wait_deleted service fluidbg-outgoing-results-svc "$NS"
-wait_deleted configmap fluidbg-config-outgoing-results "$NS"
 
 echo ""
 echo "--- Step 3: Deploy operator ---"
@@ -256,15 +368,15 @@ echo "--- Step 5: Deploy upgrade BlueGreenDeployment CR ---"
 kubectl apply -f "$DEPLOY_DIR/06-upgrade-bgd.yaml"
 sleep 5
 UPGRADE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-upgrade "$NS")"
+UPGRADE_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-upgrade incoming-orders "$NS")"
+UPGRADE_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-upgrade outgoing-results "$NS")"
 wait_exists deployment "$UPGRADE_DEPLOYMENT" "$NS"
 wait_exists deployment test-container "$NS"
-wait_exists deployment fluidbg-incoming-orders "$NS"
-wait_exists deployment fluidbg-outgoing-results "$NS"
 kubectl rollout status deployment/"$BOOTSTRAP_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
-kubectl rollout status deployment/fluidbg-incoming-orders -n "$NS" --timeout=120s
-kubectl rollout status deployment/fluidbg-outgoing-results -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$UPGRADE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$UPGRADE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 
 echo ""
 echo "--- Step 6: Check BGD status ---"
@@ -356,11 +468,94 @@ if [ "$PROMOTED_GREEN" != "true" ]; then
 fi
 
 echo ""
-echo "--- Step 11: Final BGD status ---"
+echo "--- Step 11: Final successful promotion status ---"
 kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
 
 echo ""
-echo "--- Step 12: Check all pods ---"
+echo "--- Step 12: Check pods after successful promotion ---"
+kubectl get pods -n "$NS"
+kubectl get pods -n "$NS_SYSTEM"
+
+echo ""
+echo "--- Step 13: Deploy failing upgrade BGD ---"
+kubectl apply -f "$DEPLOY_DIR/07-failing-upgrade-bgd.yaml"
+sleep 5
+FAILING_DEPLOYMENT="$(wait_bgd_generated_name order-processor-failing-upgrade "$NS")"
+wait_exists deployment "$FAILING_DEPLOYMENT" "$NS"
+wait_exists deployment test-container "$NS"
+kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FAILING_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+
+echo ""
+echo "--- Step 14: Publish failing input messages ---"
+RECOVERY_TOKEN="rollback-recovery-1"
+echo "Publishing delayed recovery message $RECOVERY_TOKEN..."
+curl -sf -u fluidbg:fluidbg \
+    -H "Content-Type: application/json" \
+    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+    -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\",\\\"recoveryToken\\\":\\\"$RECOVERY_TOKEN\\\",\\\"greenInitialProcessingDelaySeconds\\\":30}\",\"payload_encoding\":\"string\"}" >/dev/null
+sleep 2
+for i in 1 2 3 4 5; do
+    echo "Publishing failing order-$i..."
+    curl -sf -u fluidbg:fluidbg \
+        -H "Content-Type: application/json" \
+        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"fail-$i\\\",\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\",\\\"shouldPass\\\":false,\\\"failureReason\\\":\\\"synthetic failed promotion case\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+    sleep 1
+done
+
+echo ""
+echo "--- Step 15: Wait for rollback ---"
+for i in $(seq 1 40); do
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o json)"
+    PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+    FAILED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesFailed", 0))')"
+    echo "  Failing BGD phase: ${PHASE:-<none>} failed=$FAILED_COUNT ($i/40)"
+    if [ "$PHASE" = "RolledBack" ]; then
+        break
+    fi
+    sleep 5
+done
+
+PHASE="$(kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o jsonpath='{.status.phase}')"
+if [ "$PHASE" != "RolledBack" ]; then
+    echo "Expected failing BGD phase RolledBack, got '$PHASE'" >&2
+    kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+
+wait_deleted deployment "$FAILING_DEPLOYMENT" "$NS"
+wait_deployment_label "$UPGRADE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
+wait_deleted deployment test-container "$NS"
+wait_deleted service test-container "$NS"
+
+echo ""
+echo "--- Step 16: Verify stranded green message recovery ---"
+for i in $(seq 1 30); do
+    if queue_contains_processed_message "results" "$RECOVERY_TOKEN" "$UPGRADE_DEPLOYMENT"; then
+        echo "Recovered message $RECOVERY_TOKEN was processed by restored green deployment $UPGRADE_DEPLOYMENT"
+        break
+    fi
+    echo "  Waiting for recovered message $RECOVERY_TOKEN on results... ($i/30)"
+    sleep 2
+done
+
+if ! queue_contains_processed_message "results" "$RECOVERY_TOKEN" "$UPGRADE_DEPLOYMENT"; then
+    echo "Expected recovered message $RECOVERY_TOKEN to be processed by restored green deployment $UPGRADE_DEPLOYMENT" >&2
+    curl -sf -u fluidbg:fluidbg \
+        -H "Content-Type: application/json" \
+        -X POST "http://localhost:15672/api/queues/%2F/results/get" \
+        -d '{"count":20,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' | python3 -m json.tool >&2 || true
+    exit 1
+fi
+
+echo ""
+echo "--- Step 17: Final failed promotion status ---"
+kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
+
+echo ""
+echo "--- Step 18: Final pod state ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
 

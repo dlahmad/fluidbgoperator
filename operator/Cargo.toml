@@ -33,6 +33,7 @@ regex = { workspace = true }
 jsonpath-rust = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 
 [features]
 integration-tests = []

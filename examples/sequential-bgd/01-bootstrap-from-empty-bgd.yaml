@@ -40,6 +40,8 @@ spec:
       pluginRef:
         name: rabbitmq
       roles: [duplicator, observer]
+      drain:
+        maxWaitSeconds: 15
       config:
         amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
         duplicator:

@@ -1,7 +1,7 @@
 apiVersion: fluidbg.io/v1alpha1
 kind: BlueGreenDeployment
 metadata:
-  name: order-processor-upgrade
+  name: order-processor-failing-upgrade
   namespace: fluidbg-test
 spec:
   stateStoreRef:

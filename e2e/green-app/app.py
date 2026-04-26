@@ -9,6 +9,7 @@ AMQP_URL = os.environ.get("AMQP_URL", "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-s
 INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://httpbin.org/post")
+INSTANCE_NAME = os.environ.get("HOSTNAME", "unknown")
 
 
 def get_channel():
@@ -24,6 +25,15 @@ def process_message(ch, method, properties, body):
     try:
         msg = json.loads(body)
         order_id = msg.get("orderId", "unknown")
+        initial_delay = int(msg.get("greenInitialProcessingDelaySeconds", 0) or 0)
+
+        if initial_delay > 0 and not method.redelivered:
+            print(
+                f"green-app delaying first delivery for {initial_delay}s "
+                f"token={msg.get('recoveryToken', '<none>')} queue={INPUT_QUEUE}",
+                flush=True,
+            )
+            time.sleep(initial_delay)
 
         try:
             resp = requests.post(HTTP_UPSTREAM, json=msg, timeout=5)
@@ -36,6 +46,7 @@ def process_message(ch, method, properties, body):
             "httpStatus": http_status,
             "originalMessage": msg,
             "processedBy": "green",
+            "instanceName": INSTANCE_NAME,
         }
         _, out_ch = get_channel()
         out_ch.basic_publish("", OUTPUT_QUEUE, json.dumps(result))

@@ -14,6 +14,15 @@ impl ProgressiveStrategy {
             rollback_on_step_failure,
         }
     }
+
+    fn best_possible_rate(counts: &Counts) -> f64 {
+        let best_total = counts.passed + counts.failed + counts.timed_out + counts.pending;
+        if best_total == 0 {
+            0.0
+        } else {
+            (counts.passed + counts.pending) as f64 / best_total as f64
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -29,6 +38,15 @@ impl PromotionStrategy for ProgressiveStrategy {
         let total = counts.passed + counts.failed + counts.timed_out;
 
         if total < step.observe_cases {
+            return PromotionAction::ContinueObserving;
+        }
+
+        if counts.pending > 0 {
+            if self.rollback_on_step_failure
+                && Self::best_possible_rate(counts) < step.success_rate
+            {
+                return PromotionAction::Rollback;
+            }
             return PromotionAction::ContinueObserving;
         }
 
@@ -158,5 +176,32 @@ mod tests {
             strategy.decide(&counts, Some(0)).await,
             PromotionAction::ContinueObserving
         );
+    }
+
+    #[tokio::test]
+    async fn continue_observing_when_pending_cases_exist() {
+        let strategy = ProgressiveStrategy::from_steps(make_steps(), true);
+        let counts = Counts {
+            passed: 20,
+            failed: 0,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(
+            strategy.decide(&counts, Some(0)).await,
+            PromotionAction::ContinueObserving
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_when_pending_cases_cannot_recover_step_threshold() {
+        let strategy = ProgressiveStrategy::from_steps(make_steps(), true);
+        let counts = Counts {
+            passed: 0,
+            failed: 20,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(strategy.decide(&counts, Some(0)).await, PromotionAction::Rollback);
     }
 }

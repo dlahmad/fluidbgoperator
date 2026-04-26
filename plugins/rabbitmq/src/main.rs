@@ -1,12 +1,16 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::{Json, Router, extract::State, routing::{get, post}};
 use futures_lite::StreamExt;
 use lapin::options::{
-    BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions,
+    BasicAckOptions, BasicConsumeOptions, BasicGetOptions, BasicPublishOptions, QueueDeclareOptions,
     QueueDeleteOptions,
 };
 use lapin::types::{AMQPValue, FieldTable};
@@ -150,6 +154,14 @@ struct PluginLifecycleResponse {
     assignments: Vec<PropertyAssignment>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginDrainStatusResponse {
+    drained: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[allow(dead_code)]
 struct WriteRequest {
@@ -168,6 +180,34 @@ struct AppState {
     testcase_verify_path_template: Option<String>,
     inception_point: String,
     blue_green_ref: String,
+    mode: Arc<AtomicU8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeMode {
+    Active = 0,
+    Draining = 1,
+    Idle = 2,
+}
+
+impl RuntimeMode {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Draining,
+            2 => Self::Idle,
+            _ => Self::Active,
+        }
+    }
+}
+
+impl AppState {
+    fn runtime_mode(&self) -> RuntimeMode {
+        RuntimeMode::from_u8(self.mode.load(Ordering::Relaxed))
+    }
+
+    fn set_runtime_mode(&self, mode: RuntimeMode) {
+        self.mode.store(mode as u8, Ordering::Relaxed);
+    }
 }
 
 fn load_config() -> Result<Config> {
@@ -362,6 +402,59 @@ async fn delete_queue(channel: &Channel, queue: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn is_missing_queue_error(err: &lapin::Error) -> bool {
+    err.to_string().contains("NOT_FOUND - no queue")
+}
+
+async fn queue_state(channel: &Channel, queue: &str) -> Result<(u32, u32)> {
+    let declared = match channel
+        .queue_declare(
+            queue,
+            QueueDeclareOptions {
+                passive: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+    {
+        Ok(declared) => declared,
+        Err(err) if is_missing_queue_error(&err) => return Ok((0, 0)),
+        Err(err) => return Err(err.into()),
+    };
+    Ok((declared.message_count(), declared.consumer_count()))
+}
+
+async fn move_queue_messages(channel: &Channel, source_queue: &str, target_queue: &str) -> Result<u32> {
+    let mut moved = 0;
+    loop {
+        let delivery = match channel
+            .basic_get(source_queue, BasicGetOptions::default())
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) if is_missing_queue_error(&err) => return Ok(moved),
+            Err(err) => return Err(err.into()),
+        };
+        let Some(delivery) = delivery else {
+            break;
+        };
+        let headers = delivery.properties.headers().clone().unwrap_or_default();
+        channel
+            .basic_publish(
+                "",
+                target_queue,
+                BasicPublishOptions::default(),
+                &delivery.data,
+                BasicProperties::default().with_headers(headers),
+            )
+            .await?;
+        delivery.ack(BasicAckOptions::default()).await?;
+        moved += 1;
+    }
+    Ok(moved)
 }
 
 async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
@@ -622,9 +715,84 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
     assignments
 }
 
+fn build_drain_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
+    build_cleanup_assignments(config, roles)
+}
+
+async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusResponse> {
+    let conn = connect_with_retry(&state.amqp_url).await?;
+    let channel = conn.create_channel().await?;
+
+    if has_role(&state.roles, ActiveRole::Duplicator) {
+        let config = duplicator_config(&state.config)?;
+        let green_queue = required(&config.green_input_queue, "duplicator.greenInputQueue")?;
+        let blue_queue = required(&config.blue_input_queue, "duplicator.blueInputQueue")?;
+        let (green_messages, green_consumers) = queue_state(&channel, green_queue).await?;
+        let (blue_messages, blue_consumers) = queue_state(&channel, blue_queue).await?;
+        let drained =
+            green_messages == 0 && blue_messages == 0 && green_consumers == 0 && blue_consumers == 0;
+        let message = if drained {
+            Some("temporary input queues are empty and no consumers remain attached".to_string())
+        } else if green_consumers > 0 || blue_consumers > 0 {
+            Some("temporary input queues still have active consumers; locks may still exist".to_string())
+        } else {
+            Some(format!(
+                "temporary input queues still contain messages (green={}, blue={})",
+                green_messages, blue_messages
+            ))
+        };
+        return Ok(PluginDrainStatusResponse { drained, message });
+    }
+
+    if has_role(&state.roles, ActiveRole::Splitter) {
+        let config = splitter_config(&state.config)?;
+        let green_queue = required(&config.green_input_queue, "splitter.greenInputQueue")?;
+        let blue_queue = required(&config.blue_input_queue, "splitter.blueInputQueue")?;
+        let (green_messages, green_consumers) = queue_state(&channel, green_queue).await?;
+        let (blue_messages, blue_consumers) = queue_state(&channel, blue_queue).await?;
+        let drained =
+            green_messages == 0 && blue_messages == 0 && green_consumers == 0 && blue_consumers == 0;
+        let message = if drained {
+            Some("temporary input queues are empty and no consumers remain attached".to_string())
+        } else if green_consumers > 0 || blue_consumers > 0 {
+            Some("temporary input queues still have active consumers; locks may still exist".to_string())
+        } else {
+            Some(format!(
+                "temporary input queues still contain messages (green={}, blue={})",
+                green_messages, blue_messages
+            ))
+        };
+        return Ok(PluginDrainStatusResponse { drained, message });
+    }
+
+    if has_role(&state.roles, ActiveRole::Combiner) {
+        let config = combiner_config(&state.config)?;
+        let green_queue = required(&config.green_output_queue, "combiner.greenOutputQueue")?;
+        let blue_queue = required(&config.blue_output_queue, "combiner.blueOutputQueue")?;
+        let (green_messages, _) = queue_state(&channel, green_queue).await?;
+        let (blue_messages, _) = queue_state(&channel, blue_queue).await?;
+        let drained = green_messages == 0 && blue_messages == 0;
+        let message = if drained {
+            Some("temporary output queues are empty".to_string())
+        } else {
+            Some(format!(
+                "temporary output queues still contain messages (green={}, blue={})",
+                green_messages, blue_messages
+            ))
+        };
+        return Ok(PluginDrainStatusResponse { drained, message });
+    }
+
+    Ok(PluginDrainStatusResponse {
+        drained: true,
+        message: Some("no drain-sensitive RabbitMQ roles active".to_string()),
+    })
+}
+
 async fn prepare_handler(
     State(state): State<AppState>,
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    state.set_runtime_mode(RuntimeMode::Active);
     let conn = connect_with_retry(&state.amqp_url)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -697,6 +865,8 @@ async fn prepare_handler(
 async fn cleanup_handler(
     State(state): State<AppState>,
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    state.set_runtime_mode(RuntimeMode::Idle);
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let conn = connect_with_retry(&state.amqp_url)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -752,8 +922,26 @@ async fn cleanup_handler(
     }
 
     Ok(Json(PluginLifecycleResponse {
-        assignments: build_cleanup_assignments(&state.config, &state.roles),
+        assignments: Vec::new(),
     }))
+}
+
+async fn drain_handler(
+    State(state): State<AppState>,
+) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    state.set_runtime_mode(RuntimeMode::Draining);
+    Ok(Json(PluginLifecycleResponse {
+        assignments: build_drain_assignments(&state.config, &state.roles),
+    }))
+}
+
+async fn drain_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<PluginDrainStatusResponse>, axum::http::StatusCode> {
+    let status = compute_drain_status(&state)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(status))
 }
 
 async fn health() -> &'static str {
@@ -821,66 +1009,53 @@ async fn write_handler(
     }
 }
 
-async fn run_input_pipeline_once(state: AppState) -> Result<()> {
-    let conn = connect_with_retry(&state.amqp_url).await?;
-    let channel = conn.create_channel().await?;
-    let input_queue = if has_role(&state.roles, ActiveRole::Duplicator) {
-        required(
-            &duplicator_config(&state.config)?.input_queue,
-            "duplicator.inputQueue",
-        )?
-        .to_string()
-    } else if has_role(&state.roles, ActiveRole::Splitter) {
-        required(
-            &splitter_config(&state.config)?.input_queue,
-            "splitter.inputQueue",
-        )?
-        .to_string()
-    } else {
-        required(&consumer_config(&state.config)?.input_queue, "consumer.inputQueue")?.to_string()
-    };
-    declare_queue(&channel, &input_queue).await?;
+async fn process_input_delivery(
+    state: &AppState,
+    channel: &Channel,
+    delivery: lapin::message::BasicGetMessage,
+    http_client: &reqwest::Client,
+) -> Result<()> {
+    let body_data = delivery.data.clone();
+    let body_str = String::from_utf8_lossy(&body_data);
+    let body_json: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+    let headers = delivery.properties.headers().clone().unwrap_or_default();
 
-    let mut consumer = channel
-        .basic_consume(
-            &input_queue,
-            "fluidbg-rabbitmq-input",
-            BasicConsumeOptions::default(),
-            FieldTable::default(),
-        )
-        .await?;
+    let observer = observer_config(&state.config);
+    let filters = observer.map(|o| o.r#match.as_slice()).unwrap_or(&[]);
+    if !matches_filter(filters, &body_json, &headers) {
+        delivery.ack(BasicAckOptions::default()).await?;
+        return Ok(());
+    }
 
-    let http_client = reqwest::Client::new();
-    info!("rabbitmq input pipeline consuming from {}", input_queue);
-
-    while let Some(delivery) = consumer.next().await {
-        let delivery = delivery?;
-        let body_data = delivery.data.clone();
-        let body_str = String::from_utf8_lossy(&body_data);
-        let body_json: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
-        let headers = delivery.properties.headers().clone().unwrap_or_default();
-
-        let observer = observer_config(&state.config);
-        let filters = observer.map(|o| o.r#match.as_slice()).unwrap_or(&[]);
-        if !matches_filter(filters, &body_json, &headers) {
-            delivery.ack(BasicAckOptions::default()).await?;
-            continue;
+    if has_role(&state.roles, ActiveRole::Duplicator) {
+        let duplicator = duplicator_config(&state.config)?;
+        if let Some(green_queue) = &duplicator.green_input_queue {
+            channel
+                .basic_publish(
+                    "",
+                    green_queue,
+                    BasicPublishOptions::default(),
+                    &body_data,
+                    BasicProperties::default().with_headers(headers.clone()),
+                )
+                .await?;
         }
-
-        if has_role(&state.roles, ActiveRole::Duplicator) {
-            let duplicator = duplicator_config(&state.config)?;
-            if let Some(green_queue) = &duplicator.green_input_queue {
-                channel
-                    .basic_publish(
-                        "",
-                        green_queue,
-                        BasicPublishOptions::default(),
-                        &body_data,
-                        BasicProperties::default().with_headers(headers.clone()),
-                    )
-                    .await?;
-            }
-            if let Some(blue_queue) = &duplicator.blue_input_queue {
+        if let Some(blue_queue) = &duplicator.blue_input_queue {
+            channel
+                .basic_publish(
+                    "",
+                    blue_queue,
+                    BasicPublishOptions::default(),
+                    &body_data,
+                    BasicProperties::default().with_headers(headers.clone()),
+                )
+                .await?;
+        }
+    } else if has_role(&state.roles, ActiveRole::Splitter) {
+        let splitter = splitter_config(&state.config)?;
+        let send_to_blue = routes_to_blue(&body_data, blue_traffic_percent());
+        if send_to_blue {
+            if let Some(blue_queue) = &splitter.blue_input_queue {
                 channel
                     .basic_publish(
                         "",
@@ -891,68 +1066,96 @@ async fn run_input_pipeline_once(state: AppState) -> Result<()> {
                     )
                     .await?;
             }
-        } else if has_role(&state.roles, ActiveRole::Splitter) {
-            let splitter = splitter_config(&state.config)?;
-            let send_to_blue = routes_to_blue(&body_data, blue_traffic_percent());
-            if send_to_blue {
-                if let Some(blue_queue) = &splitter.blue_input_queue {
-                    channel
-                        .basic_publish(
-                            "",
-                            blue_queue,
-                            BasicPublishOptions::default(),
-                            &body_data,
-                            BasicProperties::default().with_headers(headers.clone()),
-                        )
-                        .await?;
-                }
-            } else if let Some(green_queue) = &splitter.green_input_queue {
-                channel
-                    .basic_publish(
-                        "",
-                        green_queue,
-                        BasicPublishOptions::default(),
-                        &body_data,
-                        BasicProperties::default().with_headers(headers.clone()),
-                    )
-                    .await?;
-            }
+        } else if let Some(green_queue) = &splitter.green_input_queue {
+            channel
+                .basic_publish(
+                    "",
+                    green_queue,
+                    BasicPublishOptions::default(),
+                    &body_data,
+                    BasicProperties::default().with_headers(headers.clone()),
+                )
+                .await?;
         }
+    }
 
-        if has_role(&state.roles, ActiveRole::Observer)
-            && let Some(observer) = observer
-            && let Some(selector) = &observer.test_id
-            && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
+    if has_role(&state.roles, ActiveRole::Observer)
+        && let Some(observer) = observer
+        && let Some(selector) = &observer.test_id
+        && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
+    {
+        if let Err(err) = register_test_case(
+            http_client,
+            &state.testcase_registration_url,
+            &state.blue_green_ref,
+            &state.inception_point,
+            &test_id,
+            &state.test_container_url,
+            state.testcase_verify_path_template.as_deref(),
+        )
+        .await
         {
-            if let Err(err) = register_test_case(
-                &http_client,
-                &state.testcase_registration_url,
-                &state.blue_green_ref,
-                &state.inception_point,
-                &test_id,
+            warn!("failed to register test case {}: {}", test_id, err);
+        }
+        if let Some(notify_path) = &observer.notify_path
+            && let Err(err) = notify_test_container(
+                http_client,
                 &state.test_container_url,
-                state.testcase_verify_path_template.as_deref(),
+                notify_path,
+                &test_id,
+                &state.inception_point,
+                &body_json,
             )
             .await
-            {
-                warn!("failed to register test case {}: {}", test_id, err);
-            }
-            if let Some(notify_path) = &observer.notify_path
-                && let Err(err) = notify_test_container(
-                    &http_client,
-                    &state.test_container_url,
-                    notify_path,
-                    &test_id,
-                    &state.inception_point,
-                    &body_json,
-                )
-                .await
-            {
-                warn!("failed to notify test container for {}: {}", test_id, err);
-            }
+        {
+            warn!("failed to notify test container for {}: {}", test_id, err);
         }
+    }
 
-        delivery.ack(BasicAckOptions::default()).await?;
+    delivery.ack(BasicAckOptions::default()).await?;
+    Ok(())
+}
+
+async fn drain_input_queues(state: &AppState, channel: &Channel) -> Result<()> {
+    let (base_queue, green_queue, blue_queue) = if has_role(&state.roles, ActiveRole::Duplicator) {
+        let config = duplicator_config(&state.config)?;
+        (
+            required(&config.input_queue, "duplicator.inputQueue")?.to_string(),
+            required(&config.green_input_queue, "duplicator.greenInputQueue")?.to_string(),
+            required(&config.blue_input_queue, "duplicator.blueInputQueue")?.to_string(),
+        )
+    } else if has_role(&state.roles, ActiveRole::Splitter) {
+        let config = splitter_config(&state.config)?;
+        (
+            required(&config.input_queue, "splitter.inputQueue")?.to_string(),
+            required(&config.green_input_queue, "splitter.greenInputQueue")?.to_string(),
+            required(&config.blue_input_queue, "splitter.blueInputQueue")?.to_string(),
+        )
+    } else {
+        return Ok(());
+    };
+
+    declare_queue(channel, &base_queue).await?;
+    let (_, green_consumers) = queue_state(channel, &green_queue).await?;
+    let (_, blue_consumers) = queue_state(channel, &blue_queue).await?;
+
+    if green_consumers == 0 {
+        let moved = move_queue_messages(channel, &green_queue, &base_queue).await?;
+        if moved > 0 {
+            info!(
+                "moved {} message(s) from {} back to {} during drain",
+                moved, green_queue, base_queue
+            );
+        }
+    }
+    if blue_consumers == 0 {
+        let moved = move_queue_messages(channel, &blue_queue, &base_queue).await?;
+        if moved > 0 {
+            info!(
+                "moved {} message(s) from {} back to {} during drain",
+                moved, blue_queue, base_queue
+            );
+        }
     }
 
     Ok(())
@@ -960,14 +1163,82 @@ async fn run_input_pipeline_once(state: AppState) -> Result<()> {
 
 async fn run_input_pipeline(state: AppState) -> Result<()> {
     loop {
-        match run_input_pipeline_once(state.clone()).await {
-            Ok(()) => {
-                warn!("rabbitmq input pipeline ended, reconnecting");
-            }
+        if matches!(state.runtime_mode(), RuntimeMode::Idle) {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let conn = match connect_with_retry(&state.amqp_url).await {
+            Ok(conn) => conn,
             Err(err) => {
-                warn!("rabbitmq input pipeline failed, reconnecting: {}", err);
+                warn!("rabbitmq input pipeline connect failed, reconnecting: {}", err);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        let channel = match conn.create_channel().await {
+            Ok(channel) => channel,
+            Err(err) => {
+                warn!("rabbitmq input pipeline channel failed, reconnecting: {}", err);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        let input_queue = if has_role(&state.roles, ActiveRole::Duplicator) {
+            required(
+                &duplicator_config(&state.config)?.input_queue,
+                "duplicator.inputQueue",
+            )?
+            .to_string()
+        } else if has_role(&state.roles, ActiveRole::Splitter) {
+            required(&splitter_config(&state.config)?.input_queue, "splitter.inputQueue")?
+                .to_string()
+        } else {
+            required(&consumer_config(&state.config)?.input_queue, "consumer.inputQueue")?
+                .to_string()
+        };
+        declare_queue(&channel, &input_queue).await?;
+        let http_client = reqwest::Client::new();
+        info!("rabbitmq input pipeline polling {}", input_queue);
+
+        loop {
+            match state.runtime_mode() {
+                RuntimeMode::Idle => {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue;
+                }
+                RuntimeMode::Draining => {
+                    if let Err(err) = drain_input_queues(&state, &channel).await {
+                        warn!("rabbitmq input drain failed, reconnecting: {}", err);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue;
+                }
+                RuntimeMode::Active => {}
+            }
+
+            match channel
+                .basic_get(&input_queue, BasicGetOptions::default())
+                .await
+            {
+                Ok(Some(delivery)) => {
+                    if let Err(err) =
+                        process_input_delivery(&state, &channel, delivery, &http_client).await
+                    {
+                        warn!("rabbitmq input processing failed, reconnecting: {}", err);
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => {
+                    warn!("rabbitmq input poll failed, reconnecting: {}", err);
+                    break;
+                }
             }
         }
+
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
@@ -994,6 +1265,17 @@ async fn run_combine_loop_once(
         .await?;
 
     while let Some(delivery) = consumer.next().await {
+        match state.runtime_mode() {
+            RuntimeMode::Idle => {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                continue;
+            }
+            RuntimeMode::Draining => {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                continue;
+            }
+            RuntimeMode::Active => {}
+        }
         let delivery = delivery?;
         let headers = delivery.properties.headers().clone().unwrap_or_default();
         let body_json: Value = serde_json::from_slice(&delivery.data).unwrap_or(Value::Null);
@@ -1051,6 +1333,10 @@ async fn run_combine_loop_once(
 
 async fn run_combine_loop(source_queue: String, result_queue: String, state: AppState) -> Result<()> {
     loop {
+        if matches!(state.runtime_mode(), RuntimeMode::Idle) {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
         match run_combine_loop_once(source_queue.clone(), result_queue.clone(), state.clone()).await {
             Ok(()) => {
                 warn!(
@@ -1129,6 +1415,7 @@ async fn main() -> Result<()> {
         testcase_verify_path_template,
         inception_point,
         blue_green_ref,
+        mode: Arc::new(AtomicU8::new(RuntimeMode::Active as u8)),
     };
 
     info!("rabbitmq plugin starting with roles {:?}", roles);
@@ -1136,6 +1423,8 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/prepare", post(prepare_handler))
+        .route("/drain", post(drain_handler))
+        .route("/drain-status", get(drain_status_handler))
         .route("/cleanup", post(cleanup_handler))
         .route("/write", post(write_handler))
         .with_state(state.clone());

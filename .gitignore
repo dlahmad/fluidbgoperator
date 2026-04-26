@@ -8,3 +8,6 @@ riderModule.iml
 
 /target
 .idea
+.docker-cargo-home/
+.docker-target/
+dist/

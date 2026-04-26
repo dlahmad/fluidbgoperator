@@ -10,6 +10,7 @@ INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://httpbin.org/post")
 PORT = int(os.environ.get("PORT", "8081"))
+INSTANCE_NAME = os.environ.get("HOSTNAME", "unknown")
 
 
 def get_channel():
@@ -39,6 +40,7 @@ def process_message(ch, method, properties, body):
             "httpStatus": http_status,
             "originalMessage": msg,
             "processedBy": "blue",
+            "instanceName": INSTANCE_NAME,
         }
         _, out_ch = get_channel()
         out_ch.basic_publish("", OUTPUT_QUEUE, json.dumps(result))

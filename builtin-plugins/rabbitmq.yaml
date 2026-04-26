@@ -9,6 +9,8 @@ spec:
   topology: standalone
   lifecycle:
     preparePath: /prepare
+    drainPath: /drain
+    drainStatusPath: /drain-status
     cleanupPath: /cleanup
   features:
     supportsProgressiveShifting: true

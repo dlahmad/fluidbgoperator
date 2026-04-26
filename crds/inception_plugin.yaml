@@ -139,6 +139,12 @@ spec:
                   cleanupPath:
                     nullable: true
                     type: string
+                  drainPath:
+                    nullable: true
+                    type: string
+                  drainStatusPath:
+                    nullable: true
+                    type: string
                   preparePath:
                     nullable: true
                     type: string

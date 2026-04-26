@@ -88,6 +88,10 @@ pub struct PluginLifecycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepare_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_status_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_path: Option<String>,
 }
 

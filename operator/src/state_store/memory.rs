@@ -28,7 +28,26 @@ impl MemoryStore {
 impl StateStore for MemoryStore {
     async fn register(&self, run: TestCaseRecord) -> Result<()> {
         let mut data = self.data.write().await;
-        data.insert(run.test_id.clone(), run);
+        match data.get_mut(&run.test_id) {
+            Some(existing) if existing.is_finalized() => {}
+            Some(existing) => {
+                if existing.verify_url.is_empty() && !run.verify_url.is_empty() {
+                    existing.verify_url = run.verify_url;
+                }
+                if run.triggered_at < existing.triggered_at {
+                    existing.triggered_at = run.triggered_at;
+                }
+                if run.timeout > existing.timeout {
+                    existing.timeout = run.timeout;
+                }
+                if existing.source_inception_point.is_empty() {
+                    existing.source_inception_point = run.source_inception_point;
+                }
+            }
+            None => {
+                data.insert(run.test_id.clone(), run);
+            }
+        }
         Ok(())
     }
 
@@ -169,6 +188,24 @@ mod tests {
         let got = store.get("ORD-1").await.unwrap().unwrap();
         assert_eq!(got.test_id, "ORD-1");
         assert_eq!(got.blue_green_ref, "order-processor");
+    }
+
+    #[tokio::test]
+    async fn register_does_not_reset_finalized_test_case() {
+        let store = MemoryStore::new();
+        let run = make_test("ORD-final", "bg");
+        store.register(run).await.unwrap();
+        store.set_verdict("ORD-final", true, None).await.unwrap();
+
+        let mut duplicate = make_test("ORD-final", "bg");
+        duplicate.verify_url = "http://new-url".to_string();
+        duplicate.timeout = chrono::Duration::seconds(120);
+        store.register(duplicate).await.unwrap();
+
+        let got = store.get("ORD-final").await.unwrap().unwrap();
+        assert_eq!(got.status, TestStatus::Passed);
+        assert_eq!(got.verdict, Some(true));
+        assert_eq!(got.verify_url, "http://test/result");
     }
 
     #[tokio::test]

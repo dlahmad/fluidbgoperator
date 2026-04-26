@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
@@ -26,6 +28,57 @@ pub struct ContainerEnvInjections {
     pub test: Vec<EnvVar>,
 }
 
+fn sanitize_dns_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut last_was_dash = false;
+    for ch in value.chars() {
+        let lowered = ch.to_ascii_lowercase();
+        let valid = lowered.is_ascii_alphanumeric();
+        if valid {
+            out.push(lowered);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn short_hash(value: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
+fn truncate_label(value: &str, max_len: usize) -> String {
+    value.chars().take(max_len).collect()
+}
+
+pub fn inception_instance_base_name(blue_green_ref: &str, inception_point: &str) -> String {
+    let ip = sanitize_dns_label(inception_point);
+    let ip = if ip.is_empty() { "ip".to_string() } else { ip };
+    let hash = short_hash(blue_green_ref);
+    let max_ip_len = 63usize.saturating_sub("fluidbg--".len() + hash.len());
+    let ip = truncate_label(&ip, max_ip_len);
+    format!("fluidbg-{}-{}", ip, hash)
+}
+
+pub fn inception_service_name(blue_green_ref: &str, inception_point: &str) -> String {
+    let base = inception_instance_base_name(blue_green_ref, inception_point);
+    let max_base_len = 63usize.saturating_sub(4);
+    format!("{}-svc", truncate_label(&base, max_base_len))
+}
+
+pub fn inception_config_map_name(blue_green_ref: &str, inception_point: &str) -> String {
+    let ip = sanitize_dns_label(inception_point);
+    let ip = if ip.is_empty() { "ip".to_string() } else { ip };
+    let hash = short_hash(blue_green_ref);
+    let prefix = "fluidbg-config-";
+    let max_ip_len = 63usize.saturating_sub(prefix.len() + 1 + hash.len());
+    format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), hash)
+}
+
 pub fn reconcile_inception_point(
     plugin: &InceptionPlugin,
     ip: &InceptionPoint,
@@ -41,7 +94,7 @@ pub fn reconcile_inception_point(
     crate::plugins::schema::validate_config_against_schema(&ip.config, &plugin.spec.config_schema)
         .map_err(|errs| format!("config validation failed: {:?}", errs))?;
 
-    let config_name = format!("fluidbg-config-{}", ip.name);
+    let config_name = inception_config_map_name(blue_green_ref, &ip.name);
     let role_str = ip
         .roles
         .iter()
@@ -70,6 +123,10 @@ pub fn reconcile_inception_point(
         metadata: ObjectMeta {
             name: Some(config_name.clone()),
             namespace: Some(namespace.to_string()),
+            labels: Some(BTreeMap::from([
+                ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
+                ("fluidbg.io/blue-green-ref".to_string(), blue_green_ref.to_string()),
+            ])),
             ..Default::default()
         },
         data: Some(config_data),
@@ -145,7 +202,7 @@ pub fn reconcile_inception_point(
         .collect::<Vec<_>>();
 
     let plugin_container = Container {
-        name: format!("fluidbg-{}", ip.name),
+        name: inception_instance_base_name(blue_green_ref, &ip.name),
         image: Some(plugin.spec.image.clone()),
         env: Some(env_vars),
         ports: if container_ports.is_empty() {
@@ -187,10 +244,11 @@ pub fn reconcile_inception_point(
             })
         }
         Topology::Standalone => {
-            let deployment_name = format!("fluidbg-{}", ip.name);
+            let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
             let labels = BTreeMap::from([
                 ("app".to_string(), deployment_name.clone()),
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
+                ("fluidbg.io/blue-green-ref".to_string(), blue_green_ref.to_string()),
             ]);
 
             let pod_spec = PodSpec {
@@ -229,7 +287,7 @@ pub fn reconcile_inception_point(
 
             let service = Service {
                 metadata: ObjectMeta {
-                    name: Some(format!("fluidbg-{}-svc", ip.name)),
+                    name: Some(inception_service_name(blue_green_ref, &ip.name)),
                     namespace: Some(namespace.to_string()),
                     labels: Some(labels),
                     ..Default::default()
@@ -535,8 +593,8 @@ mod tests {
             },
             roles,
             config,
-            notify_tests: vec![],
-            timeout: Some("60s".to_string()),
+            drain: None,
+            resources: vec![],
         }
     }
 
@@ -618,7 +676,10 @@ mod tests {
         let deploy = &resources.deployments[0];
         assert_eq!(
             deploy.metadata.name.as_deref(),
-            Some("fluidbg-incoming-orders")
+            Some(inception_instance_base_name(
+                "order-processor-bg",
+                "incoming-orders"
+            ).as_str())
         );
         assert_eq!(
             deploy

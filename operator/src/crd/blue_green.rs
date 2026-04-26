@@ -86,10 +86,18 @@ pub struct InceptionPoint {
     pub roles: Vec<PluginRole>,
     #[schemars(schema_with = "arbitrary_object_schema")]
     pub config: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notify_tests: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<String>,
+    pub drain: Option<InceptionPointDrainSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(schema_with = "arbitrary_array_schema")]
+    pub resources: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InceptionPointDrainSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wait_seconds: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -204,8 +212,28 @@ pub enum BGDPhase {
     Pending,
     Observing,
     Promoting,
+    Draining,
     Completed,
     RolledBack,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum InceptionPointDrainPhase {
+    Pending,
+    Successful,
+    TimedOutMaybeSuccessful,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InceptionPointDrainStatus {
+    pub name: String,
+    pub phase: InceptionPointDrainPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -217,6 +245,8 @@ pub struct BlueGreenDeploymentStatus {
     pub generated_deployment_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_generation: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_cases_observed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +269,10 @@ pub struct BlueGreenDeploymentStatus {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_case_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inception_point_drains: Vec<InceptionPointDrainStatus>,
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
@@ -266,6 +300,16 @@ fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
     schemars::json_schema!({
         "type": "object",
         "x-kubernetes-preserve-unknown-fields": true
+    })
+}
+
+fn arbitrary_array_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "x-kubernetes-preserve-unknown-fields": true
+        }
     })
 }
 
