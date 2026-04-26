@@ -1,6 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
@@ -8,6 +6,7 @@ use k8s_openapi::api::core::v1::{
     Service, Volume, VolumeMount,
 };
 use kube::core::ObjectMeta;
+use sha2::{Digest, Sha256};
 
 use crate::crd::blue_green::InceptionPoint;
 use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
@@ -45,10 +44,26 @@ fn sanitize_dns_label(value: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-fn short_hash(value: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:08x}", hasher.finish() as u32)
+fn stable_name_suffix(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.len().to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .flat_map(|byte| {
+            let hi = byte >> 4;
+            let lo = byte & 0x0f;
+            [
+                char::from_digit(hi.into(), 16),
+                char::from_digit(lo.into(), 16),
+            ]
+        })
+        .flatten()
+        .take(12)
+        .collect()
 }
 
 fn truncate_label(value: &str, max_len: usize) -> String {
@@ -58,25 +73,28 @@ fn truncate_label(value: &str, max_len: usize) -> String {
 pub fn inception_instance_base_name(blue_green_ref: &str, inception_point: &str) -> String {
     let ip = sanitize_dns_label(inception_point);
     let ip = if ip.is_empty() { "ip".to_string() } else { ip };
-    let hash = short_hash(blue_green_ref);
-    let max_ip_len = 63usize.saturating_sub("fluidbg--".len() + hash.len());
+    let suffix = stable_name_suffix(&[blue_green_ref, inception_point]);
+    let max_ip_len = 63usize.saturating_sub("fluidbg--".len() + suffix.len());
     let ip = truncate_label(&ip, max_ip_len);
-    format!("fluidbg-{}-{}", ip, hash)
+    format!("fluidbg-{}-{}", ip, suffix)
 }
 
 pub fn inception_service_name(blue_green_ref: &str, inception_point: &str) -> String {
-    let base = inception_instance_base_name(blue_green_ref, inception_point);
-    let max_base_len = 63usize.saturating_sub(4);
-    format!("{}-svc", truncate_label(&base, max_base_len))
+    let ip = sanitize_dns_label(inception_point);
+    let ip = if ip.is_empty() { "ip".to_string() } else { ip };
+    let suffix = stable_name_suffix(&[blue_green_ref, inception_point]);
+    let max_ip_len = 63usize.saturating_sub("fluidbg---svc".len() + suffix.len());
+    let ip = truncate_label(&ip, max_ip_len);
+    format!("fluidbg-{}-{}-svc", ip, suffix)
 }
 
 pub fn inception_config_map_name(blue_green_ref: &str, inception_point: &str) -> String {
     let ip = sanitize_dns_label(inception_point);
     let ip = if ip.is_empty() { "ip".to_string() } else { ip };
-    let hash = short_hash(blue_green_ref);
+    let suffix = stable_name_suffix(&[blue_green_ref, inception_point]);
     let prefix = "fluidbg-config-";
-    let max_ip_len = 63usize.saturating_sub(prefix.len() + 1 + hash.len());
-    format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), hash)
+    let max_ip_len = 63usize.saturating_sub(prefix.len() + 1 + suffix.len());
+    format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), suffix)
 }
 
 pub fn reconcile_inception_point(
@@ -230,7 +248,10 @@ pub fn reconcile_inception_point(
         ..Default::default()
     }];
 
-    let env_injections = render_container_env_injections(plugin, ip, false);
+    let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
+    let service_name = inception_service_name(blue_green_ref, &ip.name);
+    let template_context = plugin_template_context(ip, namespace, blue_green_ref);
+    let env_injections = render_container_env_injections(plugin, &template_context, false);
 
     match plugin.spec.topology {
         Topology::SidecarBlue => {
@@ -247,7 +268,6 @@ pub fn reconcile_inception_point(
             })
         }
         Topology::Standalone => {
-            let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
             let labels = BTreeMap::from([
                 ("app".to_string(), deployment_name.clone()),
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
@@ -294,7 +314,7 @@ pub fn reconcile_inception_point(
 
             let service = Service {
                 metadata: ObjectMeta {
-                    name: Some(inception_service_name(blue_green_ref, &ip.name)),
+                    name: Some(service_name),
                     namespace: Some(namespace.to_string()),
                     labels: Some(labels),
                     ..Default::default()
@@ -380,7 +400,7 @@ fn plugin_role_name(role: &PluginRole) -> &'static str {
 
 pub fn render_container_env_injections(
     plugin: &InceptionPlugin,
-    ip: &InceptionPoint,
+    template_context: &serde_json::Value,
     restore_values: bool,
 ) -> ContainerEnvInjections {
     let Some(injects) = &plugin.spec.injects else {
@@ -394,12 +414,58 @@ pub fn render_container_env_injections(
     ContainerEnvInjections {
         green: render_env_injection_set(
             injects.green_container.as_ref(),
-            &ip.config,
+            template_context,
             restore_values,
         ),
-        blue: render_env_injection_set(injects.blue_container.as_ref(), &ip.config, restore_values),
-        test: render_env_injection_set(injects.test_container.as_ref(), &ip.config, restore_values),
+        blue: render_env_injection_set(
+            injects.blue_container.as_ref(),
+            template_context,
+            restore_values,
+        ),
+        test: render_env_injection_set(
+            injects.test_container.as_ref(),
+            template_context,
+            restore_values,
+        ),
     }
+}
+
+pub fn plugin_template_context(
+    ip: &InceptionPoint,
+    namespace: &str,
+    blue_green_ref: &str,
+) -> serde_json::Value {
+    let mut context = ip.config.clone();
+    let serde_json::Value::Object(map) = &mut context else {
+        return serde_json::json!({
+            "inceptionPoint": ip.name,
+            "blueGreenRef": blue_green_ref,
+            "namespace": namespace,
+            "pluginDeploymentName": inception_instance_base_name(blue_green_ref, &ip.name),
+            "pluginServiceName": inception_service_name(blue_green_ref, &ip.name),
+        });
+    };
+    map.insert(
+        "inceptionPoint".to_string(),
+        serde_json::Value::String(ip.name.clone()),
+    );
+    map.insert(
+        "blueGreenRef".to_string(),
+        serde_json::Value::String(blue_green_ref.to_string()),
+    );
+    map.insert(
+        "namespace".to_string(),
+        serde_json::Value::String(namespace.to_string()),
+    );
+    map.insert(
+        "pluginDeploymentName".to_string(),
+        serde_json::Value::String(inception_instance_base_name(blue_green_ref, &ip.name)),
+    );
+    map.insert(
+        "pluginServiceName".to_string(),
+        serde_json::Value::String(inception_service_name(blue_green_ref, &ip.name)),
+    );
+    context
 }
 
 fn render_env_injection_set(
@@ -448,22 +514,24 @@ mod tests {
 
     use super::*;
 
-    fn make_http_proxy_plugin() -> InceptionPlugin {
+    fn make_http_plugin() -> InceptionPlugin {
         InceptionPlugin::new(
-            "http-proxy",
+            "http",
             InceptionPluginSpec {
-                description: "HTTP proxy sidecar".to_string(),
-                image: "fluidbg/http-proxy:v0.1.0".to_string(),
-                supported_roles: vec![PluginRole::Observer, PluginRole::Mock],
-                topology: Topology::SidecarBlue,
+                description: "HTTP transport plugin".to_string(),
+                image: "fluidbg/http:v0.1.0".to_string(),
+                supported_roles: vec![PluginRole::Observer, PluginRole::Mock, PluginRole::Writer],
+                topology: Topology::Standalone,
                 field_namespaces: vec!["http".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
-                    "required": ["proxyPort", "realEndpoint", "envVarName"],
                     "properties": {
+                        "port": { "type": "integer" },
                         "proxyPort": { "type": "integer" },
                         "realEndpoint": { "type": "string" },
+                        "targetUrl": { "type": "string" },
                         "envVarName": { "type": "string" },
+                        "writeEnvVar": { "type": "string" },
                         "testId": { "type": "object" },
                         "match": { "type": "array" },
                         "filters": { "type": "array" }
@@ -472,8 +540,8 @@ mod tests {
                 config_template: None,
                 container: crate::crd::inception_plugin::PluginContainer {
                     ports: vec![ContainerPort {
-                        name: "proxy".to_string(),
-                        container_port: 8080,
+                        name: "http".to_string(),
+                        container_port: 9090,
                     }],
                     volume_mounts: vec![VolumeMount {
                         name: "plugin-config".to_string(),
@@ -487,11 +555,17 @@ mod tests {
                     blue_container: Some(crate::crd::inception_plugin::ContainerInjection {
                         env: vec![crate::crd::inception_plugin::EnvInjection {
                             name_from_config: "envVarName".to_string(),
-                            value_template: "http://localhost:{{proxyPort}}".to_string(),
+                            value_template: "http://{{pluginServiceName}}:9090".to_string(),
                             restore_value_template: None,
                         }],
                     }),
-                    test_container: None,
+                    test_container: Some(crate::crd::inception_plugin::ContainerInjection {
+                        env: vec![crate::crd::inception_plugin::EnvInjection {
+                            name_from_config: "writeEnvVar".to_string(),
+                            value_template: "http://{{pluginServiceName}}:9090".to_string(),
+                            restore_value_template: None,
+                        }],
+                    }),
                 }),
                 features: None,
             },
@@ -609,15 +683,93 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_blue_produces_sidecar_and_configmap() {
-        let plugin = make_http_proxy_plugin();
+    fn inception_resource_names_are_stable_for_same_inputs() {
+        assert_eq!(
+            inception_instance_base_name("order-processor-bg", "incoming-orders"),
+            inception_instance_base_name("order-processor-bg", "incoming-orders")
+        );
+        assert_eq!(
+            inception_service_name("order-processor-bg", "incoming-orders"),
+            inception_service_name("order-processor-bg", "incoming-orders")
+        );
+        assert_eq!(
+            inception_config_map_name("order-processor-bg", "incoming-orders"),
+            inception_config_map_name("order-processor-bg", "incoming-orders")
+        );
+    }
+
+    #[test]
+    fn inception_resource_names_are_scoped_by_rollout_name() {
+        assert_ne!(
+            inception_instance_base_name("rollout-a", "incoming-orders"),
+            inception_instance_base_name("rollout-b", "incoming-orders")
+        );
+    }
+
+    #[test]
+    fn inception_resource_names_are_scoped_by_original_inception_point_name() {
+        assert_ne!(
+            inception_instance_base_name("rollout-a", "payment.calls"),
+            inception_instance_base_name("rollout-a", "payment-calls")
+        );
+        assert_ne!(
+            inception_service_name("rollout-a", "payment.calls"),
+            inception_service_name("rollout-a", "payment-calls")
+        );
+        assert_ne!(
+            inception_config_map_name("rollout-a", "payment.calls"),
+            inception_config_map_name("rollout-a", "payment-calls")
+        );
+    }
+
+    #[test]
+    fn inception_resource_names_are_distinct_after_prefix_truncation() {
+        let first = format!("{}-a", "x".repeat(200));
+        let second = format!("{}-b", "x".repeat(200));
+
+        assert_ne!(
+            inception_instance_base_name("rollout-a", &first),
+            inception_instance_base_name("rollout-a", &second)
+        );
+        assert_ne!(
+            inception_service_name("rollout-a", &first),
+            inception_service_name("rollout-a", &second)
+        );
+        assert_ne!(
+            inception_config_map_name("rollout-a", &first),
+            inception_config_map_name("rollout-a", &second)
+        );
+    }
+
+    #[test]
+    fn inception_resource_names_are_service_safe() {
+        let names = [
+            inception_instance_base_name("rollout-a", &"x".repeat(200)),
+            inception_service_name("rollout-a", &"x".repeat(200)),
+            inception_config_map_name("rollout-a", &"x".repeat(200)),
+        ];
+
+        for name in names {
+            assert!(name.len() <= 63);
+            assert!(
+                name.chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+            );
+        }
+    }
+
+    #[test]
+    fn http_plugin_produces_standalone_service_and_env_injections() {
+        let plugin = make_http_plugin();
         let ip = make_inception_point(
             "payment-calls",
-            vec![PluginRole::Observer],
+            vec![PluginRole::Observer, PluginRole::Writer],
             serde_json::json!({
-                "proxyPort": 8081,
+                "port": 9090,
                 "realEndpoint": "https://payment.internal/v1",
+                "targetUrl": "http://order-processor-blue:8080",
                 "envVarName": "PAYMENT_SERVICE_URL",
+                "writeEnvVar": "ORDER_WRITE_URL",
                 "testId": {"field": "http.body", "jsonPath": "$.orderId"},
                 "filters": [{"match": [{"field": "http.path", "matches": "^/v1/charge$"}], "notifyPath": "/observe/{testId}/payment-charge", "payload": "both"}]
             }),
@@ -635,15 +787,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(resources.config_maps.len(), 1);
-        assert_eq!(resources.sidecar_containers.len(), 1);
-        assert_eq!(resources.deployments.len(), 0);
-        assert_eq!(resources.services.len(), 0);
+        assert_eq!(resources.sidecar_containers.len(), 0);
+        assert_eq!(resources.deployments.len(), 1);
+        assert_eq!(resources.services.len(), 1);
         assert!(resources.green_env_injections.is_empty());
         assert!(!resources.blue_env_injections.is_empty());
+        assert!(!resources.test_env_injections.is_empty());
         assert_eq!(resources.blue_env_injections[0].name, "PAYMENT_SERVICE_URL");
         assert_eq!(
             resources.blue_env_injections[0].value,
-            Some("http://localhost:8081".to_string())
+            Some(format!(
+                "http://{}:9090",
+                inception_service_name("order-processor-bg", "payment-calls")
+            ))
+        );
+        assert_eq!(resources.test_env_injections[0].name, "ORDER_WRITE_URL");
+        assert_eq!(
+            resources.test_env_injections[0].value,
+            Some(format!(
+                "http://{}:9090",
+                inception_service_name("order-processor-bg", "payment-calls")
+            ))
         );
     }
 
@@ -776,7 +940,7 @@ mod tests {
 
     #[test]
     fn unsupported_role_rejected() {
-        let plugin = make_http_proxy_plugin();
+        let plugin = make_http_plugin();
         let ip = make_inception_point(
             "bad-point",
             vec![PluginRole::Duplicator],

@@ -20,6 +20,19 @@ cases = {}
 cases_lock = threading.Lock()
 
 
+def complete_http_proxy_case_if_ready(case):
+    if case.get("output_message_seen") and case.get("http_call_seen"):
+        case["status"] = "passed"
+        case["error_message"] = None
+    else:
+        case["status"] = "observing"
+
+
+def is_http_proxy_message(payload):
+    original = payload.get("originalMessage") or {}
+    return original.get("action") == "http-proxy-check"
+
+
 def get_channel():
     params = pika.URLParameters(AMQP_URL)
     connection = pika.BlockingConnection(params)
@@ -29,6 +42,15 @@ def get_channel():
     channel.queue_declare(queue="orders-green", durable=False)
     channel.queue_declare(queue="orders-blue", durable=False)
     return connection, channel
+
+
+def publish_json(queue, payload):
+    connection, channel = get_channel()
+    try:
+        channel.confirm_delivery()
+        channel.basic_publish("", queue, json.dumps(payload))
+    finally:
+        connection.close()
 
 
 # ── Flask endpoints ──────────────────────────────────────────────────
@@ -47,8 +69,7 @@ def trigger():
     # publish a test message to the input queue so the blue app processes it
     msg = {"orderId": test_id, "type": "order", "action": "process"}
     try:
-        _, ch = get_channel()
-        ch.basic_publish("", INPUT_QUEUE, json.dumps(msg))
+        publish_json(INPUT_QUEUE, msg)
     except Exception as e:
         return jsonify({"testId": test_id, "status": "triggered", "publish_error": str(e)})
     return jsonify({"testId": test_id, "status": "triggered"})
@@ -63,24 +84,42 @@ def observe(test_id, inception_point):
         current_status = cases[test_id].get("status")
         if current_status in ("passed", "failed"):
             return jsonify({"testId": test_id, "status": current_status})
-        cases[test_id]["observation"] = data
+        case = cases[test_id]
+        case["observation"] = data
         if inception_point == "outgoing-results":
             payload = data.get("payload") or {}
             original = payload.get("originalMessage") or {}
             route = data.get("route")
-            cases[test_id]["result_message"] = payload
+            case["result_message"] = payload
+            if is_http_proxy_message(payload):
+                case["output_message_seen"] = case.get("output_message_seen") or route == "blue"
             if route != "blue":
-                cases[test_id]["status"] = "observing"
+                case["status"] = "observing"
+            elif is_http_proxy_message(payload):
+                complete_http_proxy_case_if_ready(case)
             elif original.get("shouldPass", True):
-                cases[test_id]["status"] = "passed"
-                cases[test_id]["error_message"] = None
+                case["status"] = "passed"
+                case["error_message"] = None
             else:
-                cases[test_id]["status"] = "failed"
-                cases[test_id]["error_message"] = original.get(
+                case["status"] = "failed"
+                case["error_message"] = original.get(
                     "failureReason", "candidate verification failed"
                 )
+        elif inception_point == "http-upstream":
+            payload = data.get("payload") or {}
+            route = data.get("route")
+            case["http_call_seen"] = case.get("http_call_seen") or (
+                route == "blue"
+                and payload.get("action") == "http-proxy-check"
+                and payload.get("orderId") == test_id
+            )
+            result_message = case.get("result_message") or {}
+            if case["http_call_seen"] and is_http_proxy_message(result_message):
+                complete_http_proxy_case_if_ready(case)
+            else:
+                case["status"] = "observing"
         else:
-            cases[test_id]["status"] = "observing"
+            case["status"] = "observing"
     return jsonify({"testId": test_id, "status": "observing"})
 
 

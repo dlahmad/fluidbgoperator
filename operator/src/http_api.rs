@@ -5,21 +5,12 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
+use fluidbg_plugin_sdk::RegisterTestCaseRequest;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::state_store::{Counts, StateStore, TestCaseRecord, TestStatus, VerificationMode};
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterTestCaseRequest {
-    pub test_id: String,
-    pub blue_green_ref: String,
-    pub inception_point: String,
-    pub triggered_at: Option<DateTime<Utc>>,
-    pub timeout_seconds: Option<i64>,
-    pub verify_url: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct RegisterTestCaseResponse {

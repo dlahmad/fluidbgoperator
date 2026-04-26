@@ -12,6 +12,7 @@ spec:
     drainPath: /drain
     drainStatusPath: /drain-status
     cleanupPath: /cleanup
+    trafficShiftPath: /traffic
   features:
     supportsProgressiveShifting: true
   fieldNamespaces: [queue]

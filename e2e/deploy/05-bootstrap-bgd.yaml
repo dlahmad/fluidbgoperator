@@ -48,6 +48,53 @@ spec:
 apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
+  name: http
+  namespace: fluidbg-test
+spec:
+  description: "HTTP transport plugin for observing, mocking, and writing HTTP traffic"
+  image: fluidbg/http:dev
+  supportedRoles: [splitter, observer, mock, writer]
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+    trafficShiftPath: /traffic
+  features:
+    supportsProgressiveShifting: true
+  fieldNamespaces: [http]
+  configSchema:
+    type: object
+    properties:
+      port: { type: integer }
+      realEndpoint: { type: string }
+      targetUrl: { type: string }
+      greenEndpoint: { type: string }
+      blueEndpoint: { type: string }
+      envVarName: { type: string }
+      writeEnvVar: { type: string }
+      testId: { type: object }
+      match: { type: array }
+      filters: { type: array }
+  container:
+    ports:
+      - name: http
+        containerPort: 9090
+  injects:
+    blueContainer:
+      env:
+        - nameFromConfig: envVarName
+          valueTemplate: "http://{{pluginServiceName}}:9090"
+          restoreValueTemplate: "{{realEndpoint}}"
+    testContainer:
+      env:
+        - nameFromConfig: writeEnvVar
+          valueTemplate: "http://{{pluginServiceName}}:9090"
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
   name: rabbitmq
   namespace: fluidbg-test
 spec:
@@ -60,6 +107,7 @@ spec:
     drainPath: /drain
     drainStatusPath: /drain-status
     cleanupPath: /cleanup
+    trafficShiftPath: /traffic
   features:
     supportsProgressiveShifting: true
   fieldNamespaces: [queue]

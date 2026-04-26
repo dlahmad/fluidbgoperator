@@ -12,6 +12,7 @@ name = "gen-crds"
 path = "src/crd/bin/gen_crds.rs"
 
 [dependencies]
+fluidbg-plugin-sdk = { path = "../sdk/rust" }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }
 schemars = { workspace = true }

@@ -22,17 +22,31 @@ def get_channel():
     return connection, channel
 
 
+def publish_json(queue, payload):
+    connection, channel = get_channel()
+    try:
+        channel.confirm_delivery()
+        channel.basic_publish("", queue, json.dumps(payload))
+    finally:
+        connection.close()
+
+
+def call_http_upstream_if_required(msg):
+    if msg.get("action") != "http-proxy-check":
+        return 204
+    try:
+        resp = requests.post(HTTP_UPSTREAM, json=msg, timeout=5)
+        return resp.status_code
+    except Exception:
+        return 0
+
+
 def process_message(ch, method, properties, body):
     try:
         msg = json.loads(body)
         order_id = msg.get("orderId", "unknown")
 
-        # make the HTTP call
-        try:
-            resp = requests.post(HTTP_UPSTREAM, json=msg, timeout=5)
-            http_status = resp.status_code
-        except Exception as e:
-            http_status = 0
+        http_status = call_http_upstream_if_required(msg)
 
         # write result to output queue
         result = {
@@ -42,12 +56,12 @@ def process_message(ch, method, properties, body):
             "processedBy": "blue",
             "instanceName": INSTANCE_NAME,
         }
-        _, out_ch = get_channel()
-        out_ch.basic_publish("", OUTPUT_QUEUE, json.dumps(result))
+        publish_json(OUTPUT_QUEUE, result)
 
         ch.basic_ack(method.delivery_tag)
-    except Exception:
-        ch.basic_ack(method.delivery_tag)
+    except Exception as e:
+        print(f"blue-app failed to process message: {e}", flush=True)
+        ch.basic_nack(method.delivery_tag, requeue=True)
 
 
 def main():

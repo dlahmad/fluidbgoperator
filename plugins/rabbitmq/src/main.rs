@@ -6,6 +6,11 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
+use fluidbg_plugin_sdk::{
+    AssignmentKind, AssignmentTarget, FilterCondition, ObserverConfig, PluginDrainStatusResponse,
+    PluginLifecycleResponse, PluginRole, PluginRuntime, PropertyAssignment, TestIdSelector,
+    TrafficRoute, TrafficShiftRequest, TrafficShiftResponse, condition_matches, extract_json_path,
+};
 use futures_lite::StreamExt;
 use lapin::options::{
     BasicAckOptions, BasicConsumeOptions, BasicGetOptions, BasicPublishOptions,
@@ -13,36 +18,12 @@ use lapin::options::{
 };
 use lapin::types::{AMQPValue, FieldTable};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
-use regex::Regex;
 use serde_json::Value;
 use tracing::{info, warn};
 
 mod config;
 
 use config::*;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TrafficRoute {
-    Blue,
-    Green,
-    Both,
-    Unknown,
-}
-
-impl TrafficRoute {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Blue => "blue",
-            Self::Green => "green",
-            Self::Both => "both",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn should_register_case(self) -> bool {
-        !matches!(self, Self::Green)
-    }
-}
 
 fn route_from_output_source(combiner: &CombinerConfig, source_queue: &str) -> TrafficRoute {
     if combiner
@@ -60,22 +41,6 @@ fn route_from_output_source(combiner: &CombinerConfig, source_queue: &str) -> Tr
         return TrafficRoute::Green;
     }
     TrafficRoute::Unknown
-}
-
-fn extract_json_path(value: &Value, path: &str) -> Option<String> {
-    let stripped = path.strip_prefix('$').unwrap_or(path);
-    let stripped = stripped.strip_prefix('.').unwrap_or(stripped);
-    let keys: Vec<&str> = stripped.split('.').collect();
-    let mut current = value;
-    for key in &keys {
-        current = current.as_object()?.get(*key)?;
-    }
-    match current {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
 }
 
 fn amqp_value_as_string(v: &AMQPValue) -> Option<String> {
@@ -134,13 +99,7 @@ fn matches_filter(conditions: &[FilterCondition], body: &Value, properties: &Fie
             Some(v) => v,
             None => return false,
         };
-        if let Some(eq) = &c.equals {
-            &value == eq
-        } else if let Some(re) = &c.matches {
-            Regex::new(re).map(|r| r.is_match(&value)).unwrap_or(false)
-        } else {
-            true
-        }
+        condition_matches(Some(value), c)
     })
 }
 
@@ -162,6 +121,25 @@ async fn delete_queue(channel: &Channel, queue: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn publish_confirmed(
+    channel: &Channel,
+    routing_key: &str,
+    payload: &[u8],
+    properties: BasicProperties,
+) -> Result<()> {
+    channel
+        .basic_publish(
+            "",
+            routing_key,
+            BasicPublishOptions::default(),
+            payload,
+            properties,
+        )
+        .await?
+        .await?;
+    Ok(())
 }
 
 fn is_missing_queue_error(err: &lapin::Error) -> bool {
@@ -206,15 +184,13 @@ async fn move_queue_messages(
             break;
         };
         let headers = delivery.properties.headers().clone().unwrap_or_default();
-        channel
-            .basic_publish(
-                "",
-                target_queue,
-                BasicPublishOptions::default(),
-                &delivery.data,
-                BasicProperties::default().with_headers(headers),
-            )
-            .await?;
+        publish_confirmed(
+            channel,
+            target_queue,
+            &delivery.data,
+            BasicProperties::default().with_headers(headers),
+        )
+        .await?;
         delivery.ack(BasicAckOptions::default()).await?;
         moved += 1;
     }
@@ -238,38 +214,7 @@ async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
     bail!("unable to connect to RabbitMQ");
 }
 
-async fn notify_test_container(
-    client: &reqwest::Client,
-    test_container_url: &str,
-    notify_path: &str,
-    test_id: &str,
-    inception_point: &str,
-    payload: &Value,
-    route: TrafficRoute,
-) -> Result<()> {
-    let path = notify_path
-        .replace("{testId}", test_id)
-        .replace("{inceptionPoint}", inception_point);
-    let notification = serde_json::json!({
-        "testId": test_id,
-        "inceptionPoint": inception_point,
-        "payload": payload,
-        "route": route.as_str(),
-    });
-    client
-        .post(format!(
-            "{}{}",
-            test_container_url.trim_end_matches('/'),
-            path
-        ))
-        .json(&notification)
-        .send()
-        .await?;
-    Ok(())
-}
-
 async fn notify_observer(
-    client: &reqwest::Client,
     state: &AppState,
     observer: &ObserverConfig,
     test_id: &str,
@@ -277,60 +222,19 @@ async fn notify_observer(
     route: TrafficRoute,
 ) {
     if let Some(path) = observer.notify_path.as_deref() {
-        if let Err(err) = notify_test_container(
-            client,
-            &state.test_container_url,
-            path,
-            test_id,
-            &state.inception_point,
-            payload,
-            route,
-        )
-        .await
+        if let Err(err) = state
+            .runtime
+            .notify_observer(path, test_id, payload, route)
+            .await
         {
             warn!("failed to notify test container for {}: {}", test_id, err);
         }
     }
 }
 
-async fn register_test_case(
-    client: &reqwest::Client,
-    testcase_registration_url: &str,
-    blue_green_ref: &str,
-    inception_point: &str,
-    test_id: &str,
-    test_container_url: &str,
-    testcase_verify_path_template: Option<&str>,
-) -> Result<()> {
-    let verify_url = testcase_verify_path_template.map(|path| {
-        format!(
-            "{}{}",
-            test_container_url.trim_end_matches('/'),
-            path.replace("{testId}", test_id)
-        )
-    });
-    client
-        .post(testcase_registration_url)
-        .json(&serde_json::json!({
-            "test_id": test_id,
-            "blue_green_ref": blue_green_ref,
-            "inception_point": inception_point,
-            "timeout_seconds": 120,
-            "verify_url": verify_url,
-        }))
-        .send()
-        .await?
-        .error_for_status()?;
-    info!(
-        "registered testCase '{}' for blueGreenRef '{}' via {}",
-        test_id, blue_green_ref, testcase_registration_url
-    );
-    Ok(())
-}
-
-fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
+fn build_prepare_assignments(config: &Config, roles: &[PluginRole]) -> Vec<PropertyAssignment> {
     let mut assignments = Vec::new();
-    if has_role(roles, ActiveRole::Duplicator)
+    if has_role(roles, PluginRole::Duplicator)
         && let Some(duplicator) = config.duplicator.as_ref()
     {
         if let (Some(env_name), Some(queue)) = (
@@ -358,7 +262,7 @@ fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
             });
         }
     }
-    if has_role(roles, ActiveRole::Splitter)
+    if has_role(roles, PluginRole::Splitter)
         && let Some(splitter) = config.splitter.as_ref()
     {
         if let (Some(env_name), Some(queue)) = (
@@ -386,7 +290,7 @@ fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
             });
         }
     }
-    if has_role(roles, ActiveRole::Combiner)
+    if has_role(roles, PluginRole::Combiner)
         && let Some(combiner) = config.combiner.as_ref()
     {
         if let (Some(env_name), Some(queue)) = (
@@ -417,9 +321,9 @@ fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
     assignments
 }
 
-fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
+fn build_cleanup_assignments(config: &Config, roles: &[PluginRole]) -> Vec<PropertyAssignment> {
     let mut assignments = Vec::new();
-    if has_role(roles, ActiveRole::Duplicator)
+    if has_role(roles, PluginRole::Duplicator)
         && let Some(duplicator) = config.duplicator.as_ref()
     {
         if let (Some(env_name), Some(queue)) = (
@@ -447,7 +351,7 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
             });
         }
     }
-    if has_role(roles, ActiveRole::Splitter)
+    if has_role(roles, PluginRole::Splitter)
         && let Some(splitter) = config.splitter.as_ref()
     {
         if let (Some(env_name), Some(queue)) =
@@ -473,7 +377,7 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
             });
         }
     }
-    if has_role(roles, ActiveRole::Combiner)
+    if has_role(roles, PluginRole::Combiner)
         && let Some(combiner) = config.combiner.as_ref()
     {
         if let (Some(env_name), Some(queue)) =
@@ -502,7 +406,7 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
     assignments
 }
 
-fn build_drain_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
+fn build_drain_assignments(config: &Config, roles: &[PluginRole]) -> Vec<PropertyAssignment> {
     build_cleanup_assignments(config, roles)
 }
 
@@ -510,7 +414,7 @@ async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusRespo
     let conn = connect_with_retry(&state.amqp_url).await?;
     let channel = conn.create_channel().await?;
 
-    if has_role(&state.roles, ActiveRole::Duplicator) {
+    if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         let green_queue = required(&config.green_input_queue, "duplicator.greenInputQueue")?;
         let blue_queue = required(&config.blue_input_queue, "duplicator.blueInputQueue")?;
@@ -536,7 +440,7 @@ async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusRespo
         return Ok(PluginDrainStatusResponse { drained, message });
     }
 
-    if has_role(&state.roles, ActiveRole::Splitter) {
+    if has_role(&state.roles, PluginRole::Splitter) {
         let config = splitter_config(&state.config)?;
         let green_queue = required(&config.green_input_queue, "splitter.greenInputQueue")?;
         let blue_queue = required(&config.blue_input_queue, "splitter.blueInputQueue")?;
@@ -562,7 +466,7 @@ async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusRespo
         return Ok(PluginDrainStatusResponse { drained, message });
     }
 
-    if has_role(&state.roles, ActiveRole::Combiner) {
+    if has_role(&state.roles, PluginRole::Combiner) {
         let config = combiner_config(&state.config)?;
         let green_queue = required(&config.green_output_queue, "combiner.greenOutputQueue")?;
         let blue_queue = required(&config.blue_output_queue, "combiner.blueOutputQueue")?;
@@ -598,7 +502,7 @@ async fn prepare_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if has_role(&state.roles, ActiveRole::Duplicator) {
+    if has_role(&state.roles, PluginRole::Duplicator) {
         let duplicator = duplicator_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -613,7 +517,7 @@ async fn prepare_handler(
                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
-    if has_role(&state.roles, ActiveRole::Splitter) {
+    if has_role(&state.roles, PluginRole::Splitter) {
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -628,7 +532,7 @@ async fn prepare_handler(
                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
-    if has_role(&state.roles, ActiveRole::Combiner) {
+    if has_role(&state.roles, PluginRole::Combiner) {
         let combiner = combiner_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -644,7 +548,7 @@ async fn prepare_handler(
                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
-    if has_role(&state.roles, ActiveRole::Writer) {
+    if has_role(&state.roles, PluginRole::Writer) {
         let writer = writer_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         if let Some(queue) = &writer.target_queue {
@@ -672,7 +576,7 @@ async fn cleanup_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if has_role(&state.roles, ActiveRole::Duplicator) {
+    if has_role(&state.roles, PluginRole::Duplicator) {
         let duplicator = duplicator_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -687,7 +591,7 @@ async fn cleanup_handler(
                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
-    if has_role(&state.roles, ActiveRole::Splitter) {
+    if has_role(&state.roles, PluginRole::Splitter) {
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -702,7 +606,7 @@ async fn cleanup_handler(
                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
-    if has_role(&state.roles, ActiveRole::Combiner) {
+    if has_role(&state.roles, PluginRole::Combiner) {
         let combiner = combiner_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         for queue in [
@@ -739,6 +643,16 @@ async fn drain_status_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(status))
+}
+
+async fn traffic_shift_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TrafficShiftRequest>,
+) -> Json<TrafficShiftResponse> {
+    state.set_traffic_percent(req.traffic_percent);
+    Json(TrafficShiftResponse {
+        traffic_percent: state.traffic_percent(),
+    })
 }
 
 async fn health() -> &'static str {
@@ -791,10 +705,7 @@ async fn write_handler(
         props = props.with_headers(h);
     }
 
-    match channel
-        .basic_publish("", &queue, BasicPublishOptions::default(), &body, props)
-        .await
-    {
+    match publish_confirmed(&channel, &queue, &body, props).await {
         Ok(_) => (axum::http::StatusCode::OK, "published"),
         Err(e) => {
             tracing::error!("failed to publish: {}", e);
@@ -810,7 +721,6 @@ async fn process_input_delivery(
     state: &AppState,
     channel: &Channel,
     delivery: lapin::message::BasicGetMessage,
-    http_client: &reqwest::Client,
 ) -> Result<()> {
     let body_data = delivery.data.clone();
     let body_str = String::from_utf8_lossy(&body_data);
@@ -826,81 +736,70 @@ async fn process_input_delivery(
 
     let mut route = TrafficRoute::Unknown;
 
-    if has_role(&state.roles, ActiveRole::Duplicator) {
+    if has_role(&state.roles, PluginRole::Duplicator) {
         let duplicator = duplicator_config(&state.config)?;
         if let Some(green_queue) = &duplicator.green_input_queue {
-            channel
-                .basic_publish(
-                    "",
-                    green_queue,
-                    BasicPublishOptions::default(),
-                    &body_data,
-                    BasicProperties::default().with_headers(headers.clone()),
-                )
-                .await?;
+            publish_confirmed(
+                channel,
+                green_queue,
+                &body_data,
+                BasicProperties::default().with_headers(headers.clone()),
+            )
+            .await?;
         }
         if let Some(blue_queue) = &duplicator.blue_input_queue {
-            channel
-                .basic_publish(
-                    "",
+            publish_confirmed(
+                channel,
+                blue_queue,
+                &body_data,
+                BasicProperties::default().with_headers(headers.clone()),
+            )
+            .await?;
+        }
+        route = TrafficRoute::Both;
+    } else if has_role(&state.roles, PluginRole::Splitter) {
+        let splitter = splitter_config(&state.config)?;
+        let send_to_blue = routes_to_blue(&body_data, state.traffic_percent());
+        if send_to_blue {
+            if let Some(blue_queue) = &splitter.blue_input_queue {
+                publish_confirmed(
+                    channel,
                     blue_queue,
-                    BasicPublishOptions::default(),
                     &body_data,
                     BasicProperties::default().with_headers(headers.clone()),
                 )
                 .await?;
-        }
-        route = TrafficRoute::Both;
-    } else if has_role(&state.roles, ActiveRole::Splitter) {
-        let splitter = splitter_config(&state.config)?;
-        let send_to_blue = routes_to_blue(&body_data, blue_traffic_percent());
-        if send_to_blue {
-            if let Some(blue_queue) = &splitter.blue_input_queue {
-                channel
-                    .basic_publish(
-                        "",
-                        blue_queue,
-                        BasicPublishOptions::default(),
-                        &body_data,
-                        BasicProperties::default().with_headers(headers.clone()),
-                    )
-                    .await?;
             }
             route = TrafficRoute::Blue;
         } else if let Some(green_queue) = &splitter.green_input_queue {
-            channel
-                .basic_publish(
-                    "",
-                    green_queue,
-                    BasicPublishOptions::default(),
-                    &body_data,
-                    BasicProperties::default().with_headers(headers.clone()),
-                )
-                .await?;
+            publish_confirmed(
+                channel,
+                green_queue,
+                &body_data,
+                BasicProperties::default().with_headers(headers.clone()),
+            )
+            .await?;
             route = TrafficRoute::Green;
         }
     }
 
-    if has_role(&state.roles, ActiveRole::Observer)
+    if has_role(&state.roles, PluginRole::Observer)
         && let Some(observer) = observer
         && let Some(selector) = &observer.test_id
         && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
     {
         if route.should_register_case()
-            && let Err(err) = register_test_case(
-                http_client,
-                &state.testcase_registration_url,
-                &state.blue_green_ref,
-                &state.inception_point,
-                &test_id,
-                &state.test_container_url,
-                state.testcase_verify_path_template.as_deref(),
-            )
-            .await
+            && let Err(err) = state.runtime.register_test_case(&test_id).await
         {
             warn!("failed to register test case {}: {}", test_id, err);
+        } else if route.should_register_case() {
+            info!(
+                "registered testCase '{}' for blueGreenRef '{}'",
+                test_id,
+                state.runtime.blue_green_ref()
+            );
         }
-        notify_observer(http_client, state, observer, &test_id, &body_json, route).await;
+        notify_observer(state, observer, &test_id, &body_json, route).await;
     }
 
     delivery.ack(BasicAckOptions::default()).await?;
@@ -908,14 +807,14 @@ async fn process_input_delivery(
 }
 
 async fn drain_input_queues(state: &AppState, channel: &Channel) -> Result<()> {
-    let (base_queue, green_queue, blue_queue) = if has_role(&state.roles, ActiveRole::Duplicator) {
+    let (base_queue, green_queue, blue_queue) = if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         (
             required(&config.input_queue, "duplicator.inputQueue")?.to_string(),
             required(&config.green_input_queue, "duplicator.greenInputQueue")?.to_string(),
             required(&config.blue_input_queue, "duplicator.blueInputQueue")?.to_string(),
         )
-    } else if has_role(&state.roles, ActiveRole::Splitter) {
+    } else if has_role(&state.roles, PluginRole::Splitter) {
         let config = splitter_config(&state.config)?;
         (
             required(&config.input_queue, "splitter.inputQueue")?.to_string(),
@@ -980,13 +879,13 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
                 continue;
             }
         };
-        let input_queue = if has_role(&state.roles, ActiveRole::Duplicator) {
+        let input_queue = if has_role(&state.roles, PluginRole::Duplicator) {
             required(
                 &duplicator_config(&state.config)?.input_queue,
                 "duplicator.inputQueue",
             )?
             .to_string()
-        } else if has_role(&state.roles, ActiveRole::Splitter) {
+        } else if has_role(&state.roles, PluginRole::Splitter) {
             required(
                 &splitter_config(&state.config)?.input_queue,
                 "splitter.inputQueue",
@@ -1000,7 +899,6 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
             .to_string()
         };
         declare_queue(&channel, &input_queue).await?;
-        let http_client = reqwest::Client::new();
         info!("rabbitmq input pipeline polling {}", input_queue);
 
         loop {
@@ -1025,9 +923,7 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
                 .await
             {
                 Ok(Some(delivery)) => {
-                    if let Err(err) =
-                        process_input_delivery(&state, &channel, delivery, &http_client).await
-                    {
+                    if let Err(err) = process_input_delivery(&state, &channel, delivery).await {
                         warn!("rabbitmq input processing failed, reconnecting: {}", err);
                         break;
                     }
@@ -1056,7 +952,6 @@ async fn run_combine_loop_once(
     let publish_channel = conn.create_channel().await?;
     declare_queue(&consume_channel, &source_queue).await?;
     declare_queue(&publish_channel, &result_queue).await?;
-    let http_client = reqwest::Client::new();
     let combiner = combiner_config(&state.config)?;
 
     let mut consumer = consume_channel
@@ -1084,37 +979,32 @@ async fn run_combine_loop_once(
         let headers = delivery.properties.headers().clone().unwrap_or_default();
         let body_json: Value = serde_json::from_slice(&delivery.data).unwrap_or(Value::Null);
         let route = route_from_output_source(combiner, &source_queue);
-        publish_channel
-            .basic_publish(
-                "",
-                &result_queue,
-                BasicPublishOptions::default(),
-                &delivery.data,
-                BasicProperties::default().with_headers(headers.clone()),
-            )
-            .await?;
+        publish_confirmed(
+            &publish_channel,
+            &result_queue,
+            &delivery.data,
+            BasicProperties::default().with_headers(headers.clone()),
+        )
+        .await?;
 
-        if has_role(&state.roles, ActiveRole::Observer)
+        if has_role(&state.roles, PluginRole::Observer)
             && let Some(observer) = observer_config(&state.config)
             && matches_filter(&observer.r#match, &body_json, &headers)
             && let Some(selector) = &observer.test_id
             && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
         {
             if route.should_register_case()
-                && let Err(err) = register_test_case(
-                    &http_client,
-                    &state.testcase_registration_url,
-                    &state.blue_green_ref,
-                    &state.inception_point,
-                    &test_id,
-                    &state.test_container_url,
-                    state.testcase_verify_path_template.as_deref(),
-                )
-                .await
+                && let Err(err) = state.runtime.register_test_case(&test_id).await
             {
                 warn!("failed to register test case {}: {}", test_id, err);
+            } else if route.should_register_case() {
+                info!(
+                    "registered testCase '{}' for blueGreenRef '{}'",
+                    test_id,
+                    state.runtime.blue_green_ref()
+                );
             }
-            notify_observer(&http_client, &state, observer, &test_id, &body_json, route).await;
+            notify_observer(&state, observer, &test_id, &body_json, route).await;
         }
         delivery.ack(BasicAckOptions::default()).await?;
     }
@@ -1181,7 +1071,8 @@ async fn main() -> Result<()> {
         .init();
 
     let config = load_config()?;
-    let roles = load_roles();
+    let runtime = PluginRuntime::from_env();
+    let roles = runtime.roles().to_vec();
     if roles.is_empty() {
         bail!("no active roles configured via FLUIDBG_ACTIVE_ROLES");
     }
@@ -1190,26 +1081,7 @@ async fn main() -> Result<()> {
         .amqp_url
         .clone()
         .unwrap_or_else(|| "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string());
-    let testcase_registration_url = std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
-        .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string());
-    let test_container_url = std::env::var("FLUIDBG_TEST_CONTAINER_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let testcase_verify_path_template = std::env::var("FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE").ok();
-    let inception_point =
-        std::env::var("FLUIDBG_INCEPTION_POINT").unwrap_or_else(|_| "unknown".to_string());
-    let blue_green_ref =
-        std::env::var("FLUIDBG_BLUE_GREEN_REF").unwrap_or_else(|_| "unknown".to_string());
-
-    let state = AppState::new(
-        config.clone(),
-        roles.clone(),
-        amqp_url.clone(),
-        testcase_registration_url,
-        test_container_url,
-        testcase_verify_path_template,
-        inception_point,
-        blue_green_ref,
-    );
+    let state = AppState::new(config.clone(), roles.clone(), amqp_url.clone(), runtime);
 
     info!("rabbitmq plugin starting with roles {:?}", roles);
 
@@ -1218,6 +1090,7 @@ async fn main() -> Result<()> {
         .route("/prepare", post(prepare_handler))
         .route("/drain", post(drain_handler))
         .route("/drain-status", get(drain_status_handler))
+        .route("/traffic", post(traffic_shift_handler))
         .route("/cleanup", post(cleanup_handler))
         .route("/write", post(write_handler))
         .with_state(state.clone());
@@ -1229,14 +1102,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    let worker = if has_role(&roles, ActiveRole::Writer) {
+    let worker = if has_role(&roles, PluginRole::Writer) {
         tokio::spawn(async { Ok::<(), anyhow::Error>(()) })
-    } else if has_role(&roles, ActiveRole::Combiner) {
+    } else if has_role(&roles, PluginRole::Combiner) {
         tokio::spawn(async move { run_combiner(state).await })
-    } else if has_role(&roles, ActiveRole::Duplicator)
-        || has_role(&roles, ActiveRole::Splitter)
-        || has_role(&roles, ActiveRole::Observer)
-        || has_role(&roles, ActiveRole::Consumer)
+    } else if has_role(&roles, PluginRole::Duplicator)
+        || has_role(&roles, PluginRole::Splitter)
+        || has_role(&roles, PluginRole::Observer)
+        || has_role(&roles, PluginRole::Consumer)
     {
         tokio::spawn(async move { run_input_pipeline(state).await })
     } else {

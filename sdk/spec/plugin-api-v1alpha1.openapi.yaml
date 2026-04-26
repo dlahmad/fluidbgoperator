@@ -1,0 +1,300 @@
+openapi: 3.1.0
+info:
+  title: FluidBG Plugin API
+  version: 0.1.0
+  description: |
+    Language-neutral HTTP contract used between the FluidBG operator, plugins,
+    and test containers. The plugin API version is fluidbg.plugin/v1alpha1.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+paths:
+  /prepare:
+    post:
+      operationId: prepare
+      responses:
+        "200":
+          description: Property assignments to apply before traffic starts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginLifecycleResponse"
+  /drain:
+    post:
+      operationId: drain
+      responses:
+        "200":
+          description: Property assignments to apply before drain starts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginLifecycleResponse"
+  /drain-status:
+    get:
+      operationId: drainStatus
+      responses:
+        "200":
+          description: Drain status for buffered plugin resources.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDrainStatusResponse"
+  /cleanup:
+    post:
+      operationId: cleanup
+      responses:
+        "200":
+          description: Property assignments to apply after promotion or rollback.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginLifecycleResponse"
+  /traffic:
+    post:
+      operationId: trafficShift
+      description: Live progressive traffic update. Must not require a plugin restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficShiftRequest"
+      responses:
+        "200":
+          description: Updated traffic percentage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficShiftResponse"
+  /testcases:
+    post:
+      operationId: registerTestCase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterTestCaseRequest"
+      responses:
+        "201":
+          description: Test case registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterTestCaseResponse"
+  /observe/{testId}/{inceptionPoint}:
+    post:
+      operationId: observe
+      parameters:
+        - name: testId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: inceptionPoint
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationNotification"
+      responses:
+        "200":
+          description: Observation accepted.
+  /write:
+    post:
+      operationId: write
+      description: Optional plugin writer endpoint used by test containers to inject traffic.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HttpWriteRequest"
+      responses:
+        "200":
+          description: Write accepted or forwarded.
+components:
+  schemas:
+    PluginApiVersion:
+      type: string
+      const: fluidbg.plugin/v1alpha1
+    CrdGroup:
+      type: string
+      const: fluidbg.io
+    CrdVersion:
+      type: string
+      const: v1alpha1
+    PluginRole:
+      type: string
+      enum: [duplicator, splitter, combiner, observer, mock, writer, consumer]
+    TrafficRoute:
+      type: string
+      enum: [blue, green, both, unknown]
+    TestIdSelector:
+      type: object
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+        jsonPath:
+          type: string
+        pathSegment:
+          type: integer
+        value:
+          type: string
+    FilterCondition:
+      type: object
+      required: [field]
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+        equals:
+          type: string
+        matches:
+          type: string
+        jsonPath:
+          type: string
+    ObserverConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        testId:
+          $ref: "#/components/schemas/TestIdSelector"
+        match:
+          type: array
+          items:
+            $ref: "#/components/schemas/FilterCondition"
+        notifyPath:
+          type: string
+    PayloadSelection:
+      type: string
+      enum: [request, response, both]
+    NotificationFilter:
+      type: object
+      additionalProperties: false
+      properties:
+        match:
+          type: array
+          items:
+            $ref: "#/components/schemas/FilterCondition"
+          default: []
+        notifyPath:
+          type: string
+        payload:
+          $ref: "#/components/schemas/PayloadSelection"
+    AssignmentTarget:
+      type: string
+      enum: [green, blue, test]
+    AssignmentKind:
+      type: string
+      enum: [env]
+    PropertyAssignment:
+      type: object
+      required: [target, kind, name, value]
+      additionalProperties: false
+      properties:
+        target:
+          $ref: "#/components/schemas/AssignmentTarget"
+        kind:
+          $ref: "#/components/schemas/AssignmentKind"
+        name:
+          type: string
+        value:
+          type: string
+        containerName:
+          type: string
+    PluginLifecycleResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/PropertyAssignment"
+          default: []
+    PluginDrainStatusResponse:
+      type: object
+      required: [drained]
+      additionalProperties: false
+      properties:
+        drained:
+          type: boolean
+        message:
+          type: string
+    TrafficShiftRequest:
+      type: object
+      required: [trafficPercent]
+      additionalProperties: false
+      properties:
+        trafficPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+    TrafficShiftResponse:
+      type: object
+      required: [trafficPercent]
+      additionalProperties: false
+      properties:
+        trafficPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+    ObservationNotification:
+      type: object
+      required: [testId, inceptionPoint, route, payload]
+      additionalProperties: true
+      properties:
+        testId:
+          type: string
+        inceptionPoint:
+          type: string
+        route:
+          $ref: "#/components/schemas/TrafficRoute"
+        payload: {}
+    RegisterTestCaseRequest:
+      type: object
+      required: [test_id, blue_green_ref, inception_point]
+      additionalProperties: false
+      properties:
+        test_id:
+          type: string
+        blue_green_ref:
+          type: string
+        inception_point:
+          type: string
+        triggered_at:
+          type: string
+          format: date-time
+        timeout_seconds:
+          type: integer
+          minimum: 1
+        verify_url:
+          type: string
+    RegisterTestCaseResponse:
+      type: object
+      required: [test_id, status]
+      additionalProperties: false
+      properties:
+        test_id:
+          type: string
+        status:
+          type: string
+    HttpWriteRequest:
+      type: object
+      required: [payload]
+      additionalProperties: false
+      properties:
+        testId:
+          type: string
+        payload: {}
+        method:
+          type: string
+        headers:
+          type: object
+          additionalProperties: true
+        path:
+          type: string

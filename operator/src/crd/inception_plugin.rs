@@ -93,6 +93,8 @@ pub struct PluginLifecycle {
     pub drain_status_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_shift_path: Option<String>,
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]

@@ -1,8 +1,8 @@
 [workspace]
 members = [
+    "sdk/rust",
     "operator",
-    "plugins/http_proxy",
-    "plugins/http_writer",
+    "plugins/http",
     "plugins/rabbitmq",
 ]
 resolver = "3"

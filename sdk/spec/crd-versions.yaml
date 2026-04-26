@@ -1,0 +1,11 @@
+pluginApiVersion: fluidbg.plugin/v1alpha1
+crds:
+  group: fluidbg.io
+  version: v1alpha1
+  kinds:
+    - BlueGreenDeployment
+    - InceptionPlugin
+    - StateStore
+sdk:
+  rustCrate: fluidbg-plugin-sdk
+  version: 0.1.0

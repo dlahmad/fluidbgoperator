@@ -6,9 +6,9 @@ FluidBG is a Kubernetes operator for blue-green deployments where the candidate 
 
 ```text
 operator/              Rust operator crate and CRD generator
-plugins/http_proxy/    Built-in HTTP proxy plugin
-plugins/http_writer/   Built-in HTTP writer plugin
+plugins/http/          Built-in HTTP observe/mock/write plugin
 plugins/rabbitmq/      Built-in RabbitMQ multi-role plugin
+sdk/                   Versioned plugin SDK models and language-neutral OpenAPI spec
 crds/                  Generated CRD manifests
 builtin-plugins/       InceptionPlugin manifests for shipped plugins
 deploy/                Operator deployment and RBAC

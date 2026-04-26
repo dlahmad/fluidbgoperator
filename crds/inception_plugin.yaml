@@ -148,6 +148,9 @@ spec:
                   preparePath:
                     nullable: true
                     type: string
+                  trafficShiftPath:
+                    nullable: true
+                    type: string
                 type: object
               supportedRoles:
                 items:

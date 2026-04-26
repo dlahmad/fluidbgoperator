@@ -59,8 +59,10 @@ build_linux_rust_binaries() {
             set -euo pipefail
             export PATH=/usr/local/cargo/bin:$PATH
             cargo build --release --bin fluidbg-operator
+            cargo build --release -p fluidbg-http
             cargo build --release -p fluidbg-rabbitmq
             cp /cargo-target/release/fluidbg-operator /work/dist/fluidbg-operator
+            cp /cargo-target/release/fluidbg-http /work/dist/fluidbg-http
             cp /cargo-target/release/fluidbg-rabbitmq /work/dist/fluidbg-rabbitmq
         '
 }
@@ -226,6 +228,25 @@ wait_bgd_generated_name() {
     return 1
 }
 
+wait_bgd_phase() {
+    local bgd="$1"
+    local namespace="$2"
+    local expected="$3"
+    local attempts="${4:-60}"
+    for i in $(seq 1 "$attempts"); do
+        local phase
+        phase="$(kubectl get bluegreendeployment "$bgd" -n "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        if [ "$phase" = "$expected" ]; then
+            return 0
+        fi
+        echo "Waiting for bluegreendeployment/$bgd phase $expected, current=${phase:-<none>} ($i/$attempts)"
+        sleep 2
+    done
+    echo "bluegreendeployment/$bgd did not reach phase $expected in namespace $namespace" >&2
+    kubectl get bluegreendeployment "$bgd" -n "$namespace" -o yaml >&2 || true
+    return 1
+}
+
 wait_inception_deployment_name() {
     local bgd="$1"
     local inception_point="$2"
@@ -242,6 +263,25 @@ wait_inception_deployment_name() {
     done
     echo "inception deployment not found for bgd=$bgd point=$inception_point in namespace $namespace" >&2
     kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" >&2 || true
+    return 1
+}
+
+wait_test_deployment_name() {
+    local bgd="$1"
+    local test_name="$2"
+    local namespace="$3"
+    for i in $(seq 1 60); do
+        local value
+        value="$(kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd,fluidbg.io/test=$test_name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        if [ -n "$value" ]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        echo "Waiting for test deployment bgd=$bgd test=$test_name... ($i/60)" >&2
+        sleep 1
+    done
+    echo "test deployment not found for bgd=$bgd test=$test_name in namespace $namespace" >&2
+    kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd,fluidbg.io/test=$test_name" >&2 || true
     return 1
 }
 
@@ -291,6 +331,7 @@ if [ "$BUILD_IMAGES" = "1" ]; then
     echo "--- Step 0c: Build local images ---"
     build_linux_rust_binaries "$IMAGE_ARCH"
     docker build --platform "linux/$IMAGE_ARCH" -t fluidbg/operator:dev "$ROOT_DIR"
+    docker build --platform "linux/$IMAGE_ARCH" -f "$ROOT_DIR/plugins/http/Dockerfile" -t fluidbg/http:dev "$ROOT_DIR"
     docker build --platform "linux/$IMAGE_ARCH" -f "$ROOT_DIR/plugins/rabbitmq/Dockerfile" -t fluidbg/rabbitmq:dev "$ROOT_DIR"
     docker build -t fluidbg/blue-app:dev "$ROOT_DIR/e2e/blue-app"
     docker build -t fluidbg/green-app:dev "$ROOT_DIR/e2e/green-app"
@@ -311,6 +352,7 @@ if [ "$BUILD_IMAGES" = "1" ]; then
         echo ""
         echo "--- Step 0d: Load images into kind cluster '$KIND_CLUSTER' ---"
         kind load docker-image fluidbg/operator:dev --name "$KIND_CLUSTER"
+        kind load docker-image fluidbg/http:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/rabbitmq:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/blue-app:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/green-app:dev --name "$KIND_CLUSTER"
@@ -341,12 +383,15 @@ kubectl delete bluegreendeployment order-processor-upgrade -n "$NS" --ignore-not
 kubectl delete bluegreendeployment order-processor-failing-upgrade -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-progressive-unsupported -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-progressive-upgrade -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-http-upgrade -n "$NS" --ignore-not-found
 kubectl delete statestore memory-store -n "$NS" --ignore-not-found
+kubectl delete inceptionplugin http -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq-no-progressive -n "$NS" --ignore-not-found
 kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
 kubectl delete service test-container -n "$NS" --ignore-not-found
+kubectl delete deployment,service -n "$NS" -l fluidbg.io/test --ignore-not-found
 kubectl delete deployment,service,configmap -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 kubectl delete pod -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 wait_deleted bluegreendeployment order-processor-bg "$NS"
@@ -355,7 +400,9 @@ wait_deleted bluegreendeployment order-processor-upgrade "$NS"
 wait_deleted bluegreendeployment order-processor-failing-upgrade "$NS"
 wait_deleted bluegreendeployment order-processor-progressive-unsupported "$NS"
 wait_deleted bluegreendeployment order-processor-progressive-upgrade "$NS"
+wait_deleted bluegreendeployment order-processor-http-upgrade "$NS"
 wait_deleted statestore memory-store "$NS"
+wait_deleted inceptionplugin http "$NS"
 wait_deleted inceptionplugin rabbitmq "$NS"
 wait_deleted inceptionplugin rabbitmq-no-progressive "$NS"
 wait_deleted deployment test-container "$NS"
@@ -397,13 +444,14 @@ sleep 5
 UPGRADE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-upgrade "$NS")"
 UPGRADE_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-upgrade incoming-orders "$NS")"
 UPGRADE_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-upgrade outgoing-results "$NS")"
+UPGRADE_TEST_DEPLOYMENT="$(wait_test_deployment_name order-processor-upgrade test-container "$NS")"
 wait_exists deployment "$UPGRADE_DEPLOYMENT" "$NS"
-wait_exists deployment test-container "$NS"
 kubectl rollout status deployment/"$BOOTSTRAP_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
-kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$UPGRADE_TEST_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$UPGRADE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$UPGRADE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_bgd_phase order-processor-upgrade "$NS" Observing 60
 
 echo ""
 echo "--- Step 6: Check BGD status ---"
@@ -485,8 +533,8 @@ fi
 echo ""
 echo "--- Step 10b: Verify previous green cleanup and promoted labels ---"
 wait_deleted deployment "$BOOTSTRAP_DEPLOYMENT" "$NS"
-wait_deleted deployment test-container "$NS"
-wait_deleted service test-container "$NS"
+wait_deleted deployment "$UPGRADE_TEST_DEPLOYMENT" "$NS"
+wait_deleted service "$UPGRADE_TEST_DEPLOYMENT" "$NS"
 wait_no_inception_resources "$NS"
 PROMOTED_GREEN="$(kubectl get deployment "$UPGRADE_DEPLOYMENT" -n "$NS" -o jsonpath='{.metadata.labels.fluidbg\.io/green}')"
 if [ "$PROMOTED_GREEN" != "true" ]; then
@@ -511,13 +559,14 @@ sleep 5
 FAILING_DEPLOYMENT="$(wait_bgd_generated_name order-processor-failing-upgrade "$NS")"
 FAILING_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-failing-upgrade incoming-orders "$NS")"
 FAILING_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-failing-upgrade outgoing-results "$NS")"
+FAILING_TEST_DEPLOYMENT="$(wait_test_deployment_name order-processor-failing-upgrade test-container "$NS")"
 wait_exists deployment "$FAILING_DEPLOYMENT" "$NS"
-wait_exists deployment test-container "$NS"
 kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FAILING_DEPLOYMENT" -n "$NS" --timeout=120s
-kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FAILING_TEST_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FAILING_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FAILING_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_bgd_phase order-processor-failing-upgrade "$NS" Observing 60
 
 echo ""
 echo "--- Step 14: Publish failing input messages ---"
@@ -559,8 +608,8 @@ fi
 
 wait_deleted deployment "$FAILING_DEPLOYMENT" "$NS"
 wait_deployment_label "$UPGRADE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
-wait_deleted deployment test-container "$NS"
-wait_deleted service test-container "$NS"
+wait_deleted deployment "$FAILING_TEST_DEPLOYMENT" "$NS"
+wait_deleted service "$FAILING_TEST_DEPLOYMENT" "$NS"
 wait_no_inception_resources "$NS"
 
 echo ""
@@ -618,14 +667,16 @@ sleep 5
 PROGRESSIVE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-progressive-upgrade "$NS")"
 PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-progressive-upgrade incoming-orders "$NS")"
 PROGRESSIVE_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-progressive-upgrade outgoing-results "$NS")"
+PROGRESSIVE_TEST_DEPLOYMENT="$(wait_test_deployment_name order-processor-progressive-upgrade test-container "$NS")"
 wait_exists deployment "$PROGRESSIVE_DEPLOYMENT" "$NS"
-wait_exists deployment test-container "$NS"
 kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$PROGRESSIVE_DEPLOYMENT" -n "$NS" --timeout=120s
-kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$PROGRESSIVE_TEST_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$PROGRESSIVE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_bgd_phase order-processor-progressive-upgrade "$NS" Observing 60
 sleep 5
+PROGRESSIVE_INPUT_POD_BEFORE="$(kubectl get pod -n "$NS" -l "app=$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -o jsonpath='{.items[0].metadata.name}')"
 
 echo ""
 echo "--- Step 20: Publish progressive splitter messages ---"
@@ -639,6 +690,7 @@ done
 
 echo ""
 echo "--- Step 21: Wait for progressive promotion and green-route skip semantics ---"
+PROGRESSIVE_LIVE_SHIFT_VERIFIED=false
 for i in $(seq 1 60); do
     STATUS_JSON="$(kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o json)"
     OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
@@ -646,6 +698,15 @@ for i in $(seq 1 60); do
     TRAFFIC_PERCENT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("currentTrafficPercent", 0))')"
     PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
     echo "  Progressive phase=${PHASE:-<none>} traffic=$TRAFFIC_PERCENT observed=$OBSERVED_COUNT pending=$PENDING_COUNT ($i/60)"
+    if [ "$TRAFFIC_PERCENT" = "100" ] && [ "$PROGRESSIVE_LIVE_SHIFT_VERIFIED" != "true" ] && [ "$PHASE" != "Completed" ]; then
+        PROGRESSIVE_INPUT_POD_CURRENT="$(kubectl get pod -n "$NS" -l "app=$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        if [ "$PROGRESSIVE_INPUT_POD_CURRENT" != "$PROGRESSIVE_INPUT_POD_BEFORE" ]; then
+            echo "Expected progressive traffic shift to update live without restarting splitter pod; before=$PROGRESSIVE_INPUT_POD_BEFORE current=$PROGRESSIVE_INPUT_POD_CURRENT" >&2
+            kubectl get pods -n "$NS" -l "app=$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -o wide >&2 || true
+            exit 1
+        fi
+        PROGRESSIVE_LIVE_SHIFT_VERIFIED=true
+    fi
     if [ "$PHASE" = "Completed" ]; then
         break
     fi
@@ -676,14 +737,94 @@ if [ "$PROGRESSIVE_PENDING" -ne 0 ]; then
     kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
     exit 1
 fi
+if [ "$PROGRESSIVE_LIVE_SHIFT_VERIFIED" != "true" ]; then
+    echo "Expected to observe a live progressive traffic shift before cleanup" >&2
+    kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
 wait_deleted deployment "$UPGRADE_DEPLOYMENT" "$NS"
-wait_deleted deployment test-container "$NS"
-wait_deleted service test-container "$NS"
+wait_deleted deployment "$PROGRESSIVE_TEST_DEPLOYMENT" "$NS"
+wait_deleted service "$PROGRESSIVE_TEST_DEPLOYMENT" "$NS"
 wait_no_inception_resources "$NS"
 wait_deployment_label "$PROGRESSIVE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
 
 echo ""
-echo "--- Step 22: Final pod state ---"
+echo "--- Step 22: Verify combined HTTP plugin observer/proxy path ---"
+wait_no_inception_resources "$NS"
+kubectl get inceptionplugin http -n "$NS" >/dev/null
+kubectl apply -f "$DEPLOY_DIR/10-http-plugin-bgd.yaml"
+sleep 5
+HTTP_DEPLOYMENT="$(wait_bgd_generated_name order-processor-http-upgrade "$NS")"
+HTTP_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-http-upgrade incoming-orders "$NS")"
+HTTP_PROXY_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-http-upgrade http-upstream "$NS")"
+HTTP_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-http-upgrade outgoing-results "$NS")"
+HTTP_TEST_DEPLOYMENT="$(wait_test_deployment_name order-processor-http-upgrade test-container "$NS")"
+wait_exists deployment "$HTTP_DEPLOYMENT" "$NS"
+kubectl rollout status deployment/"$PROGRESSIVE_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$HTTP_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$HTTP_TEST_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$HTTP_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$HTTP_PROXY_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$HTTP_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_bgd_phase order-processor-http-upgrade "$NS" Observing 60
+
+echo "Publishing HTTP proxy verification message..."
+curl -sf -u fluidbg:fluidbg \
+    -H "Content-Type: application/json" \
+    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+    -d '{"properties":{},"routing_key":"orders","payload":"{\"orderId\":\"http-proxy-1\",\"type\":\"order\",\"action\":\"http-proxy-check\"}","payload_encoding":"string"}' >/dev/null
+
+HTTP_CASE_VERIFIED=false
+for i in $(seq 1 40); do
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o json)"
+    PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+    PASSED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPassed", 0))')"
+    PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
+    echo "  HTTP BGD phase=${PHASE:-<none>} passed=$PASSED_COUNT pending=$PENDING_COUNT ($i/40)"
+    if [ "$PASSED_COUNT" -ge 1 ] && [ "$HTTP_CASE_VERIFIED" != "true" ]; then
+        HTTP_CASE_FLAGS="$(kubectl exec -n "$NS" deploy/"$HTTP_TEST_DEPLOYMENT" -- python -c 'import json,urllib.request; case=json.load(urllib.request.urlopen("http://localhost:8080/cases")).get("http-proxy-1", {}); print(json.dumps({"status": case.get("status"), "output_message_seen": bool(case.get("output_message_seen")), "http_call_seen": bool(case.get("http_call_seen"))}))')"
+        HTTP_OUTPUT_SEEN="$(printf '%s' "$HTTP_CASE_FLAGS" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("output_message_seen")).lower())')"
+        HTTP_CALL_SEEN="$(printf '%s' "$HTTP_CASE_FLAGS" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("http_call_seen")).lower())')"
+        HTTP_CASE_STATUS="$(printf '%s' "$HTTP_CASE_FLAGS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))')"
+        if [ "$HTTP_CASE_STATUS" != "passed" ] || [ "$HTTP_OUTPUT_SEEN" != "true" ] || [ "$HTTP_CALL_SEEN" != "true" ]; then
+            echo "Expected HTTP proxy case to pass only after output message and HTTP call were observed, got $HTTP_CASE_FLAGS" >&2
+            kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o yaml >&2
+            exit 1
+        fi
+        HTTP_CASE_VERIFIED=true
+    fi
+    if [ "$PHASE" = "Completed" ] && [ "$PASSED_COUNT" -ge 1 ]; then
+        break
+    fi
+    if [ "$PHASE" = "RolledBack" ]; then
+        echo "HTTP plugin BGD rolled back" >&2
+        kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o yaml >&2
+        exit 1
+    fi
+    sleep 5
+done
+
+HTTP_STATUS="$(kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o json)"
+HTTP_PHASE="$(printf '%s' "$HTTP_STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+HTTP_PASSED="$(printf '%s' "$HTTP_STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPassed", 0))')"
+if [ "$HTTP_PHASE" != "Completed" ] || [ "$HTTP_PASSED" -lt 1 ]; then
+    echo "Expected HTTP plugin BGD Completed with at least one passed test, got phase=$HTTP_PHASE passed=$HTTP_PASSED" >&2
+    kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+if [ "$HTTP_CASE_VERIFIED" != "true" ]; then
+    echo "Expected to verify HTTP proxy case before test deployment cleanup" >&2
+    kubectl get bluegreendeployment order-processor-http-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+wait_deleted deployment "$PROGRESSIVE_DEPLOYMENT" "$NS"
+wait_deleted deployment "$HTTP_TEST_DEPLOYMENT" "$NS"
+wait_deleted service "$HTTP_TEST_DEPLOYMENT" "$NS"
+wait_no_inception_resources "$NS"
+wait_deployment_label "$HTTP_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
+
+echo ""
+echo "--- Step 23: Final pod state ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
 

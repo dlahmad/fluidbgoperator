@@ -17,7 +17,7 @@ use crate::crd::blue_green::{
     InceptionPointDrainStatus, ManagedDeploymentSpec,
 };
 use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
-use crate::plugins::reconciler::{inception_instance_base_name, reconcile_inception_point};
+use crate::plugins::reconciler::reconcile_inception_point;
 use crate::state_store::StateStore;
 use crate::state_store::VerificationMode;
 use crate::strategy::PromotionAction;
@@ -32,7 +32,8 @@ mod tests;
 
 use plugin_lifecycle::{
     AssignmentKind, AssignmentTarget, PluginLifecycleStage, PropertyAssignment,
-    invoke_plugin_drain_status, invoke_plugin_lifecycle, start_plugin_draining,
+    invoke_plugin_drain_status, invoke_plugin_lifecycle, invoke_plugin_traffic_shift,
+    start_plugin_draining,
 };
 use promotion::{
     decide_promotion_action, initial_splitter_traffic_percent, validate_test_configuration,
@@ -40,6 +41,7 @@ use promotion::{
 use resources::{
     apply_deployment_manifest, apply_resource, cleanup_inception_resources, cleanup_test_resources,
     delete_deployment, ensure_inception_point_owned_resources, ensure_test_resources,
+    test_instance_name,
 };
 use status::{
     current_rollout_generation, ensure_rollout_generation, reset_status_for_new_rollout,
@@ -123,9 +125,11 @@ async fn reconcile(
 
     if rollout_needs_restart(&bgd, &phase) {
         info!(
-            "detected new spec generation for terminal BGD '{}'; restarting rollout",
+            "detected new spec generation for terminal BGD '{}'; cleaning previous rollout before restart",
             name
         );
+        cleanup_inception_resources(&bgd, &client, &namespace).await?;
+        cleanup_test_resources(&bgd, &client, &namespace).await?;
         reset_status_for_new_rollout(&bgd, &client, &namespace).await;
         return Ok(Action::requeue(std::time::Duration::from_secs(1)));
     }
@@ -151,8 +155,8 @@ async fn reconcile(
             resolve_current_green(&client, &namespace, &bgd.spec.selector).await?;
             validate_progressive_shifting_support(&bgd, &client, &namespace).await?;
             ensure_declared_deployments(&bgd, &client, &namespace).await?;
-            ensure_inception_resources(&bgd, &client, &namespace).await?;
             ensure_test_resources(&bgd, &client, &namespace).await?;
+            ensure_inception_resources(&bgd, &client, &namespace).await?;
             initialize_splitter_traffic(&bgd, &client, &namespace).await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Observing).await;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
@@ -358,7 +362,6 @@ async fn apply_splitter_traffic_percent(
     namespace: &str,
     traffic_percent: i32,
 ) -> std::result::Result<(), ReconcileError> {
-    let mut touched = Vec::new();
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
 
     for ip in &bgd.spec.inception_points {
@@ -373,24 +376,16 @@ async fn apply_splitter_traffic_percent(
         if !matches!(plugin.spec.topology, Topology::Standalone) {
             continue;
         }
-        let deployment_name =
-            inception_instance_base_name(bgd.metadata.name.as_deref().unwrap_or(""), &ip.name);
-        patch_targeted_deployment_env(
-            client,
+        invoke_plugin_traffic_shift(
+            bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
-            &deployment_name,
-            Some(&deployment_name),
-            &[("FLUIDBG_TRAFFIC_PERCENT", &traffic_percent.to_string())],
-            false,
+            &ip.name,
+            &plugin,
+            traffic_percent as u8,
         )
         .await?;
-        touched.push(DeploymentIdentity {
-            namespace: namespace.to_string(),
-            name: deployment_name,
-        });
     }
 
-    wait_for_deployments_ready(client, &touched).await?;
     Ok(())
 }
 
@@ -518,7 +513,14 @@ async fn ensure_inception_resources(
         .spec
         .tests
         .first()
-        .map(|test| format!("http://{}.{}:{}", test.name, namespace, test.port))
+        .map(|test| {
+            format!(
+                "http://{}.{}:{}",
+                test_instance_name(bgd, &test.name),
+                namespace,
+                test.port
+            )
+        })
         .unwrap_or_else(|| "http://localhost:8080".to_string());
     let test_data_verify_path = bgd
         .spec
@@ -843,13 +845,14 @@ pub(super) async fn apply_assignments(
             }
             AssignmentTarget::Test => {
                 for test in &bgd.spec.tests {
+                    let test_name = test_instance_name(bgd, &test.name);
                     let identity = DeploymentIdentity {
                         namespace: namespace.to_string(),
-                        name: test.name.clone(),
+                        name: test_name.clone(),
                     };
                     let key = DeploymentPatchKey {
                         namespace: namespace.to_string(),
-                        name: test.name.clone(),
+                        name: test_name,
                         container_name: assignment.container_name.clone(),
                     };
                     grouped

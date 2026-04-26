@@ -990,33 +990,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluidbg-http-proxy"
+name = "fluidbg-http"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "chrono",
- "regex",
+ "fluidbg-plugin-sdk",
  "reqwest",
  "serde",
  "serde_json",
- "serde_yaml_ng",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fluidbg-http-writer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml_ng",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1030,6 +1012,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "fluidbg-plugin-sdk",
  "futures",
  "jsonpath-rust",
  "jsonschema",
@@ -1051,12 +1034,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluidbg-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tracing",
+]
+
+[[package]]
 name = "fluidbg-rabbitmq"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "fluidbg-plugin-sdk",
  "futures-lite 2.6.1",
  "lapin",
  "rand 0.9.4",

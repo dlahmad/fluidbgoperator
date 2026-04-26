@@ -1,52 +1,18 @@
 use kube::api::Api;
-use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::crd::blue_green::BlueGreenDeployment;
 use crate::crd::inception_plugin::InceptionPlugin;
-use crate::plugins::reconciler::inception_service_name;
+use crate::plugins::reconciler::{
+    inception_service_name, plugin_template_context, render_container_env_injections,
+};
 
 use super::{ReconcileError, apply_assignments, wait_for_deployments_ready};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) enum AssignmentTarget {
-    Green,
-    Blue,
-    Test,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) enum AssignmentKind {
-    Env,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PropertyAssignment {
-    pub(super) target: AssignmentTarget,
-    pub(super) kind: AssignmentKind,
-    pub(super) name: String,
-    pub(super) value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) container_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct PluginLifecycleResponse {
-    #[serde(default)]
-    pub(super) assignments: Vec<PropertyAssignment>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct PluginDrainStatusResponse {
-    pub(super) drained: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) message: Option<String>,
-}
+pub(super) use fluidbg_plugin_sdk::{
+    AssignmentKind, AssignmentTarget, PluginDrainStatusResponse, PluginLifecycleResponse,
+    PropertyAssignment,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PluginLifecycleStage {
@@ -162,6 +128,61 @@ pub(super) async fn invoke_plugin_drain_status(
     Ok(Some(payload))
 }
 
+pub(super) async fn invoke_plugin_traffic_shift(
+    blue_green_ref: &str,
+    namespace: &str,
+    inception_point: &str,
+    plugin: &InceptionPlugin,
+    traffic_percent: u8,
+) -> std::result::Result<(), ReconcileError> {
+    let path = plugin
+        .spec
+        .lifecycle
+        .as_ref()
+        .and_then(|lifecycle| lifecycle.traffic_shift_path.as_deref())
+        .unwrap_or("/traffic");
+    let service_name = inception_service_name(blue_green_ref, inception_point);
+    let port = plugin
+        .spec
+        .container
+        .ports
+        .first()
+        .map(|port| port.container_port)
+        .unwrap_or(9090);
+    let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
+    let http = reqwest::Client::new();
+    for attempt in 1..=10 {
+        match http
+            .post(&url)
+            .json(&fluidbg_plugin_sdk::TrafficShiftRequest { traffic_percent })
+            .send()
+            .await
+        {
+            Ok(response) => {
+                response.error_for_status().map_err(|err| {
+                    ReconcileError::Store(format!(
+                        "plugin traffic shift call failed for {url}: {err}"
+                    ))
+                })?;
+                return Ok(());
+            }
+            Err(err) if attempt < 10 => {
+                warn!(
+                    "plugin traffic shift endpoint {} not ready yet (attempt {}/10): {}",
+                    url, attempt, err
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(err) => {
+                return Err(ReconcileError::Store(format!(
+                    "plugin traffic shift call failed for {url}: {err}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn start_plugin_draining(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
@@ -172,7 +193,47 @@ pub(super) async fn start_plugin_draining(
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
-        if let Some(assignments) = invoke_plugin_lifecycle(
+        let template_context =
+            plugin_template_context(ip, namespace, bgd.metadata.name.as_deref().unwrap_or(""));
+        let restore_injections = render_container_env_injections(&plugin, &template_context, true);
+        let mut assignments = Vec::new();
+        assignments.extend(
+            restore_injections
+                .green
+                .into_iter()
+                .map(|env| PropertyAssignment {
+                    target: AssignmentTarget::Green,
+                    kind: AssignmentKind::Env,
+                    name: env.name,
+                    value: env.value.unwrap_or_default(),
+                    container_name: None,
+                }),
+        );
+        assignments.extend(
+            restore_injections
+                .blue
+                .into_iter()
+                .map(|env| PropertyAssignment {
+                    target: AssignmentTarget::Blue,
+                    kind: AssignmentKind::Env,
+                    name: env.name,
+                    value: env.value.unwrap_or_default(),
+                    container_name: None,
+                }),
+        );
+        assignments.extend(
+            restore_injections
+                .test
+                .into_iter()
+                .map(|env| PropertyAssignment {
+                    target: AssignmentTarget::Test,
+                    kind: AssignmentKind::Env,
+                    name: env.name,
+                    value: env.value.unwrap_or_default(),
+                    container_name: None,
+                }),
+        );
+        if let Some(lifecycle_response) = invoke_plugin_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
@@ -182,11 +243,12 @@ pub(super) async fn start_plugin_draining(
         )
         .await?
         {
-            let filtered = filter_assignments(&assignments.assignments, restore_targets);
-            if !filtered.is_empty() {
-                let touched = apply_assignments(bgd, client, namespace, &filtered, false).await?;
-                wait_for_deployments_ready(client, &touched).await?;
-            }
+            assignments.extend(lifecycle_response.assignments);
+        }
+        let filtered = filter_assignments(&assignments, restore_targets);
+        if !filtered.is_empty() {
+            let touched = apply_assignments(bgd, client, namespace, &filtered, false).await?;
+            wait_for_deployments_ready(client, &touched).await?;
         }
     }
 

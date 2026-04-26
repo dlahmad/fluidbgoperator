@@ -31,6 +31,21 @@ The plugin is responsible for:
 
 ## Control Plane Contract
 
+### Versioned SDK Contract
+
+The plugin wire contract is versioned separately from plugin implementations:
+
+| Contract | Version | Source |
+|---|---|---|
+| Plugin API | `fluidbg.plugin/v1alpha1` | `sdk/spec/plugin-api-v1alpha1.openapi.yaml` |
+| Kubernetes CRDs | `fluidbg.io/v1alpha1` | `sdk/spec/crd-versions.yaml` |
+| Rust SDK crate | `fluidbg-plugin-sdk` | `sdk/rust` |
+
+Rust plugins should use `fluidbg-plugin-sdk` for shared lifecycle, assignment,
+filter, selector, route, observation, and test registration models. Non-Rust
+plugins should generate clients or server stubs from the OpenAPI spec so all
+SDKs keep the same JSON shapes and endpoint semantics.
+
 ### InceptionPlugin CRD
 
 An `InceptionPlugin` declares:
@@ -107,6 +122,12 @@ For standalone plugins the operator injects:
   - example: `duplicator,observer`
 - `FLUIDBG_CONFIG_PATH`
   - example: `/etc/fluidbg/config.yaml`
+
+Standalone env injection templates can also reference operator-provided template
+context values such as `{{pluginServiceName}}`, `{{pluginDeploymentName}}`,
+`{{inceptionPoint}}`, `{{blueGreenRef}}`, and `{{namespace}}`. Built-in HTTP
+uses `{{pluginServiceName}}` so both blue and test containers can call the same
+combined HTTP plugin service.
 
 The plugin gets the full operator and test-container base URLs from env injection, not from hardcoded names inside the plugin itself.
 

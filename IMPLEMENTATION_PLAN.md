@@ -6,9 +6,9 @@ This document tracks the current implementation state and remaining work. `ARCHI
 
 ```text
 operator/              Operator crate, CRDs, controller, state stores, HTTP API
-plugins/http_proxy/    HTTP proxy plugin
-plugins/http_writer/   HTTP writer plugin
+plugins/http/          Combined HTTP observe/mock/write plugin
 plugins/rabbitmq/      Combined RabbitMQ plugin roles
+sdk/                   Plugin SDK models and language-neutral API specs
 crds/                  Generated Kubernetes CRDs
 builtin-plugins/       InceptionPlugin manifests
 deploy/                Operator deployment and RBAC
@@ -30,11 +30,11 @@ controller/status.rs           BlueGreenDeployment status patches
 
 | Area | Status |
 |---|---|
-| Rust workspace | Operator plus HTTP and RabbitMQ plugin crates |
-| CRDs | `BlueGreenDeployment`, `InceptionPlugin`, `StateStore` |
+| Rust workspace | Operator, Rust plugin SDK, combined HTTP plugin, and RabbitMQ plugin crates |
+| CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment`, `InceptionPlugin`, `StateStore` |
 | State stores | In-memory and PostgreSQL backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |
-| Plugin model | Generic plugin CRD rendering plus built-in HTTP/RabbitMQ manifests |
+| Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
 | Operator API | `/health`, `/testcases`, `/testcase-verdicts`, `/counts/{bg_ref}` |
 | Test harness | Unit tests plus kind-based e2e assets |
 

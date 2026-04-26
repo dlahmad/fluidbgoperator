@@ -299,7 +299,7 @@ When reconciling a `BlueGreenDeployment`, the operator processes each inception 
 5. **Inject** standard runtime env vars into the plugin container.
 6. **Resolve** plugin-declared env-var injections into the blue and/or test containers:
    - For sidecars injecting into blue: value is `http://localhost:{port}` (same-pod networking).
-   - For standalone plugins injecting into the test container: value is `http://{plugin-service}:{port}/write`.
+   - For standalone plugins injecting into blue or the test container: value can reference `{{pluginServiceName}}`, `{{pluginDeploymentName}}`, `{{inceptionPoint}}`, `{{blueGreenRef}}`, and `{{namespace}}`.
 
 Because every step is driven by the CRD, **adding a plugin means: publish a container image + apply an `InceptionPlugin` CRD.** No operator rebuild.
 
@@ -307,42 +307,36 @@ Because every step is driven by the CRD, **adding a plugin means: publish a cont
 
 FluidBG ships with these plugins (each is an `InceptionPlugin` CRD + container image pre-registered by the installer):
 
-| Plugin | Modes | Directions | Topology |
+| Plugin | Roles | Topology | Notes |
 |---|---|---|---|
-| `http-proxy` | `trigger`, `passthrough-duplicate`, `reroute-mock` | ingress, egress | sidecar-blue |
-| `http-writer` | `write` | ingress, egress | standalone |
-| `rabbitmq-duplicator` | `trigger`, `passthrough-duplicate` | ingress, egress | standalone |
-| `rabbitmq-writer` | `write` | ingress, egress | standalone |
-| `kafka-duplicator` | `trigger`, `passthrough-duplicate` | ingress, egress | standalone |
-| `kafka-writer` | `write` | ingress, egress | standalone |
+| `http` | `observer`, `mock`, `writer` | standalone | One HTTP service exposes proxy fallback and `/write`. |
+| `rabbitmq` | `duplicator`, `splitter`, `combiner`, `observer`, `writer`, `consumer` | standalone | Supports progressive shifting through the splitter role. |
 
-Additional plugins (SQS, NATS, Azure Service Bus, gRPC, …) follow the same two archetypes (`*-duplicator` / `*-writer`) and can be added by the user via their own `InceptionPlugin` CRDs.
+Additional plugins (SQS, NATS, Azure Service Bus, gRPC, …) follow the same CRD and SDK contract and can be added by the user via their own `InceptionPlugin` CRDs.
 
 **Archetype summary:**
 
-- **`*-duplicator`** — reads from a source queue, duplicates matched messages to a shadow queue blue consumes from (ingress) or subscribes to an output queue blue produces to (egress).
-- **`*-writer`** — exposes an HTTP `/write` endpoint; the test container calls it to publish messages into blue's input or output flow.
-- **`http-proxy`** — sidecar that intercepts blue's HTTP traffic (ingress, egress, or both).
-- **`http-writer`** — standalone gateway that forwards requests into blue's HTTP ingress (or to an upstream).
+- **Queue transport plugins** — read, duplicate, split, combine, observe, consume, or write queue resources.
+- **HTTP transport plugin** — exposes one service for observing/mocking HTTP requests and for `/write` injection.
 
 ### Plugin Deployment Diagrams
 
-**HTTP proxy (sidecar in blue pod):**
+**HTTP plugin (standalone service):**
 
 ```mermaid
 flowchart TD
-    subgraph BP["Blue Pod"]
-        BC["blue container"]
-        PXY["http-proxy sidecar<br/>reads config from ConfigMap"]
-        BC -->|"envVarName<br/>points to localhost:{port}"| PXY
-    end
+    HP["http plugin Deployment<br/>reads config from ConfigMap"]
+    SVC["http plugin Service"]
+    B["Blue container"]
+    T["Test container"]
 
-    SRC["HTTP Client"] -->|"ingress request"| PXY
-    PXY -->|"ingress: forward to blue"| BC
-    BC -->|"egress: outbound call"| PXY
-    PXY -->|"trigger: register testId"| OP["Operator"]
-    PXY -->|"observe / mock"| TC["Test Container"]
-    PXY -->|"passthrough: forward"| REAL["Real Upstream"]
+    B -->|"envVarName points to Service"| SVC
+    T -->|"writeEnvVar points to Service"| SVC
+    SVC --> HP
+    HP -->|"register testId"| OP["Operator"]
+    HP -->|"observe / mock"| T
+    HP -->|"proxy fallback"| REAL["Real Upstream / Blue target"]
+    T -->|"POST /write"| HP
 ```
 
 **Queue duplicator (standalone deployment):**
@@ -416,25 +410,25 @@ Declares a plugin: its image, topology, what it supports, the schema of user con
 apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
-  name: http-proxy
+  name: http
 spec:
-  description: "HTTP proxy sidecar for intercepting and routing HTTP traffic"
-  image: fluidbg/http-proxy:v0.1.0
-  topology: sidecar-blue
+  description: "HTTP transport plugin for observing, mocking, and writing HTTP traffic"
+  image: fluidbg/http:v0.1.0
+  topology: standalone
 
-  modes: [trigger, passthrough-duplicate, reroute-mock]
-  directions: [ingress, egress]
+  supportedRoles: [observer, mock, writer]
   fieldNamespaces: [http]
 
   # JSON Schema that validates the user's `config` block in the BlueGreenDeployment.
   # The operator rejects BlueGreenDeployments whose config does not match this schema.
   configSchema:
     type: object
-    required: [proxyPort, realEndpoint, envVarName]
     properties:
-      proxyPort: { type: integer }
+      port: { type: integer }
       realEndpoint: { type: string }
+      targetUrl: { type: string }
       envVarName: { type: string }
+      writeEnvVar: { type: string }
       testId: { type: object }
       match: { type: array }
       filters: { type: array }
@@ -447,8 +441,8 @@ spec:
 
   container:
     ports:
-      - name: proxy
-        containerPort: 8080
+      - name: http
+        containerPort: 9090
     volumeMounts:
       - name: plugin-config
         mountPath: /etc/fluidbg
@@ -459,9 +453,11 @@ spec:
     blueContainer:
       env:
         - nameFromConfig: envVarName                   # key in user's config whose value is the env var name
-          valueTemplate: "http://localhost:{{ .proxyPort }}"  # resolved by the operator
+          valueTemplate: "http://{{pluginServiceName}}:9090"
     testContainer:
-      env: []
+      env:
+        - nameFromConfig: writeEnvVar
+          valueTemplate: "http://{{pluginServiceName}}:9090"
 ```
 
 ### `StateStore`
@@ -510,7 +506,7 @@ spec:
     - name: incoming-orders
       directions: [ingress]
       mode: trigger
-      pluginRef: { name: rabbitmq-duplicator }
+      pluginRef: { name: rabbitmq }
       config:
         inputQueue: orders
         blueInputQueue: orders-blue
@@ -529,9 +525,9 @@ spec:
     - name: payment-calls
       directions: [egress]
       mode: passthrough-duplicate
-      pluginRef: { name: http-proxy }
+      pluginRef: { name: http }
       config:
-        proxyPort: 8081
+        port: 9090
         realEndpoint: https://payment.internal/v1
         envVarName: PAYMENT_SERVICE_URL
         testId:
@@ -549,9 +545,9 @@ spec:
     - name: inventory-calls
       directions: [egress]
       mode: reroute-mock
-      pluginRef: { name: http-proxy }
+      pluginRef: { name: http }
       config:
-        proxyPort: 8082
+        port: 9090
         realEndpoint: https://inventory.internal/v2
         envVarName: INVENTORY_SERVICE_URL
         testId:
@@ -569,9 +565,9 @@ spec:
     - name: order-inject
       directions: [ingress]
       mode: write
-      pluginRef: { name: rabbitmq-writer }
+      pluginRef: { name: http }
       config:
-        targetQueue: orders-blue
+        targetUrl: http://order-processor-blue:8080
         writeEnvVar: ORDER_INJECT_URL
       notifyTests: [order-validation]
 
@@ -679,7 +675,7 @@ For `reroute-mock`, the test container's **response body** is the mock the plugi
 The operator injects one env var per `write` inception point:
 
 ```
-ORDER_INJECT_URL=http://fluidbg-writer-order-inject.production:9090
+ORDER_INJECT_URL=http://fluidbg-order-inject-1a2b3c4d-svc:9090
 ```
 
 The test container calls `POST $ORDER_INJECT_URL/write` with a plugin-specific payload.
@@ -735,9 +731,9 @@ The operator periodically polls `GET /result/{testId}` on the test container. Th
 
 ```mermaid
 sequenceDiagram
-    participant RD as rabbitmq-duplicator<br/>(trigger)
+    participant RD as rabbitmq<br/>(duplicator + observer)
     participant BC as Blue
-    participant HP as http-proxy<br/>(passthrough-duplicate / reroute-mock)
+    participant HP as http<br/>(observer / mock / writer)
     participant TC as Test Container
     participant OP as Operator
 
@@ -793,7 +789,7 @@ flowchart TD
 
 Traffic split is implemented:
 - **Queue plugins**: the trigger duplicator routes a percentage of matched messages to the shadow queue (blue); the rest bypass, going only to green.
-- **HTTP plugins**: the proxy splits traffic to blue vs green by configured percentage.
+- **HTTP plugin**: the built-in HTTP plugin does not advertise `supportsProgressiveShifting`; progressive rollouts require a splitter-capable plugin such as the built-in RabbitMQ splitter.
 
 ### Hard Switch Strategy
 
@@ -836,13 +832,11 @@ operator/src/
 └── validation.rs               # Static validation helpers
 
 plugins/
-├── http_proxy/
-├── http_writer/
+├── http/                       # Combined HTTP observer/mock/writer
 └── rabbitmq/                   # Combined RabbitMQ duplicator/splitter/combiner/writer/observer
 
 builtin-plugins/
-├── http_proxy.yaml
-├── http_writer.yaml
+├── http.yaml
 └── rabbitmq.yaml
 ```
 
