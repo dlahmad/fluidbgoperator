@@ -67,9 +67,9 @@ def observe(test_id, inception_point):
         if inception_point == "outgoing-results":
             payload = data.get("payload") or {}
             original = payload.get("originalMessage") or {}
-            processed_by = payload.get("processedBy")
+            route = data.get("route")
             cases[test_id]["result_message"] = payload
-            if processed_by != "blue":
+            if route != "blue":
                 cases[test_id]["status"] = "observing"
             elif original.get("shouldPass", True):
                 cases[test_id]["status"] = "passed"

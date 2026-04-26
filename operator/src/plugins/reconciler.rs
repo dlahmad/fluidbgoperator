@@ -264,6 +264,7 @@ pub fn reconcile_inception_point(
                     c
                 }],
                 volumes: Some(volumes),
+                termination_grace_period_seconds: Some(1),
                 ..Default::default()
             };
 
@@ -713,6 +714,18 @@ mod tests {
                 .image
                 .as_deref(),
             Some("fluidbg/rabbitmq:v0.1.0")
+        );
+        assert_eq!(
+            deploy
+                .spec
+                .as_ref()
+                .unwrap()
+                .template
+                .spec
+                .as_ref()
+                .unwrap()
+                .termination_grace_period_seconds,
+            Some(1)
         );
     }
 

@@ -165,7 +165,7 @@ Progressive shifting and event notifications are not configured ad hoc on an inc
 | `canNotifyTestOnEvents` | The plugin can optionally notify the test container for every matching resource that passes through it. This may be used by splitters, combiners, or observers. |
 | `providesSink` | The plugin can expose a sink path that consumes and terminates a resource branch. |
 
-The BGD should only enable progressive strategy steps when the referenced splitter plugin advertises `supportsProgressiveShifting: true`.
+The operator rejects progressive strategy rollouts unless at least one referenced standalone splitter plugin advertises `supportsProgressiveShifting: true`.
 
 ---
 

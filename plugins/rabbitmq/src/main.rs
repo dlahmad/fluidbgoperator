@@ -21,6 +21,47 @@ mod config;
 
 use config::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrafficRoute {
+    Blue,
+    Green,
+    Both,
+    Unknown,
+}
+
+impl TrafficRoute {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Green => "green",
+            Self::Both => "both",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn should_register_case(self) -> bool {
+        !matches!(self, Self::Green)
+    }
+}
+
+fn route_from_output_source(combiner: &CombinerConfig, source_queue: &str) -> TrafficRoute {
+    if combiner
+        .blue_output_queue
+        .as_deref()
+        .is_some_and(|queue| queue == source_queue)
+    {
+        return TrafficRoute::Blue;
+    }
+    if combiner
+        .green_output_queue
+        .as_deref()
+        .is_some_and(|queue| queue == source_queue)
+    {
+        return TrafficRoute::Green;
+    }
+    TrafficRoute::Unknown
+}
+
 fn extract_json_path(value: &Value, path: &str) -> Option<String> {
     let stripped = path.strip_prefix('$').unwrap_or(path);
     let stripped = stripped.strip_prefix('.').unwrap_or(stripped);
@@ -204,6 +245,7 @@ async fn notify_test_container(
     test_id: &str,
     inception_point: &str,
     payload: &Value,
+    route: TrafficRoute,
 ) -> Result<()> {
     let path = notify_path
         .replace("{testId}", test_id)
@@ -212,6 +254,7 @@ async fn notify_test_container(
         "testId": test_id,
         "inceptionPoint": inception_point,
         "payload": payload,
+        "route": route.as_str(),
     });
     client
         .post(format!(
@@ -223,6 +266,31 @@ async fn notify_test_container(
         .send()
         .await?;
     Ok(())
+}
+
+async fn notify_observer(
+    client: &reqwest::Client,
+    state: &AppState,
+    observer: &ObserverConfig,
+    test_id: &str,
+    payload: &Value,
+    route: TrafficRoute,
+) {
+    if let Some(path) = observer.notify_path.as_deref() {
+        if let Err(err) = notify_test_container(
+            client,
+            &state.test_container_url,
+            path,
+            test_id,
+            &state.inception_point,
+            payload,
+            route,
+        )
+        .await
+        {
+            warn!("failed to notify test container for {}: {}", test_id, err);
+        }
+    }
 }
 
 async fn register_test_case(
@@ -756,6 +824,8 @@ async fn process_input_delivery(
         return Ok(());
     }
 
+    let mut route = TrafficRoute::Unknown;
+
     if has_role(&state.roles, ActiveRole::Duplicator) {
         let duplicator = duplicator_config(&state.config)?;
         if let Some(green_queue) = &duplicator.green_input_queue {
@@ -780,6 +850,7 @@ async fn process_input_delivery(
                 )
                 .await?;
         }
+        route = TrafficRoute::Both;
     } else if has_role(&state.roles, ActiveRole::Splitter) {
         let splitter = splitter_config(&state.config)?;
         let send_to_blue = routes_to_blue(&body_data, blue_traffic_percent());
@@ -795,6 +866,7 @@ async fn process_input_delivery(
                     )
                     .await?;
             }
+            route = TrafficRoute::Blue;
         } else if let Some(green_queue) = &splitter.green_input_queue {
             channel
                 .basic_publish(
@@ -805,6 +877,7 @@ async fn process_input_delivery(
                     BasicProperties::default().with_headers(headers.clone()),
                 )
                 .await?;
+            route = TrafficRoute::Green;
         }
     }
 
@@ -813,32 +886,21 @@ async fn process_input_delivery(
         && let Some(selector) = &observer.test_id
         && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
     {
-        if let Err(err) = register_test_case(
-            http_client,
-            &state.testcase_registration_url,
-            &state.blue_green_ref,
-            &state.inception_point,
-            &test_id,
-            &state.test_container_url,
-            state.testcase_verify_path_template.as_deref(),
-        )
-        .await
-        {
-            warn!("failed to register test case {}: {}", test_id, err);
-        }
-        if let Some(notify_path) = &observer.notify_path
-            && let Err(err) = notify_test_container(
+        if route.should_register_case()
+            && let Err(err) = register_test_case(
                 http_client,
-                &state.test_container_url,
-                notify_path,
-                &test_id,
+                &state.testcase_registration_url,
+                &state.blue_green_ref,
                 &state.inception_point,
-                &body_json,
+                &test_id,
+                &state.test_container_url,
+                state.testcase_verify_path_template.as_deref(),
             )
             .await
         {
-            warn!("failed to notify test container for {}: {}", test_id, err);
+            warn!("failed to register test case {}: {}", test_id, err);
         }
+        notify_observer(http_client, state, observer, &test_id, &body_json, route).await;
     }
 
     delivery.ack(BasicAckOptions::default()).await?;
@@ -995,6 +1057,7 @@ async fn run_combine_loop_once(
     declare_queue(&consume_channel, &source_queue).await?;
     declare_queue(&publish_channel, &result_queue).await?;
     let http_client = reqwest::Client::new();
+    let combiner = combiner_config(&state.config)?;
 
     let mut consumer = consume_channel
         .basic_consume(
@@ -1020,6 +1083,7 @@ async fn run_combine_loop_once(
         let delivery = delivery?;
         let headers = delivery.properties.headers().clone().unwrap_or_default();
         let body_json: Value = serde_json::from_slice(&delivery.data).unwrap_or(Value::Null);
+        let route = route_from_output_source(combiner, &source_queue);
         publish_channel
             .basic_publish(
                 "",
@@ -1036,35 +1100,21 @@ async fn run_combine_loop_once(
             && let Some(selector) = &observer.test_id
             && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
         {
-            if let Err(err) = register_test_case(
-                &http_client,
-                &state.testcase_registration_url,
-                &state.blue_green_ref,
-                &state.inception_point,
-                &test_id,
-                &state.test_container_url,
-                state.testcase_verify_path_template.as_deref(),
-            )
-            .await
-            {
-                warn!("failed to register test case {}: {}", test_id, err);
-            }
-            if let Some(notify_path) = &observer.notify_path
-                && let Err(err) = notify_test_container(
+            if route.should_register_case()
+                && let Err(err) = register_test_case(
                     &http_client,
-                    &state.test_container_url,
-                    notify_path,
-                    &test_id,
+                    &state.testcase_registration_url,
+                    &state.blue_green_ref,
                     &state.inception_point,
-                    &body_json,
+                    &test_id,
+                    &state.test_container_url,
+                    state.testcase_verify_path_template.as_deref(),
                 )
                 .await
             {
-                warn!(
-                    "failed to notify test container for {} from {}: {}",
-                    test_id, source_queue, err
-                );
+                warn!("failed to register test case {}: {}", test_id, err);
             }
+            notify_observer(&http_client, &state, observer, &test_id, &body_json, route).await;
         }
         delivery.ack(BasicAckOptions::default()).await?;
     }
@@ -1196,4 +1246,47 @@ async fn main() -> Result<()> {
     let (_, worker_result) = tokio::join!(server, worker);
     worker_result??;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CombinerConfig, TrafficRoute, route_from_output_source};
+
+    #[test]
+    fn duplicator_route_is_reported_as_both_and_registered() {
+        let route = TrafficRoute::Both;
+        assert_eq!(route.as_str(), "both");
+        assert!(route.should_register_case());
+    }
+
+    #[test]
+    fn green_route_notifies_but_does_not_register_operator_case() {
+        let route = TrafficRoute::Green;
+        assert_eq!(route.as_str(), "green");
+        assert!(!route.should_register_case());
+    }
+
+    #[test]
+    fn combiner_route_comes_from_source_queue() {
+        let combiner = CombinerConfig {
+            output_queue: Some("results".to_string()),
+            green_output_queue: Some("results-green".to_string()),
+            blue_output_queue: Some("results-blue".to_string()),
+            green_output_queue_env_var: None,
+            blue_output_queue_env_var: None,
+        };
+
+        assert_eq!(
+            route_from_output_source(&combiner, "results-green"),
+            TrafficRoute::Green
+        );
+        assert_eq!(
+            route_from_output_source(&combiner, "results-blue"),
+            TrafficRoute::Blue
+        );
+        assert_eq!(
+            route_from_output_source(&combiner, "results-other"),
+            TrafficRoute::Unknown
+        );
+    }
 }

@@ -242,6 +242,37 @@ If the test is still in progress:
 }
 ```
 
+## Observer Notification Body
+
+`observer.notifyPath` is a single callback endpoint. Plugins include route metadata in the JSON body so the test container can distinguish mirrored traffic from weighted splitter traffic without requiring separate URLs. Route metadata is plugin-owned infrastructure metadata; applications do not need to add route fields to their business payloads.
+
+Notification shape:
+
+```json
+{
+  "testId": "order-17",
+  "inceptionPoint": "incoming-orders",
+  "route": "blue",
+  "payload": {}
+}
+```
+
+`route` values:
+
+| Value | Meaning |
+|---|---|
+| `blue` | The resource was routed only to the candidate blue path. |
+| `green` | The resource was routed only to the current green path. |
+| `both` | The resource was duplicated to both green and blue. This is the RabbitMQ `duplicator` behavior. |
+| `unknown` | The plugin cannot determine the route for this observation. |
+
+For RabbitMQ, input routes come from the duplicator/splitter decision. Output routes come from the combiner source queue: `blueOutputQueue` maps to `blue`, and `greenOutputQueue` maps to `green`.
+
+RabbitMQ operator registration semantics:
+
+- `blue`, `both`, and `unknown` observations register an operator `testCase`.
+- `green` observations still call `observer.notifyPath`, but do not register an operator `testCase`; this prevents progressive splitter traffic sent only to green from becoming pending blue verification cases.
+
 ## Communication Diagrams
 
 ### 1. Runtime Discovery
@@ -381,8 +412,9 @@ flowchart TD
 
 - filters messages according to `observer.match`
 - extracts `testId`
-- registers the `testCase` with the operator
-- calls `observer.notifyPath` on the test container
+- calls `observer.notifyPath` with `route` metadata in the body
+- registers the `testCase` with the operator for `blue`, `both`, and `unknown` routes
+- does not register green-only observations as operator verification cases
 
 ## Practical Notes
 

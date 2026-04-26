@@ -38,8 +38,8 @@ use promotion::{
     decide_promotion_action, initial_splitter_traffic_percent, validate_test_configuration,
 };
 use resources::{
-    apply_deployment_manifest, apply_resource, cleanup_test_resources, delete_deployment,
-    ensure_inception_point_owned_resources, ensure_test_resources,
+    apply_deployment_manifest, apply_resource, cleanup_inception_resources, cleanup_test_resources,
+    delete_deployment, ensure_inception_point_owned_resources, ensure_test_resources,
 };
 use status::{
     current_rollout_generation, ensure_rollout_generation, reset_status_for_new_rollout,
@@ -149,6 +149,7 @@ async fn reconcile(
                 return Ok(Action::requeue(std::time::Duration::from_secs(300)));
             }
             resolve_current_green(&client, &namespace, &bgd.spec.selector).await?;
+            validate_progressive_shifting_support(&bgd, &client, &namespace).await?;
             ensure_declared_deployments(&bgd, &client, &namespace).await?;
             ensure_inception_resources(&bgd, &client, &namespace).await?;
             ensure_test_resources(&bgd, &client, &namespace).await?;
@@ -253,6 +254,7 @@ async fn reconcile(
         }
         BGDPhase::Completed | BGDPhase::RolledBack => {
             info!("BGD '{}' in terminal state {:?}", name, phase);
+            cleanup_inception_resources(&bgd, &client, &namespace).await?;
             cleanup_test_resources(&bgd, &client, &namespace).await?;
             Ok(Action::requeue(std::time::Duration::from_secs(300)))
         }
@@ -270,6 +272,71 @@ fn rollout_needs_restart(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
         .and_then(|status| status.observed_generation)
         .unwrap_or_default();
     generation > observed_generation
+}
+
+async fn validate_progressive_shifting_support(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let Some(promotion) = bgd.spec.promotion.as_ref() else {
+        return Ok(());
+    };
+    if !matches!(
+        promotion.strategy.strategy_type,
+        crate::crd::blue_green::StrategyType::Progressive
+    ) {
+        return Ok(());
+    }
+
+    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let mut saw_splitter = false;
+    for ip in &bgd.spec.inception_points {
+        if !ip
+            .roles
+            .iter()
+            .any(|role| matches!(role, PluginRole::Splitter))
+        {
+            continue;
+        }
+        saw_splitter = true;
+        let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        validate_progressive_splitter_plugin(&ip.name, &ip.plugin_ref.name, &plugin)?;
+    }
+
+    if !saw_splitter {
+        return Err(ReconcileError::Store(
+            "progressive strategy requires at least one splitter inception point".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_progressive_splitter_plugin(
+    inception_point_name: &str,
+    plugin_name: &str,
+    plugin: &InceptionPlugin,
+) -> std::result::Result<(), ReconcileError> {
+    let supports_progressive = plugin
+        .spec
+        .features
+        .as_ref()
+        .map(|features| features.supports_progressive_shifting)
+        .unwrap_or(false);
+    if !supports_progressive {
+        return Err(ReconcileError::Store(format!(
+            "progressive strategy requires inception point '{}' plugin '{}' to set features.supportsProgressiveShifting=true",
+            inception_point_name, plugin_name
+        )));
+    }
+    if !matches!(plugin.spec.topology, Topology::Standalone) {
+        return Err(ReconcileError::Store(format!(
+            "progressive strategy requires standalone splitter plugin '{}'",
+            plugin_name
+        )));
+    }
+    Ok(())
 }
 
 async fn initialize_splitter_traffic(
@@ -585,8 +652,25 @@ async fn reconcile_draining(
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     let mut statuses = Vec::new();
     let mut all_final = true;
+    let previous_statuses = bgd
+        .status
+        .as_ref()
+        .map(|status| status.inception_point_drains.as_slice())
+        .unwrap_or_default();
 
     for ip in &bgd.spec.inception_points {
+        if let Some(existing) = previous_statuses.iter().find(|status| {
+            status.name == ip.name
+                && matches!(
+                    status.phase,
+                    InceptionPointDrainPhase::Successful
+                        | InceptionPointDrainPhase::TimedOutMaybeSuccessful
+                )
+        }) {
+            statuses.push(existing.clone());
+            continue;
+        }
+
         let max_wait_seconds = ip
             .drain
             .as_ref()
@@ -672,6 +756,7 @@ async fn finalize_draining(
         .await?;
     }
 
+    cleanup_inception_resources(bgd, client, namespace).await?;
     cleanup_test_resources(bgd, client, namespace).await?;
 
     let final_phase = if bgd

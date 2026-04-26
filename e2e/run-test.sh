@@ -170,6 +170,25 @@ wait_exists() {
     return 1
 }
 
+wait_no_inception_resources() {
+    local namespace="$1"
+    for i in $(seq 1 60); do
+        local deployments services configmaps pods
+        deployments="$(kubectl get deployment -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        services="$(kubectl get service -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        configmaps="$(kubectl get configmap -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        pods="$(kubectl get pods -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$deployments" = "0" ] && [ "$services" = "0" ] && [ "$configmaps" = "0" ] && [ "$pods" = "0" ]; then
+            return 0
+        fi
+        echo "Waiting for old inception resources to disappear... deployments=$deployments services=$services configmaps=$configmaps pods=$pods ($i/60)"
+        sleep 1
+    done
+    echo "old inception resources still exist in namespace $namespace" >&2
+    kubectl get deployment,service,configmap,pods -n "$namespace" -l fluidbg.io/inception-point >&2 || true
+    return 1
+}
+
 wait_deployment_label() {
     local deployment="$1"
     local namespace="$2"
@@ -320,20 +339,28 @@ kubectl delete bluegreendeployment order-processor-bg -n "$NS" --ignore-not-foun
 kubectl delete bluegreendeployment order-processor-bootstrap -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-upgrade -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-failing-upgrade -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-progressive-unsupported -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-progressive-upgrade -n "$NS" --ignore-not-found
 kubectl delete statestore memory-store -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
+kubectl delete inceptionplugin rabbitmq-no-progressive -n "$NS" --ignore-not-found
 kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
 kubectl delete service test-container -n "$NS" --ignore-not-found
 kubectl delete deployment,service,configmap -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
+kubectl delete pod -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 wait_deleted bluegreendeployment order-processor-bg "$NS"
 wait_deleted bluegreendeployment order-processor-bootstrap "$NS"
 wait_deleted bluegreendeployment order-processor-upgrade "$NS"
 wait_deleted bluegreendeployment order-processor-failing-upgrade "$NS"
+wait_deleted bluegreendeployment order-processor-progressive-unsupported "$NS"
+wait_deleted bluegreendeployment order-processor-progressive-upgrade "$NS"
 wait_deleted statestore memory-store "$NS"
 wait_deleted inceptionplugin rabbitmq "$NS"
+wait_deleted inceptionplugin rabbitmq-no-progressive "$NS"
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
+wait_no_inception_resources "$NS"
 
 echo ""
 echo "--- Step 3: Deploy operator ---"
@@ -460,6 +487,7 @@ echo "--- Step 10b: Verify previous green cleanup and promoted labels ---"
 wait_deleted deployment "$BOOTSTRAP_DEPLOYMENT" "$NS"
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
+wait_no_inception_resources "$NS"
 PROMOTED_GREEN="$(kubectl get deployment "$UPGRADE_DEPLOYMENT" -n "$NS" -o jsonpath='{.metadata.labels.fluidbg\.io/green}')"
 if [ "$PROMOTED_GREEN" != "true" ]; then
     echo "Expected promoted deployment to have fluidbg.io/green=true, got '$PROMOTED_GREEN'" >&2
@@ -481,11 +509,15 @@ echo "--- Step 13: Deploy failing upgrade BGD ---"
 kubectl apply -f "$DEPLOY_DIR/07-failing-upgrade-bgd.yaml"
 sleep 5
 FAILING_DEPLOYMENT="$(wait_bgd_generated_name order-processor-failing-upgrade "$NS")"
+FAILING_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-failing-upgrade incoming-orders "$NS")"
+FAILING_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-failing-upgrade outgoing-results "$NS")"
 wait_exists deployment "$FAILING_DEPLOYMENT" "$NS"
 wait_exists deployment test-container "$NS"
 kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FAILING_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FAILING_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FAILING_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 
 echo ""
 echo "--- Step 14: Publish failing input messages ---"
@@ -529,6 +561,7 @@ wait_deleted deployment "$FAILING_DEPLOYMENT" "$NS"
 wait_deployment_label "$UPGRADE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
+wait_no_inception_resources "$NS"
 
 echo ""
 echo "--- Step 16: Verify stranded green message recovery ---"
@@ -555,7 +588,101 @@ echo "--- Step 17: Final failed promotion status ---"
 kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
 
 echo ""
-echo "--- Step 18: Final pod state ---"
+echo "--- Step 18: Verify unsupported progressive plugin is rejected ---"
+wait_no_inception_resources "$NS"
+kubectl apply -f "$DEPLOY_DIR/08-progressive-unsupported.yaml"
+UNSUPPORTED_DEPLOYMENT="$(wait_bgd_generated_name order-processor-progressive-unsupported "$NS")"
+sleep 8
+if kubectl get deployment "$UNSUPPORTED_DEPLOYMENT" -n "$NS" >/dev/null 2>&1; then
+    echo "Unsupported progressive plugin created candidate deployment $UNSUPPORTED_DEPLOYMENT" >&2
+    kubectl get bluegreendeployment order-processor-progressive-unsupported -n "$NS" -o yaml >&2
+    exit 1
+fi
+UNSUPPORTED_PHASE="$(kubectl get bluegreendeployment order-processor-progressive-unsupported -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+if [ "$UNSUPPORTED_PHASE" = "Observing" ] || [ "$UNSUPPORTED_PHASE" = "Completed" ]; then
+    echo "Unsupported progressive plugin reached unexpected phase $UNSUPPORTED_PHASE" >&2
+    kubectl get bluegreendeployment order-processor-progressive-unsupported -n "$NS" -o yaml >&2
+    exit 1
+fi
+kubectl delete bluegreendeployment order-processor-progressive-unsupported -n "$NS" --ignore-not-found
+kubectl delete inceptionplugin rabbitmq-no-progressive -n "$NS" --ignore-not-found
+wait_deleted bluegreendeployment order-processor-progressive-unsupported "$NS"
+wait_deleted inceptionplugin rabbitmq-no-progressive "$NS"
+wait_no_inception_resources "$NS"
+
+echo ""
+echo "--- Step 19: Deploy progressive splitter BGD ---"
+wait_no_inception_resources "$NS"
+kubectl apply -f "$DEPLOY_DIR/09-progressive-upgrade-bgd.yaml"
+sleep 5
+PROGRESSIVE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-progressive-upgrade "$NS")"
+PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-progressive-upgrade incoming-orders "$NS")"
+PROGRESSIVE_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-progressive-upgrade outgoing-results "$NS")"
+wait_exists deployment "$PROGRESSIVE_DEPLOYMENT" "$NS"
+wait_exists deployment test-container "$NS"
+kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$PROGRESSIVE_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$PROGRESSIVE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+
+echo ""
+echo "--- Step 20: Publish progressive splitter messages ---"
+PROGRESSIVE_PUBLISHED=120
+for i in $(seq 1 "$PROGRESSIVE_PUBLISHED"); do
+    curl -sf -u fluidbg:fluidbg \
+        -H "Content-Type: application/json" \
+        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"progressive-$i\\\",\\\"type\\\":\\\"progressive-order\\\",\\\"action\\\":\\\"process\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+done
+
+echo ""
+echo "--- Step 21: Wait for progressive promotion and green-route skip semantics ---"
+for i in $(seq 1 60); do
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o json)"
+    OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
+    PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
+    TRAFFIC_PERCENT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("currentTrafficPercent", 0))')"
+    PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+    echo "  Progressive phase=${PHASE:-<none>} traffic=$TRAFFIC_PERCENT observed=$OBSERVED_COUNT pending=$PENDING_COUNT ($i/60)"
+    if [ "$PHASE" = "Completed" ]; then
+        break
+    fi
+    if [ "$PHASE" = "RolledBack" ]; then
+        echo "Progressive BGD rolled back" >&2
+        kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
+        exit 1
+    fi
+    sleep 5
+done
+
+PROGRESSIVE_STATUS="$(kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o json)"
+PROGRESSIVE_PHASE="$(printf '%s' "$PROGRESSIVE_STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+PROGRESSIVE_OBSERVED="$(printf '%s' "$PROGRESSIVE_STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
+PROGRESSIVE_PENDING="$(printf '%s' "$PROGRESSIVE_STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
+if [ "$PROGRESSIVE_PHASE" != "Completed" ]; then
+    echo "Expected progressive BGD phase Completed, got '$PROGRESSIVE_PHASE'" >&2
+    kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+if [ "$PROGRESSIVE_OBSERVED" -ge "$PROGRESSIVE_PUBLISHED" ]; then
+    echo "Expected green-routed progressive messages to be skipped by operator registration; observed=$PROGRESSIVE_OBSERVED published=$PROGRESSIVE_PUBLISHED" >&2
+    kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+if [ "$PROGRESSIVE_PENDING" -ne 0 ]; then
+    echo "Expected no pending progressive cases after completion, got $PROGRESSIVE_PENDING" >&2
+    kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
+    exit 1
+fi
+wait_deleted deployment "$UPGRADE_DEPLOYMENT" "$NS"
+wait_deleted deployment test-container "$NS"
+wait_deleted service test-container "$NS"
+wait_no_inception_resources "$NS"
+wait_deployment_label "$PROGRESSIVE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
+
+echo ""
+echo "--- Step 22: Final pod state ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
 

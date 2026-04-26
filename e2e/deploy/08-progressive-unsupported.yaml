@@ -1,0 +1,119 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: rabbitmq-no-progressive
+  namespace: fluidbg-test
+spec:
+  description: "RabbitMQ transport plugin without progressive shifting"
+  image: fluidbg/rabbitmq:dev
+  supportedRoles: [splitter, observer]
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+  features:
+    supportsProgressiveShifting: false
+  fieldNamespaces: [queue]
+  configSchema:
+    type: object
+    properties:
+      amqpUrl: { type: string }
+      splitter:
+        type: object
+        properties:
+          inputQueue: { type: string }
+          greenInputQueue: { type: string }
+          blueInputQueue: { type: string }
+          greenInputQueueEnvVar: { type: string }
+          blueInputQueueEnvVar: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  container:
+    ports:
+      - name: health
+        containerPort: 9090
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-progressive-unsupported
+  namespace: fluidbg-test
+spec:
+  stateStoreRef:
+    name: memory-store
+  selector:
+    matchLabels:
+      fluidbg.io/name: order-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: order-processor-blue
+      template:
+        metadata:
+          labels:
+            app: order-processor-blue
+            fluidbg.io/name: order-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/blue-app:dev
+              imagePullPolicy: Never
+              env:
+                - name: AMQP_URL
+                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                - name: INPUT_QUEUE
+                  value: "orders"
+                - name: OUTPUT_QUEUE
+                  value: "results"
+                - name: HTTP_UPSTREAM
+                  value: "http://httpbin.fluidbg-system/post"
+  inceptionPoints:
+    - name: incoming-orders
+      pluginRef:
+        name: rabbitmq-no-progressive
+      roles: [splitter, observer]
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        splitter:
+          inputQueue: orders
+          greenInputQueue: orders-green
+          blueInputQueue: orders-blue
+          greenInputQueueEnvVar: INPUT_QUEUE
+          blueInputQueueEnvVar: INPUT_QUEUE
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          match:
+            - field: queue.body
+              jsonPath: $.type
+              matches: "^order$"
+          notifyPath: /observe/{testId}/incoming-orders
+  tests:
+    - name: test-container
+      image: fluidbg/test-app:dev
+      port: 8080
+      dataVerification:
+        verifyPath: /result/{testId}
+        timeoutSeconds: 120
+  promotion:
+    data:
+      minTestCases: 1
+      successRate: 1.0
+      timeoutSeconds: 120
+    strategy:
+      type: progressive
+      progressive:
+        steps:
+          - trafficPercent: 5
+            observeCases: 1
+            successRate: 1.0
