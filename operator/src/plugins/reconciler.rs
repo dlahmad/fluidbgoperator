@@ -125,7 +125,10 @@ pub fn reconcile_inception_point(
             namespace: Some(namespace.to_string()),
             labels: Some(BTreeMap::from([
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
-                ("fluidbg.io/blue-green-ref".to_string(), blue_green_ref.to_string()),
+                (
+                    "fluidbg.io/blue-green-ref".to_string(),
+                    blue_green_ref.to_string(),
+                ),
             ])),
             ..Default::default()
         },
@@ -248,7 +251,10 @@ pub fn reconcile_inception_point(
             let labels = BTreeMap::from([
                 ("app".to_string(), deployment_name.clone()),
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
-                ("fluidbg.io/blue-green-ref".to_string(), blue_green_ref.to_string()),
+                (
+                    "fluidbg.io/blue-green-ref".to_string(),
+                    blue_green_ref.to_string(),
+                ),
             ]);
 
             let pod_spec = PodSpec {
@@ -345,7 +351,10 @@ pub fn reconcile_inception_point(
 
 fn ensure_config_mount(container: &mut Container) {
     let mounts = container.volume_mounts.get_or_insert_with(Vec::new);
-    if mounts.iter().any(|mount| mount.mount_path == "/etc/fluidbg") {
+    if mounts
+        .iter()
+        .any(|mount| mount.mount_path == "/etc/fluidbg")
+    {
         return;
     }
     mounts.push(VolumeMount {
@@ -676,10 +685,7 @@ mod tests {
         let deploy = &resources.deployments[0];
         assert_eq!(
             deploy.metadata.name.as_deref(),
-            Some(inception_instance_base_name(
-                "order-processor-bg",
-                "incoming-orders"
-            ).as_str())
+            Some(inception_instance_base_name("order-processor-bg", "incoming-orders").as_str())
         );
         assert_eq!(
             deploy

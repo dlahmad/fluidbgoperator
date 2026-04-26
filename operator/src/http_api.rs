@@ -109,7 +109,10 @@ pub async fn set_verdict(
     State(store): State<Arc<dyn StateStore>>,
     Json(req): Json<VerdictRequest>,
 ) -> impl IntoResponse {
-    info!("setting verdict for testCase id={} passed={}", req.test_id, req.passed);
+    info!(
+        "setting verdict for testCase id={} passed={}",
+        req.test_id, req.passed
+    );
     match store.set_verdict(&req.test_id, req.passed, None).await {
         Ok(()) => (
             StatusCode::OK,

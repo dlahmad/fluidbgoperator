@@ -42,8 +42,7 @@ impl PromotionStrategy for ProgressiveStrategy {
         }
 
         if counts.pending > 0 {
-            if self.rollback_on_step_failure
-                && Self::best_possible_rate(counts) < step.success_rate
+            if self.rollback_on_step_failure && Self::best_possible_rate(counts) < step.success_rate
             {
                 return PromotionAction::Rollback;
             }
@@ -202,6 +201,9 @@ mod tests {
             timed_out: 0,
             pending: 1,
         };
-        assert_eq!(strategy.decide(&counts, Some(0)).await, PromotionAction::Rollback);
+        assert_eq!(
+            strategy.decide(&counts, Some(0)).await,
+            PromotionAction::Rollback
+        );
     }
 }

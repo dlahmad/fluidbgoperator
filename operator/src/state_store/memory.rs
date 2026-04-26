@@ -108,7 +108,10 @@ impl StateStore for MemoryStore {
     async fn counts(&self, bg: &str) -> Result<Counts> {
         let data = self.data.read().await;
         Ok(counts_for_runs(
-            data.values().filter(|r| r.blue_green_ref == bg).cloned().collect(),
+            data.values()
+                .filter(|r| r.blue_green_ref == bg)
+                .cloned()
+                .collect(),
         ))
     }
 

@@ -126,7 +126,10 @@ mod tests {
             timed_out: 0,
             pending: 1,
         };
-        assert_eq!(strategy.decide(&counts, None).await, PromotionAction::Rollback);
+        assert_eq!(
+            strategy.decide(&counts, None).await,
+            PromotionAction::Rollback
+        );
     }
 
     #[tokio::test]

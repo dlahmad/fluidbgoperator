@@ -213,11 +213,8 @@ impl StateStore for PostgresStore {
     }
 
     async fn counts(&self, bg: &str) -> Result<Counts> {
-        self.counts_query(
-            "blue_green_ref = $1",
-            vec![bg.to_string()],
-        )
-        .await
+        self.counts_query("blue_green_ref = $1", vec![bg.to_string()])
+            .await
     }
 
     async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts> {
@@ -274,7 +271,10 @@ impl PostgresStore {
         for bind in binds {
             q = q.bind(bind);
         }
-        let row = q.fetch_one(&self.pool).await.map_err(StoreError::Postgres)?;
+        let row = q
+            .fetch_one(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
         use sqlx::Row;
         Ok(Counts {
             passed: row.get::<i64, _>("passed"),

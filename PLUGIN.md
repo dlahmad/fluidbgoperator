@@ -158,6 +158,43 @@ Response shape:
 }
 ```
 
+Assignment fields:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `target` | `green`, `blue`, `test` | Deployment group the operator patches |
+| `kind` | `env` | Assignment type; only environment variables are currently supported |
+| `name` | string | Environment variable name |
+| `value` | string | Environment variable value |
+| `containerName` | optional string | Patch only this container when set; otherwise patch every container in the target Deployment |
+
+### `POST /drain`
+
+Called when a promotion or rollback decision has been made, before terminal cleanup.
+
+Purpose:
+
+- stop accepting new work on temporary paths
+- return assignments that move the surviving deployment back toward direct production wiring
+- give the plugin time to let temporary queues, streams, or proxies drain
+
+The response shape is the same as `/prepare`.
+
+### `GET /drain-status`
+
+Called repeatedly while the `BlueGreenDeployment` is in `Draining`.
+
+Response shape:
+
+```json
+{
+  "drained": true,
+  "message": "temporary input queues are empty and no consumers remain attached"
+}
+```
+
+If a plugin does not expose `drainStatusPath`, the operator treats that inception point as drain-complete. If the configured maximum drain wait elapses first, the operator records `TimedOutMaybeSuccessful` and proceeds with cleanup.
+
 ### `POST /cleanup`
 
 Called by the operator after `Completed` or `RolledBack`.
@@ -166,6 +203,7 @@ Purpose:
 
 - delete transport-specific derived resources
 - allow the operator to restore direct application wiring cleanly
+- leave the plugin safe to idle or terminate
 
 ## Data Verification Contract
 

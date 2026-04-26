@@ -18,7 +18,7 @@ The core idea: wire **inception points** around the blue deployment so that traf
 | **Inception Plugin** | A pluggable, CRD-registered container that implements interception. Plugins are **external containers** — any language, any registry. |
 | **Test Container** | User-supplied HTTP server that holds observation state and answers one question per test run: **green or not green**. |
 | **Test ID** | User-defined correlation key extracted from traffic by a selector. All observations for a test run are grouped by `testId`. |
-| **State Store** | Pluggable persistence for the operator's tracking state (active testIds, verdicts, counts). Backend types: `memory`, `redis`, `postgres`. |
+| **State Store** | Pluggable persistence for the operator's tracking state (active testIds, verdicts, counts). Implemented backends: `memory`, `postgres`; `redis` is planned. |
 | **Plugin Orchestration Contract** | The plugin-declared set of lifecycle actions the operator must perform: deploy plugin resources, patch application env vars, create or reference transport resources, and clean up or restore after promotion/rollback. |
 | **Split Plugin** | A plugin that takes one production input and fans it out to green and blue paths. For queues this may mean original queue → green queue + blue queue; for HTTP it may mean proxying one request stream to two backends. |
 | **Combine Plugin** | A plugin that merges blue and green output paths into one result path using plugin-defined rules. For queues this may mean blue output queue + green output queue → production result queue. |
@@ -377,19 +377,27 @@ A cluster admin picks a backend by creating a `StateStore` resource; a `BlueGree
 | Backend | Description | When to Use |
 |---|---|---|
 | `memory` | In-process hash map | Development / tests only |
-| `redis` | Redis hash + sorted set for timeouts | Production; low-latency; built-in TTL |
 | `postgres` | PostgreSQL table with TTL column | Production; durable; queryable |
+| `redis` | Planned Redis hash + sorted set backend | Not implemented yet |
 
 All backends implement the same Rust trait; adding a backend is a matter of implementing the trait and extending the `StateStore` CRD's `type` enum.
 
 ```rust
 trait StateStore: Send + Sync {
-    async fn register(&self, run: InceptionTest) -> Result<()>;
-    async fn get(&self, test_id: &str) -> Result<Option<InceptionTest>>;
-    async fn set_verdict(&self, test_id: &str, passed: bool) -> Result<()>;
+    async fn register(&self, run: TestCaseRecord) -> Result<()>;
+    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>>;
+    async fn set_verdict(
+        &self,
+        test_id: &str,
+        passed: bool,
+        failure_message: Option<String>,
+    ) -> Result<()>;
     async fn mark_timed_out(&self, test_id: &str) -> Result<()>;
-    async fn list_pending(&self) -> Result<Vec<InceptionTest>>;
+    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>>;
+    async fn list_pending(&self) -> Result<Vec<TestCaseRecord>>;
     async fn counts(&self, bg: &str) -> Result<Counts>;
+    async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts>;
+    async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>>;
     async fn cleanup_expired(&self) -> Result<usize>;
 }
 ```
@@ -464,7 +472,7 @@ kind: StateStore
 metadata:
   name: default
 spec:
-  type: postgres              # memory | redis | postgres
+  type: postgres              # memory | postgres; redis is planned
   postgres:
     url: "postgres://fluidbg:secret@postgres.fluidbg:5432/fluidbg"
     tableName: "fluidbg_cases"
@@ -809,50 +817,36 @@ flowchart TD
 ## Project Structure
 
 ```
-src/
-├── main.rs                     # Entrypoint, CRD registration, controller startup
-├── crd/
-│   ├── mod.rs
-│   ├── blue_green.rs           # BlueGreenDeployment
-│   ├── inception_plugin.rs     # InceptionPlugin
-│   └── state_store.rs          # StateStore
-├── controller.rs               # Reconcile loop: BGD → state machine
+operator/src/
+├── main.rs                     # Entrypoint and runtime startup
+├── crd/                        # BlueGreenDeployment, InceptionPlugin, StateStore
+├── controller.rs               # Reconcile phase machine
+├── controller/
+│   ├── plugin_lifecycle.rs     # Plugin prepare/drain/cleanup HTTP contract
+│   ├── promotion.rs            # Promotion validation and strategy decisions
+│   ├── resources.rs            # Kubernetes resource apply/delete helpers
+│   ├── status.rs               # Status patch helpers
+│   └── tests.rs                # Controller unit tests
 ├── inception.rs                # Case tracking, timeouts, verdict polling
-├── evaluator.rs                # Reads counts, applies thresholds, drives strategy
-├── strategy/
-│   ├── mod.rs                  # PromotionStrategy trait
-│   ├── progressive.rs
-│   └── hard_switch.rs
-├── plugins/
-│   ├── mod.rs                  # Plugin registry (loaded from InceptionPlugin CRDs)
-│   ├── fields.rs               # Field reference resolution
-│   ├── filter.rs               # Filter engine (equals / matches / jsonPath)
-│   ├── selector.rs             # Selector engine
-│   ├── schema.rs               # JSON-Schema validation of user config vs plugin configSchema
-│   ├── template.rs             # configTemplate rendering (optional)
-│   ├── reconciler.rs           # Generic: InceptionPlugin CRD + inception point → K8s resources
-│   └── builtin_crds/           # YAML manifests for shipped plugins
-│       ├── http_proxy.yaml
-│       ├── http_writer.yaml
-│       ├── rabbitmq_duplicator.yaml
-│       └── rabbitmq_writer.yaml
-├── state_store/
-│   ├── mod.rs                  # StateStore trait + factory (reads StateStore CRD)
-│   ├── memory.rs
-│   ├── redis.rs
-│   └── postgres.rs
-├── http_api.rs                 # Operator HTTP API (POST /cases, etc.)
-├── test_runner.rs              # Test container deployment, env injection, result polling
-└── status.rs                   # Status/conditions helpers
+├── evaluator.rs                # Counts and promotion criteria helpers
+├── http_api.rs                 # /health, /testcases, /testcase-verdicts, /counts/{bg_ref}
+├── plugins/                    # Plugin CRD validation and resource rendering
+├── state_store/                # StateStore trait, memory backend, postgres backend
+├── strategy/                   # Hard-switch and progressive promotion strategies
+└── validation.rs               # Static validation helpers
 
-plugins/                        # Plugin container source trees (built to separate images)
+plugins/
 ├── http_proxy/
 ├── http_writer/
-├── rabbitmq_duplicator/
-└── rabbitmq_writer/
+└── rabbitmq/                   # Combined RabbitMQ duplicator/splitter/combiner/writer/observer
+
+builtin-plugins/
+├── http_proxy.yaml
+├── http_writer.yaml
+└── rabbitmq.yaml
 ```
 
-**Key invariant:** `src/plugins/reconciler.rs` is plugin-agnostic. It reads an `InceptionPlugin` CRD and produces K8s resources. Adding a new plugin = new CRD YAML + new container image.
+**Key invariant:** `operator/src/plugins/reconciler.rs` is plugin-agnostic. It reads an `InceptionPlugin` CRD and produces K8s resources. Adding a new plugin = new CRD YAML + new container image.
 
 ---
 
@@ -870,7 +864,6 @@ plugins/                        # Plugin container source trees (built to separa
 | `jsonpath-rust` | JSONPath for selectors and body filters |
 | `regex` | Filter regex matching |
 | `sqlx` (postgres feature) | Postgres state store |
-| `redis` | Redis state store |
 | `thiserror`, `anyhow` | Errors |
 
 Plugin containers have their own dependency sets (e.g., `lapin` for RabbitMQ plugins). They are not operator dependencies.
@@ -887,5 +880,5 @@ Plugin containers have their own dependency sets (e.g., `lapin` for RabbitMQ plu
 - **Rollback is atomic** — tear down blue, test containers, and all plugin deployments; green is untouched.
 - **Timeouts prevent stuck cases** — every trigger has a user-defined timeout; unresolved cases become not-green.
 - **Plugins are stateless** — ConfigMap + runtime env vars is the full plugin state; restart is safe.
-- **State store is durable** — with `postgres` or `redis`, the operator recovers tracking state on restart.
+- **State store is durable** — with `postgres`, the operator recovers tracking state on restart.
 - **CRD validation is strict** — unknown modes/directions, unsupported field namespaces, and configs that fail a plugin's `configSchema` are rejected before any resource is created.

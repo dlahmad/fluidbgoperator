@@ -1,306 +1,25 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
-};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use axum::{Json, Router, extract::State, routing::{get, post}};
+use anyhow::{Result, bail};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{get, post},
+};
 use futures_lite::StreamExt;
 use lapin::options::{
-    BasicAckOptions, BasicConsumeOptions, BasicGetOptions, BasicPublishOptions, QueueDeclareOptions,
-    QueueDeleteOptions,
+    BasicAckOptions, BasicConsumeOptions, BasicGetOptions, BasicPublishOptions,
+    QueueDeclareOptions, QueueDeleteOptions,
 };
 use lapin::types::{AMQPValue, FieldTable};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Config {
-    #[serde(default)]
-    amqp_url: Option<String>,
-    #[serde(default)]
-    duplicator: Option<DuplicatorConfig>,
-    #[serde(default)]
-    splitter: Option<SplitterConfig>,
-    #[serde(default)]
-    combiner: Option<CombinerConfig>,
-    #[serde(default)]
-    writer: Option<WriterConfig>,
-    #[serde(default)]
-    consumer: Option<ConsumerConfig>,
-    #[serde(default)]
-    observer: Option<ObserverConfig>,
-}
+mod config;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SplitterConfig {
-    input_queue: Option<String>,
-    green_input_queue: Option<String>,
-    blue_input_queue: Option<String>,
-    green_input_queue_env_var: Option<String>,
-    blue_input_queue_env_var: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DuplicatorConfig {
-    input_queue: Option<String>,
-    green_input_queue: Option<String>,
-    blue_input_queue: Option<String>,
-    green_input_queue_env_var: Option<String>,
-    blue_input_queue_env_var: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CombinerConfig {
-    output_queue: Option<String>,
-    green_output_queue: Option<String>,
-    blue_output_queue: Option<String>,
-    green_output_queue_env_var: Option<String>,
-    blue_output_queue_env_var: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WriterConfig {
-    target_queue: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConsumerConfig {
-    input_queue: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ObserverConfig {
-    #[serde(default)]
-    test_id: Option<TestIdSelector>,
-    #[serde(default)]
-    r#match: Vec<FilterCondition>,
-    #[serde(default)]
-    notify_path: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ActiveRole {
-    Duplicator,
-    Splitter,
-    Combiner,
-    Observer,
-    Writer,
-    Consumer,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TestIdSelector {
-    field: Option<String>,
-    json_path: Option<String>,
-    value: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FilterCondition {
-    field: String,
-    #[serde(default)]
-    equals: Option<String>,
-    #[serde(default)]
-    matches: Option<String>,
-    #[serde(default)]
-    json_path: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum AssignmentTarget {
-    Green,
-    Blue,
-    Test,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum AssignmentKind {
-    Env,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PropertyAssignment {
-    target: AssignmentTarget,
-    kind: AssignmentKind,
-    name: String,
-    value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    container_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PluginLifecycleResponse {
-    #[serde(default)]
-    assignments: Vec<PropertyAssignment>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PluginDrainStatusResponse {
-    drained: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]
-struct WriteRequest {
-    test_id: Option<String>,
-    payload: serde_json::Value,
-    properties: Option<serde_json::Value>,
-}
-
-#[derive(Clone)]
-struct AppState {
-    config: Config,
-    roles: Vec<ActiveRole>,
-    amqp_url: String,
-    testcase_registration_url: String,
-    test_container_url: String,
-    testcase_verify_path_template: Option<String>,
-    inception_point: String,
-    blue_green_ref: String,
-    mode: Arc<AtomicU8>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeMode {
-    Active = 0,
-    Draining = 1,
-    Idle = 2,
-}
-
-impl RuntimeMode {
-    fn from_u8(value: u8) -> Self {
-        match value {
-            1 => Self::Draining,
-            2 => Self::Idle,
-            _ => Self::Active,
-        }
-    }
-}
-
-impl AppState {
-    fn runtime_mode(&self) -> RuntimeMode {
-        RuntimeMode::from_u8(self.mode.load(Ordering::Relaxed))
-    }
-
-    fn set_runtime_mode(&self, mode: RuntimeMode) {
-        self.mode.store(mode as u8, Ordering::Relaxed);
-    }
-}
-
-fn load_config() -> Result<Config> {
-    let path = std::env::var("FLUIDBG_CONFIG_PATH")
-        .unwrap_or_else(|_| "/etc/fluidbg/config.yaml".to_string());
-    let data = std::fs::read_to_string(&path)?;
-    Ok(serde_yaml_ng::from_str(&data)?)
-}
-
-fn load_roles() -> Vec<ActiveRole> {
-    std::env::var("FLUIDBG_ACTIVE_ROLES")
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|value| match value.trim() {
-            "duplicator" => Some(ActiveRole::Duplicator),
-            "splitter" => Some(ActiveRole::Splitter),
-            "combiner" => Some(ActiveRole::Combiner),
-            "observer" => Some(ActiveRole::Observer),
-            "writer" => Some(ActiveRole::Writer),
-            "consumer" => Some(ActiveRole::Consumer),
-            _ => None,
-        })
-        .collect()
-}
-
-fn has_role(roles: &[ActiveRole], role: ActiveRole) -> bool {
-    roles.contains(&role)
-}
-
-fn required<'a>(value: &'a Option<String>, name: &str) -> Result<&'a str> {
-    value
-        .as_deref()
-        .with_context(|| format!("missing config field '{name}'"))
-}
-
-fn duplicator_config(config: &Config) -> Result<&DuplicatorConfig> {
-    config
-        .duplicator
-        .as_ref()
-        .context("missing config block 'duplicator'")
-}
-
-fn splitter_config(config: &Config) -> Result<&SplitterConfig> {
-    config
-        .splitter
-        .as_ref()
-        .context("missing config block 'splitter'")
-}
-
-fn combiner_config(config: &Config) -> Result<&CombinerConfig> {
-    config
-        .combiner
-        .as_ref()
-        .context("missing config block 'combiner'")
-}
-
-fn writer_config(config: &Config) -> Result<&WriterConfig> {
-    config
-        .writer
-        .as_ref()
-        .context("missing config block 'writer'")
-}
-
-fn consumer_config(config: &Config) -> Result<&ConsumerConfig> {
-    config
-        .consumer
-        .as_ref()
-        .context("missing config block 'consumer'")
-}
-
-fn observer_config(config: &Config) -> Option<&ObserverConfig> {
-    config.observer.as_ref()
-}
-
-fn blue_traffic_percent() -> u8 {
-    std::env::var("FLUIDBG_TRAFFIC_PERCENT")
-        .ok()
-        .and_then(|value| value.parse::<u8>().ok())
-        .unwrap_or(100)
-        .min(100)
-}
-
-fn routes_to_blue(payload: &[u8], traffic_percent: u8) -> bool {
-    if traffic_percent == 0 {
-        return false;
-    }
-    if traffic_percent >= 100 {
-        return true;
-    }
-    let mut hasher = DefaultHasher::new();
-    payload.hash(&mut hasher);
-    (hasher.finish() % 100) < traffic_percent as u64
-}
+use config::*;
 
 fn extract_json_path(value: &Value, path: &str) -> Option<String> {
     let stripped = path.strip_prefix('$').unwrap_or(path);
@@ -427,7 +146,11 @@ async fn queue_state(channel: &Channel, queue: &str) -> Result<(u32, u32)> {
     Ok((declared.message_count(), declared.consumer_count()))
 }
 
-async fn move_queue_messages(channel: &Channel, source_queue: &str, target_queue: &str) -> Result<u32> {
+async fn move_queue_messages(
+    channel: &Channel,
+    source_queue: &str,
+    target_queue: &str,
+) -> Result<u32> {
     let mut moved = 0;
     loop {
         let delivery = match channel
@@ -659,10 +382,9 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
     if has_role(roles, ActiveRole::Splitter)
         && let Some(splitter) = config.splitter.as_ref()
     {
-        if let (Some(env_name), Some(queue)) = (
-            &splitter.green_input_queue_env_var,
-            &splitter.input_queue,
-        ) {
+        if let (Some(env_name), Some(queue)) =
+            (&splitter.green_input_queue_env_var, &splitter.input_queue)
+        {
             assignments.push(PropertyAssignment {
                 target: AssignmentTarget::Green,
                 kind: AssignmentKind::Env,
@@ -671,10 +393,9 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
                 container_name: None,
             });
         }
-        if let (Some(env_name), Some(queue)) = (
-            &splitter.blue_input_queue_env_var,
-            &splitter.input_queue,
-        ) {
+        if let (Some(env_name), Some(queue)) =
+            (&splitter.blue_input_queue_env_var, &splitter.input_queue)
+        {
             assignments.push(PropertyAssignment {
                 target: AssignmentTarget::Blue,
                 kind: AssignmentKind::Env,
@@ -687,10 +408,9 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
     if has_role(roles, ActiveRole::Combiner)
         && let Some(combiner) = config.combiner.as_ref()
     {
-        if let (Some(env_name), Some(queue)) = (
-            &combiner.green_output_queue_env_var,
-            &combiner.output_queue,
-        ) {
+        if let (Some(env_name), Some(queue)) =
+            (&combiner.green_output_queue_env_var, &combiner.output_queue)
+        {
             assignments.push(PropertyAssignment {
                 target: AssignmentTarget::Green,
                 kind: AssignmentKind::Env,
@@ -699,10 +419,9 @@ fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
                 container_name: None,
             });
         }
-        if let (Some(env_name), Some(queue)) = (
-            &combiner.blue_output_queue_env_var,
-            &combiner.output_queue,
-        ) {
+        if let (Some(env_name), Some(queue)) =
+            (&combiner.blue_output_queue_env_var, &combiner.output_queue)
+        {
             assignments.push(PropertyAssignment {
                 target: AssignmentTarget::Blue,
                 kind: AssignmentKind::Env,
@@ -729,12 +448,17 @@ async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusRespo
         let blue_queue = required(&config.blue_input_queue, "duplicator.blueInputQueue")?;
         let (green_messages, green_consumers) = queue_state(&channel, green_queue).await?;
         let (blue_messages, blue_consumers) = queue_state(&channel, blue_queue).await?;
-        let drained =
-            green_messages == 0 && blue_messages == 0 && green_consumers == 0 && blue_consumers == 0;
+        let drained = green_messages == 0
+            && blue_messages == 0
+            && green_consumers == 0
+            && blue_consumers == 0;
         let message = if drained {
             Some("temporary input queues are empty and no consumers remain attached".to_string())
         } else if green_consumers > 0 || blue_consumers > 0 {
-            Some("temporary input queues still have active consumers; locks may still exist".to_string())
+            Some(
+                "temporary input queues still have active consumers; locks may still exist"
+                    .to_string(),
+            )
         } else {
             Some(format!(
                 "temporary input queues still contain messages (green={}, blue={})",
@@ -750,12 +474,17 @@ async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusRespo
         let blue_queue = required(&config.blue_input_queue, "splitter.blueInputQueue")?;
         let (green_messages, green_consumers) = queue_state(&channel, green_queue).await?;
         let (blue_messages, blue_consumers) = queue_state(&channel, blue_queue).await?;
-        let drained =
-            green_messages == 0 && blue_messages == 0 && green_consumers == 0 && blue_consumers == 0;
+        let drained = green_messages == 0
+            && blue_messages == 0
+            && green_consumers == 0
+            && blue_consumers == 0;
         let message = if drained {
             Some("temporary input queues are empty and no consumers remain attached".to_string())
         } else if green_consumers > 0 || blue_consumers > 0 {
-            Some("temporary input queues still have active consumers; locks may still exist".to_string())
+            Some(
+                "temporary input queues still have active consumers; locks may still exist"
+                    .to_string(),
+            )
         } else {
             Some(format!(
                 "temporary input queues still contain messages (green={}, blue={})",
@@ -851,9 +580,9 @@ async fn prepare_handler(
         let writer = writer_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         if let Some(queue) = &writer.target_queue {
-        declare_queue(&channel, queue)
-            .await
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            declare_queue(&channel, queue)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         }
     }
 
@@ -1170,7 +899,10 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
         let conn = match connect_with_retry(&state.amqp_url).await {
             Ok(conn) => conn,
             Err(err) => {
-                warn!("rabbitmq input pipeline connect failed, reconnecting: {}", err);
+                warn!(
+                    "rabbitmq input pipeline connect failed, reconnecting: {}",
+                    err
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
@@ -1178,7 +910,10 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
         let channel = match conn.create_channel().await {
             Ok(channel) => channel,
             Err(err) => {
-                warn!("rabbitmq input pipeline channel failed, reconnecting: {}", err);
+                warn!(
+                    "rabbitmq input pipeline channel failed, reconnecting: {}",
+                    err
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
@@ -1190,11 +925,17 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
             )?
             .to_string()
         } else if has_role(&state.roles, ActiveRole::Splitter) {
-            required(&splitter_config(&state.config)?.input_queue, "splitter.inputQueue")?
-                .to_string()
+            required(
+                &splitter_config(&state.config)?.input_queue,
+                "splitter.inputQueue",
+            )?
+            .to_string()
         } else {
-            required(&consumer_config(&state.config)?.input_queue, "consumer.inputQueue")?
-                .to_string()
+            required(
+                &consumer_config(&state.config)?.input_queue,
+                "consumer.inputQueue",
+            )?
+            .to_string()
         };
         declare_queue(&channel, &input_queue).await?;
         let http_client = reqwest::Client::new();
@@ -1331,13 +1072,18 @@ async fn run_combine_loop_once(
     Ok(())
 }
 
-async fn run_combine_loop(source_queue: String, result_queue: String, state: AppState) -> Result<()> {
+async fn run_combine_loop(
+    source_queue: String,
+    result_queue: String,
+    state: AppState,
+) -> Result<()> {
     loop {
         if matches!(state.runtime_mode(), RuntimeMode::Idle) {
             tokio::time::sleep(Duration::from_millis(300)).await;
             continue;
         }
-        match run_combine_loop_once(source_queue.clone(), result_queue.clone(), state.clone()).await {
+        match run_combine_loop_once(source_queue.clone(), result_queue.clone(), state.clone()).await
+        {
             Ok(()) => {
                 warn!(
                     "rabbitmq combine loop for '{}' ended, reconnecting",
@@ -1394,29 +1140,26 @@ async fn main() -> Result<()> {
         .amqp_url
         .clone()
         .unwrap_or_else(|| "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string());
-    let testcase_registration_url =
-        std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
-            .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string());
+    let testcase_registration_url = std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
+        .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string());
     let test_container_url = std::env::var("FLUIDBG_TEST_CONTAINER_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let testcase_verify_path_template =
-        std::env::var("FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE").ok();
+    let testcase_verify_path_template = std::env::var("FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE").ok();
     let inception_point =
         std::env::var("FLUIDBG_INCEPTION_POINT").unwrap_or_else(|_| "unknown".to_string());
     let blue_green_ref =
         std::env::var("FLUIDBG_BLUE_GREEN_REF").unwrap_or_else(|_| "unknown".to_string());
 
-    let state = AppState {
-        config: config.clone(),
-        roles: roles.clone(),
-        amqp_url: amqp_url.clone(),
+    let state = AppState::new(
+        config.clone(),
+        roles.clone(),
+        amqp_url.clone(),
         testcase_registration_url,
         test_container_url,
         testcase_verify_path_template,
         inception_point,
         blue_green_ref,
-        mode: Arc::new(AtomicU8::new(RuntimeMode::Active as u8)),
-    };
+    );
 
     info!("rabbitmq plugin starting with roles {:?}", roles);
 
