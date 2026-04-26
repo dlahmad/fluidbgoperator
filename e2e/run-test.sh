@@ -10,12 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEPLOY_DIR="$SCRIPT_DIR/deploy"
 
-TEST_CONTAINER_PID=""
-OPERATOR_PID=""
+RABBITMQ_MGMT_PID=""
 
 cleanup() {
-    if [ -n "$TEST_CONTAINER_PID" ]; then kill "$TEST_CONTAINER_PID" 2>/dev/null || true; fi
-    if [ -n "$OPERATOR_PID" ]; then kill "$OPERATOR_PID" 2>/dev/null || true; fi
+    if [ -n "$RABBITMQ_MGMT_PID" ]; then kill "$RABBITMQ_MGMT_PID" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 
@@ -72,6 +70,43 @@ wait_exists() {
         sleep 1
     done
     echo "$resource/$name was not created in namespace $namespace" >&2
+    return 1
+}
+
+wait_deployment_label() {
+    local deployment="$1"
+    local namespace="$2"
+    local jsonpath="$3"
+    local expected="$4"
+    for i in $(seq 1 60); do
+        local value
+        value="$(kubectl get deployment "$deployment" -n "$namespace" -o "jsonpath=$jsonpath" 2>/dev/null || true)"
+        if [ "$value" = "$expected" ]; then
+            return 0
+        fi
+        echo "Waiting for deployment/$deployment label $jsonpath=$expected... ($i/60)"
+        sleep 1
+    done
+    echo "deployment/$deployment did not reach label $jsonpath=$expected in namespace $namespace" >&2
+    kubectl get deployment "$deployment" -n "$namespace" -o yaml >&2 || true
+    return 1
+}
+
+wait_bgd_generated_name() {
+    local bgd="$1"
+    local namespace="$2"
+    for i in $(seq 1 60); do
+        local value
+        value="$(kubectl get bluegreendeployment "$bgd" -n "$namespace" -o jsonpath='{.status.generatedDeploymentName}' 2>/dev/null || true)"
+        if [ -n "$value" ]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        echo "Waiting for bluegreendeployment/$bgd generated deployment name... ($i/60)" >&2
+        sleep 1
+    done
+    echo "bluegreendeployment/$bgd did not publish status.generatedDeploymentName in namespace $namespace" >&2
+    kubectl get bluegreendeployment "$bgd" -n "$namespace" -o yaml >&2 || true
     return 1
 }
 
@@ -161,9 +196,11 @@ kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-bgd-crd.yaml"
 kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-inceptionplugin-crd.yaml"
 kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-statestore-crd.yaml"
 kubectl delete bluegreendeployment order-processor-bg -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-bootstrap -n "$NS" --ignore-not-found
+kubectl delete bluegreendeployment order-processor-upgrade -n "$NS" --ignore-not-found
 kubectl delete statestore memory-store -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
-kubectl delete deployment order-processor-blue -n "$NS" --ignore-not-found
+kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
 kubectl delete service test-container -n "$NS" --ignore-not-found
 kubectl delete deployment fluidbg-incoming-orders -n "$NS" --ignore-not-found
@@ -173,9 +210,10 @@ kubectl delete deployment fluidbg-outgoing-results -n "$NS" --ignore-not-found
 kubectl delete service fluidbg-outgoing-results-svc -n "$NS" --ignore-not-found
 kubectl delete configmap fluidbg-config-outgoing-results -n "$NS" --ignore-not-found
 wait_deleted bluegreendeployment order-processor-bg "$NS"
+wait_deleted bluegreendeployment order-processor-bootstrap "$NS"
+wait_deleted bluegreendeployment order-processor-upgrade "$NS"
 wait_deleted statestore memory-store "$NS"
 wait_deleted inceptionplugin rabbitmq "$NS"
-wait_deleted deployment order-processor-blue "$NS"
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
 wait_deleted deployment fluidbg-incoming-orders "$NS"
@@ -192,104 +230,101 @@ reset_deployment "$NS_SYSTEM" fluidbg-operator fluidbg-operator
 kubectl rollout status deployment/fluidbg-operator -n "$NS_SYSTEM" --timeout=120s
 
 echo ""
-echo "--- Step 4: Deploy sample app ---"
-kubectl apply -f "$DEPLOY_DIR/04-sample-app.yaml"
-reset_deployment "$NS" order-processor-green order-processor-green
-kubectl rollout status deployment/order-processor-green -n "$NS" --timeout=120s
+echo "--- Step 4: Bootstrap initial green from empty cluster ---"
+kubectl apply -f "$DEPLOY_DIR/05-bootstrap-bgd.yaml"
+BOOTSTRAP_DEPLOYMENT="$(wait_bgd_generated_name order-processor-bootstrap "$NS")"
+for i in $(seq 1 30); do
+    BOOTSTRAP_PHASE="$(kubectl get bluegreendeployment order-processor-bootstrap -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    echo "  Bootstrap BGD phase: ${BOOTSTRAP_PHASE:-<none>} ($i/30)"
+    if [ "$BOOTSTRAP_PHASE" = "Completed" ]; then
+        break
+    fi
+    sleep 2
+done
+BOOTSTRAP_PHASE="$(kubectl get bluegreendeployment order-processor-bootstrap -n "$NS" -o jsonpath='{.status.phase}')"
+if [ "$BOOTSTRAP_PHASE" != "Completed" ]; then
+    echo "Expected bootstrap BGD phase Completed, got '$BOOTSTRAP_PHASE'" >&2
+    kubectl get bluegreendeployment order-processor-bootstrap -n "$NS" -o yaml >&2
+    exit 1
+fi
+wait_exists deployment "$BOOTSTRAP_DEPLOYMENT" "$NS"
+kubectl rollout status deployment/"$BOOTSTRAP_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_deployment_label "$BOOTSTRAP_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
 
 echo ""
-echo "--- Step 5: Deploy BlueGreenDeployment CR ---"
-kubectl apply -f "$DEPLOY_DIR/05-bgd.yaml"
+echo "--- Step 5: Deploy upgrade BlueGreenDeployment CR ---"
+kubectl apply -f "$DEPLOY_DIR/06-upgrade-bgd.yaml"
 sleep 5
-wait_exists deployment order-processor-blue "$NS"
+UPGRADE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-upgrade "$NS")"
+wait_exists deployment "$UPGRADE_DEPLOYMENT" "$NS"
 wait_exists deployment test-container "$NS"
 wait_exists deployment fluidbg-incoming-orders "$NS"
 wait_exists deployment fluidbg-outgoing-results "$NS"
-kubectl rollout status deployment/order-processor-green -n "$NS" --timeout=120s
-kubectl rollout status deployment/order-processor-blue -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$BOOTSTRAP_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$UPGRADE_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
 kubectl rollout status deployment/fluidbg-incoming-orders -n "$NS" --timeout=120s
 kubectl rollout status deployment/fluidbg-outgoing-results -n "$NS" --timeout=120s
 
 echo ""
 echo "--- Step 6: Check BGD status ---"
-kubectl get bluegreendeployments.fluidbg.io -n "$NS" -o yaml
+kubectl get bluegreendeployment order-processor-bootstrap -n "$NS" -o yaml
+kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o yaml
 
 echo ""
-echo "--- Step 7: Port-forward test-container and operator ---"
-kubectl port-forward svc/test-container 18080:8080 -n "$NS" >/tmp/fluidbg-test-container-port-forward.log 2>&1 &
-TEST_CONTAINER_PID=$!
-kubectl port-forward svc/fluidbg-operator 18090:8090 -n "$NS_SYSTEM" >/tmp/fluidbg-operator-port-forward.log 2>&1 &
-OPERATOR_PID=$!
+echo "--- Step 7: Port-forward RabbitMQ management API ---"
+kubectl port-forward svc/rabbitmq 15672:15672 -n "$NS_SYSTEM" >/tmp/fluidbg-rabbitmq-port-forward.log 2>&1 &
+RABBITMQ_MGMT_PID=$!
 sleep 3
-wait_http http://localhost:18080/health test-container
-wait_http http://localhost:18090/health operator
+wait_http http://localhost:15672 rabbitmq-management
 
 echo ""
-echo "--- Step 8: Register cases with operator ---"
+echo "--- Step 8: Publish input messages to RabbitMQ ---"
 for i in 1 2 3 4 5; do
-    curl -sf -X POST http://localhost:18090/cases \
+    echo "Publishing order-$i..."
+    curl -sf -u fluidbg:fluidbg \
         -H "Content-Type: application/json" \
-        -d "{
-            \"test_id\": \"order-$i\",
-            \"blue_green_ref\": \"order-processor-bg\",
-            \"inception_point\": \"incoming-orders\",
-            \"timeout_seconds\": 120
-        }" >/dev/null
-    echo "registered order-$i"
-done
-
-echo ""
-echo "--- Step 9: Send trigger messages ---"
-for i in 1 2 3 4 5; do
-    echo "Triggering message $i..."
-    curl -sf -X POST http://localhost:18080/trigger \
-        -H "Content-Type: application/json" \
-        -d "{\"testId\": \"order-$i\"}" >/dev/null
+        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"order-$i\\\",\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
     sleep 1
 done
 
 echo ""
-echo "--- Step 10: Wait for sample processing ---"
+echo "--- Step 9: Wait for operator-observed test cases ---"
+OBSERVED_COUNT=0
 PASSED_COUNT=0
+PENDING_COUNT=0
 for i in $(seq 1 60); do
-    CASES_JSON="$(curl -sf http://localhost:18080/cases)"
-    PASSED_COUNT="$(printf '%s' "$CASES_JSON" | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-print(sum(1 for v in data.values() if v.get("status") == "passed"))
-')"
-    TOTAL_COUNT="$(printf '%s' "$CASES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-    echo "  Cases passed: $PASSED_COUNT/$TOTAL_COUNT ($i/60)"
-    if [ "$PASSED_COUNT" -ge 3 ]; then
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o json)"
+    OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
+    PASSED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPassed", 0))')"
+    PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
+    PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
+    TRACKED_COUNT="$((OBSERVED_COUNT + PENDING_COUNT))"
+    echo "  Test cases tracked(observed+pending)/passed: $TRACKED_COUNT($OBSERVED_COUNT+$PENDING_COUNT)/$PASSED_COUNT phase=${PHASE:-<none>} ($i/60)"
+    if [ "$TRACKED_COUNT" -ge 5 ] && [ "$PASSED_COUNT" -ge 3 ]; then
         break
+    fi
+    if [ "$PHASE" = "RolledBack" ]; then
+        echo "BGD rolled back while waiting for observed test cases" >&2
+        kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o yaml >&2
+        exit 1
     fi
     sleep 5
 done
 
-if [ "$PASSED_COUNT" -lt 3 ]; then
-    echo "Expected at least 3 passed cases before promotion; got $PASSED_COUNT" >&2
-    curl -sf http://localhost:18080/cases | python3 -m json.tool
+if [ "$((OBSERVED_COUNT + PENDING_COUNT))" -lt 5 ] || [ "$PASSED_COUNT" -lt 3 ]; then
+    echo "Expected at least 5 tracked and 3 passed test cases; got observed=$OBSERVED_COUNT pending=$PENDING_COUNT passed=$PASSED_COUNT" >&2
+    kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o yaml >&2
     exit 1
 fi
 
 echo ""
-echo "--- Step 11: Send verdicts to operator ---"
-for i in 1 2 3 4 5; do
-    RESULT_JSON="$(curl -sf "http://localhost:18080/result/order-$i")"
-    PASSED="$(printf '%s' "$RESULT_JSON" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("passed") is True else "false")')"
-    curl -sf -X POST http://localhost:18090/verdict \
-        -H "Content-Type: application/json" \
-        -d "{\"test_id\": \"order-$i\", \"passed\": $PASSED}" >/dev/null
-    echo "operator verdict order-$i=$PASSED"
-done
-
-echo ""
-echo "--- Step 12: Wait for promotion ---"
+echo "--- Step 10: Wait for promotion ---"
 for i in $(seq 1 30); do
-    COUNTS_JSON="$(curl -sf http://localhost:18090/counts/order-processor-bg)"
-    echo "$COUNTS_JSON" | python3 -m json.tool
-    PHASE="$(kubectl get bluegreendeployment order-processor-bg -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o json)"
+    echo "$STATUS_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("status", {}), indent=2))'
+    PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
     echo "  BGD phase: ${PHASE:-<none>} ($i/30)"
     if [ "$PHASE" = "Completed" ]; then
         break
@@ -301,31 +336,31 @@ for i in $(seq 1 30); do
     sleep 5
 done
 
-PHASE="$(kubectl get bluegreendeployment order-processor-bg -n "$NS" -o jsonpath='{.status.phase}')"
+PHASE="$(kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o jsonpath='{.status.phase}')"
 if [ "$PHASE" != "Completed" ]; then
     echo "Expected BGD phase Completed, got '$PHASE'" >&2
-    kubectl get bluegreendeployment order-processor-bg -n "$NS" -o yaml
+    kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o yaml
     exit 1
 fi
 
 echo ""
-echo "--- Step 12b: Verify previous green cleanup and promoted labels ---"
-wait_deleted deployment order-processor-green "$NS"
+echo "--- Step 10b: Verify previous green cleanup and promoted labels ---"
+wait_deleted deployment "$BOOTSTRAP_DEPLOYMENT" "$NS"
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
-PROMOTED_ROLE="$(kubectl get deployment order-processor-blue -n "$NS" -o jsonpath='{.metadata.labels.fluidbg\.io/role}')"
-if [ "$PROMOTED_ROLE" != "green" ]; then
-    echo "Expected promoted blue deployment to have fluidbg.io/role=green, got '$PROMOTED_ROLE'" >&2
-    kubectl get deployment order-processor-blue -n "$NS" -o yaml
+PROMOTED_GREEN="$(kubectl get deployment "$UPGRADE_DEPLOYMENT" -n "$NS" -o jsonpath='{.metadata.labels.fluidbg\.io/green}')"
+if [ "$PROMOTED_GREEN" != "true" ]; then
+    echo "Expected promoted deployment to have fluidbg.io/green=true, got '$PROMOTED_GREEN'" >&2
+    kubectl get deployment "$UPGRADE_DEPLOYMENT" -n "$NS" -o yaml
     exit 1
 fi
 
 echo ""
-echo "--- Step 13: Final BGD status ---"
-kubectl get bluegreendeployment order-processor-bg -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
+echo "--- Step 11: Final BGD status ---"
+kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
 
 echo ""
-echo "--- Step 14: Check all pods ---"
+echo "--- Step 12: Check all pods ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
 

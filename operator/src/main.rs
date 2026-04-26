@@ -30,7 +30,6 @@ async fn main() {
         store.clone(),
         tokio::time::Duration::from_secs(5),
         tokio::time::Duration::from_secs(10),
-        "http://localhost:8080".to_string(),
     );
 
     let app = http_api::router(store.clone());

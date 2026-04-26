@@ -5,12 +5,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginRole {
+    Duplicator,
     Splitter,
     Combiner,
     Observer,
     Mock,
     Writer,
-    Sink,
+    Consumer,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

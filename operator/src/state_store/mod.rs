@@ -30,18 +30,28 @@ pub enum TestStatus {
     TimedOut,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum VerificationMode {
+    Data,
+    Custom,
+}
+
 #[derive(Clone, Debug)]
-pub struct InceptionTest {
+pub struct TestCaseRecord {
     pub test_id: String,
     pub blue_green_ref: String,
     pub triggered_at: DateTime<Utc>,
-    pub trigger_inception_point: String,
+    pub source_inception_point: String,
     pub timeout: Duration,
     pub status: TestStatus,
     pub verdict: Option<bool>,
+    pub verification_mode: VerificationMode,
+    pub verify_url: String,
+    pub retries_remaining: i32,
+    pub failure_message: Option<String>,
 }
 
-impl InceptionTest {
+impl TestCaseRecord {
     pub fn expires_at(&self) -> DateTime<Utc> {
         self.triggered_at + self.timeout
     }
@@ -68,12 +78,20 @@ pub struct Counts {
 
 #[async_trait]
 pub trait StateStore: Send + Sync {
-    async fn register(&self, run: InceptionTest) -> Result<()>;
-    async fn get(&self, test_id: &str) -> Result<Option<InceptionTest>>;
-    async fn set_verdict(&self, test_id: &str, passed: bool) -> Result<()>;
+    async fn register(&self, run: TestCaseRecord) -> Result<()>;
+    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>>;
+    async fn set_verdict(
+        &self,
+        test_id: &str,
+        passed: bool,
+        failure_message: Option<String>,
+    ) -> Result<()>;
     async fn mark_timed_out(&self, test_id: &str) -> Result<()>;
-    async fn list_pending(&self) -> Result<Vec<InceptionTest>>;
+    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>>;
+    async fn list_pending(&self) -> Result<Vec<TestCaseRecord>>;
     async fn counts(&self, bg: &str) -> Result<Counts>;
+    async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts>;
+    async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>>;
     async fn cleanup_expired(&self) -> Result<usize>;
 }
 

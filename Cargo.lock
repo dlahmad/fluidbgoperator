@@ -1035,6 +1035,7 @@ dependencies = [
  "jsonschema",
  "k8s-openapi",
  "kube",
+ "rand 0.9.4",
  "regex",
  "reqwest",
  "schemars",

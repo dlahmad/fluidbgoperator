@@ -75,10 +75,19 @@ def result(test_id):
         case = cases.get(test_id, {})
     status = case.get("status", "pending")
     if status == "passed":
-        return jsonify({"passed": True, "testId": test_id})
+        return jsonify({"passed": True, "testId": test_id, "errorMessage": None})
     elif status == "failed":
-        return jsonify({"passed": False, "testId": test_id})
-    return jsonify({"passed": None, "testId": test_id, "status": status})
+        return jsonify({
+            "passed": False,
+            "testId": test_id,
+            "errorMessage": case.get("error_message", "verification failed"),
+        })
+    return jsonify({
+        "passed": None,
+        "testId": test_id,
+        "status": status,
+        "errorMessage": None,
+    })
 
 
 @app.route("/cases", methods=["GET"])

@@ -1,4 +1,4 @@
-use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::apps::v1::DeploymentSpec;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,18 +14,11 @@ pub struct DeploymentRef {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct BlueSpec {
-    pub deployment: DeploymentRef,
+#[serde(rename_all = "camelCase")]
+pub struct ManagedDeploymentSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "arbitrary_object_schema")]
-    pub template: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<Deployment>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct GreenSpec {
-    pub selector: DeploymentSelector,
+    pub namespace: Option<String>,
+    pub spec: DeploymentSpec,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -106,11 +99,30 @@ pub struct TestSpec {
     pub image: String,
     pub port: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_path: Option<String>,
+    pub data_verification: Option<DataVerificationSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_path: Option<String>,
+    pub custom_verification: Option<CustomVerificationSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<TestEnvVar>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DataVerificationSpec {
+    pub verify_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomVerificationSpec {
+    pub start_path: String,
+    pub verify_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -121,13 +133,22 @@ pub struct TestEnvVar {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SuccessCriteria {
+pub struct DataPromotionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_cases: Option<i64>,
+    pub min_test_cases: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub success_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observation_window_minutes: Option<i64>,
+    pub timeout_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomPromotionSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -170,7 +191,10 @@ pub struct PromotionStrategy {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PromotionSpec {
-    pub success_criteria: SuccessCriteria,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataPromotionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomPromotionSpec>,
     pub strategy: PromotionStrategy,
 }
 
@@ -190,17 +214,23 @@ pub struct BlueGreenDeploymentStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<BGDPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cases_observed: Option<i64>,
+    pub generated_deployment_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cases_passed: Option<i64>,
+    pub observed_generation: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cases_failed: Option<i64>,
+    pub test_cases_observed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cases_pending: Option<i64>,
+    pub test_cases_passed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cases_timed_out: Option<i64>,
+    pub test_cases_failed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_cases_pending: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_cases_timed_out: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_success_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_traffic_percent: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,8 +252,8 @@ pub struct BlueGreenDeploymentStatus {
 #[kube(status = "BlueGreenDeploymentStatus")]
 pub struct BlueGreenDeploymentSpec {
     pub state_store_ref: PluginRef,
-    pub green: GreenSpec,
-    pub blue: BlueSpec,
+    pub selector: DeploymentSelector,
+    pub deployment: ManagedDeploymentSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inception_points: Vec<InceptionPoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -237,4 +267,90 @@ fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
         "type": "object",
         "x-kubernetes-preserve-unknown-fields": true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BlueGreenDeployment;
+
+    #[test]
+    fn deserialize_bootstrap_example() {
+        let value = serde_json::json!({
+            "apiVersion": "fluidbg.io/v1alpha1",
+            "kind": "BlueGreenDeployment",
+            "metadata": {
+                "name": "order-processor-bootstrap",
+                "namespace": "fluidbg-test"
+            },
+            "spec": {
+                "stateStoreRef": { "name": "memory-store" },
+                "selector": {
+                    "matchLabels": {
+                        "fluidbg.io/name": "order-processor"
+                    }
+                },
+                "deployment": {
+                    "spec": {
+                        "replicas": 1,
+                        "selector": {
+                            "matchLabels": {
+                                "app": "order-processor-green"
+                            }
+                        },
+                        "template": {
+                            "metadata": {
+                                "labels": {
+                                    "app": "order-processor-green",
+                                    "fluidbg.io/name": "order-processor"
+                                }
+                            },
+                            "spec": {
+                                "terminationGracePeriodSeconds": 1,
+                                "containers": [{
+                                    "name": "order-processor",
+                                    "image": "fluidbg/green-app:dev",
+                                    "imagePullPolicy": "Never",
+                                    "env": [
+                                        { "name": "AMQP_URL", "value": "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/" },
+                                        { "name": "INPUT_QUEUE", "value": "orders" },
+                                        { "name": "OUTPUT_QUEUE", "value": "results" }
+                                    ]
+                                }]
+                            }
+                        }
+                    }
+                },
+                "inceptionPoints": [{
+                    "name": "incoming-orders",
+                    "pluginRef": { "name": "rabbitmq" },
+                    "roles": ["duplicator", "observer"],
+                    "config": {
+                        "amqpUrl": "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+                    }
+                }],
+                "tests": [{
+                    "name": "test-container",
+                    "image": "fluidbg/test-app:dev",
+                    "port": 8080,
+                    "dataVerification": {
+                        "verifyPath": "/result/{testId}",
+                        "timeoutSeconds": 120
+                    }
+                }],
+                "promotion": {
+                    "data": {
+                        "minTestCases": 1,
+                        "successRate": 1.0,
+                        "timeoutSeconds": 120
+                    },
+                    "strategy": {
+                        "type": "hard-switch"
+                    }
+                }
+            }
+        });
+
+        let parsed = serde_json::from_value::<BlueGreenDeployment>(value);
+        assert!(parsed.is_ok(), "{parsed:?}");
+    }
 }

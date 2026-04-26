@@ -4,13 +4,12 @@ use chrono::Utc;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
-use crate::state_store::StateStore;
+use crate::state_store::{StateStore, VerificationMode};
 
 pub struct InceptionTracker {
     store: Arc<dyn StateStore>,
     poll_interval: time::Duration,
     timeout_check_interval: time::Duration,
-    result_base_url: String,
 }
 
 impl InceptionTracker {
@@ -18,13 +17,11 @@ impl InceptionTracker {
         store: Arc<dyn StateStore>,
         poll_interval: time::Duration,
         timeout_check_interval: time::Duration,
-        result_base_url: String,
     ) -> Self {
         Self {
             store,
             poll_interval,
             timeout_check_interval,
-            result_base_url,
         }
     }
 
@@ -51,16 +48,15 @@ impl InceptionTracker {
     async fn poll_pending(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pending = self.store.list_pending().await?;
         for run in &pending {
-            let url = format!(
-                "{}/result/{}",
-                self.result_base_url.trim_end_matches('/'),
-                run.test_id
-            );
-            match reqwest::get(&url).await {
+            match reqwest::get(&run.verify_url).await {
                 Ok(resp) => {
                     if let Ok(body) = resp.json::<TestResultResponse>().await {
                         if let Some(passed) = body.passed {
-                            if let Err(e) = self.store.set_verdict(&run.test_id, passed).await {
+                            if let Err(e) = self
+                                .store
+                                .set_verdict(&run.test_id, passed, body.error_message.clone())
+                                .await
+                            {
                                 warn!("failed to set verdict for {}: {}", run.test_id, e);
                             } else {
                                 info!(
@@ -71,6 +67,26 @@ impl InceptionTracker {
                             }
                         } else {
                             debug!("test {} still pending (null verdict)", run.test_id);
+                        }
+                    } else if run.verification_mode == VerificationMode::Custom {
+                        match self.store.decrement_retries(&run.test_id).await {
+                            Ok(Some(remaining)) => {
+                                warn!(
+                                    "custom test {} verification request returned unparsable response, retrying ({} left)",
+                                    run.test_id, remaining
+                                );
+                            }
+                            Ok(None) => {
+                                let _ = self
+                                    .store
+                                    .set_verdict(
+                                        &run.test_id,
+                                        false,
+                                        Some("custom verification retries exhausted".to_string()),
+                                    )
+                                    .await;
+                            }
+                            Err(e) => warn!("failed to update retries for {}: {}", run.test_id, e),
                         }
                     }
                 }
@@ -100,4 +116,6 @@ impl InceptionTracker {
 #[derive(Debug, serde::Deserialize)]
 struct TestResultResponse {
     passed: Option<bool>,
+    #[serde(rename = "errorMessage")]
+    error_message: Option<String>,
 }

@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use super::{Counts, InceptionTest, Result, StateStore, StoreError, TestStatus};
+use super::{Counts, Result, StateStore, StoreError, TestCaseRecord, TestStatus, VerificationMode};
 
 pub struct MemoryStore {
-    data: RwLock<HashMap<String, InceptionTest>>,
+    data: RwLock<HashMap<String, TestCaseRecord>>,
 }
 
 impl Default for MemoryStore {
@@ -26,21 +26,27 @@ impl MemoryStore {
 
 #[async_trait]
 impl StateStore for MemoryStore {
-    async fn register(&self, run: InceptionTest) -> Result<()> {
+    async fn register(&self, run: TestCaseRecord) -> Result<()> {
         let mut data = self.data.write().await;
         data.insert(run.test_id.clone(), run);
         Ok(())
     }
 
-    async fn get(&self, test_id: &str) -> Result<Option<InceptionTest>> {
+    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>> {
         let data = self.data.read().await;
         Ok(data.get(test_id).cloned())
     }
 
-    async fn set_verdict(&self, test_id: &str, passed: bool) -> Result<()> {
+    async fn set_verdict(
+        &self,
+        test_id: &str,
+        passed: bool,
+        failure_message: Option<String>,
+    ) -> Result<()> {
         let mut data = self.data.write().await;
         if let Some(run) = data.get_mut(test_id) {
             run.verdict = Some(passed);
+            run.failure_message = failure_message;
             run.status = if passed {
                 TestStatus::Passed
             } else {
@@ -63,23 +69,47 @@ impl StateStore for MemoryStore {
         }
     }
 
-    async fn list_pending(&self) -> Result<Vec<InceptionTest>> {
+    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>> {
+        let mut data = self.data.write().await;
+        if let Some(run) = data.get_mut(test_id) {
+            if run.retries_remaining > 0 {
+                run.retries_remaining -= 1;
+                return Ok(Some(run.retries_remaining));
+            }
+            return Ok(None);
+        }
+        Err(StoreError::NotFound(test_id.to_string()))
+    }
+
+    async fn list_pending(&self) -> Result<Vec<TestCaseRecord>> {
         let data = self.data.read().await;
         Ok(data.values().filter(|r| r.is_pending()).cloned().collect())
     }
 
     async fn counts(&self, bg: &str) -> Result<Counts> {
         let data = self.data.read().await;
-        let mut counts = Counts::default();
-        for run in data.values().filter(|r| r.blue_green_ref == bg) {
-            match run.status {
-                TestStatus::Passed => counts.passed += 1,
-                TestStatus::Failed => counts.failed += 1,
-                TestStatus::TimedOut => counts.timed_out += 1,
-                TestStatus::Triggered | TestStatus::Observing => counts.pending += 1,
-            }
-        }
-        Ok(counts)
+        Ok(counts_for_runs(
+            data.values().filter(|r| r.blue_green_ref == bg).cloned().collect(),
+        ))
+    }
+
+    async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts> {
+        let data = self.data.read().await;
+        Ok(counts_for_runs(
+            data.values()
+                .filter(|r| r.blue_green_ref == bg && r.verification_mode == mode)
+                .cloned()
+                .collect(),
+        ))
+    }
+
+    async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>> {
+        let data = self.data.read().await;
+        Ok(data
+            .values()
+            .filter(|run| run.blue_green_ref == bg)
+            .filter_map(|run| run.failure_message.clone())
+            .last())
     }
 
     async fn cleanup_expired(&self) -> Result<usize> {
@@ -96,21 +126,38 @@ impl StateStore for MemoryStore {
     }
 }
 
+fn counts_for_runs(runs: Vec<TestCaseRecord>) -> Counts {
+    let mut counts = Counts::default();
+    for run in runs {
+        match run.status {
+            TestStatus::Passed => counts.passed += 1,
+            TestStatus::Failed => counts.failed += 1,
+            TestStatus::TimedOut => counts.timed_out += 1,
+            TestStatus::Triggered | TestStatus::Observing => counts.pending += 1,
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
 
-    fn make_test(test_id: &str, bg_ref: &str) -> InceptionTest {
-        InceptionTest {
+    fn make_test(test_id: &str, bg_ref: &str) -> TestCaseRecord {
+        TestCaseRecord {
             test_id: test_id.to_string(),
             blue_green_ref: bg_ref.to_string(),
             triggered_at: Utc::now(),
-            trigger_inception_point: "test-point".to_string(),
+            source_inception_point: "test-point".to_string(),
             timeout: Duration::seconds(60),
             status: TestStatus::Triggered,
             verdict: None,
+            verification_mode: VerificationMode::Data,
+            verify_url: "http://test/result".to_string(),
+            retries_remaining: 0,
+            failure_message: None,
         }
     }
 
@@ -134,7 +181,7 @@ mod tests {
     async fn set_verdict_passed() {
         let store = MemoryStore::new();
         store.register(make_test("ORD-2", "bg")).await.unwrap();
-        store.set_verdict("ORD-2", true).await.unwrap();
+        store.set_verdict("ORD-2", true, None).await.unwrap();
         let got = store.get("ORD-2").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::Passed);
         assert_eq!(got.verdict, Some(true));
@@ -144,7 +191,10 @@ mod tests {
     async fn set_verdict_failed() {
         let store = MemoryStore::new();
         store.register(make_test("ORD-3", "bg")).await.unwrap();
-        store.set_verdict("ORD-3", false).await.unwrap();
+        store
+            .set_verdict("ORD-3", false, Some("boom".to_string()))
+            .await
+            .unwrap();
         let got = store.get("ORD-3").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::Failed);
         assert_eq!(got.verdict, Some(false));
@@ -185,8 +235,8 @@ mod tests {
         store.register(make_test("ORD-22", "bg1")).await.unwrap();
         store.register(make_test("ORD-23", "bg2")).await.unwrap();
 
-        store.set_verdict("ORD-20", true).await.unwrap();
-        store.set_verdict("ORD-21", false).await.unwrap();
+        store.set_verdict("ORD-20", true, None).await.unwrap();
+        store.set_verdict("ORD-21", false, None).await.unwrap();
         store.mark_timed_out("ORD-22").await.unwrap();
 
         let counts = store.counts("bg1").await.unwrap();
@@ -230,7 +280,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let id = format!("CONC-{}", i);
                 s.register(make_test(&id, "bg")).await.unwrap();
-                s.set_verdict(&id, i % 2 == 0).await.unwrap();
+                s.set_verdict(&id, i % 2 == 0, None).await.unwrap();
             }));
         }
 

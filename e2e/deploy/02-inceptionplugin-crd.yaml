@@ -146,12 +146,13 @@ spec:
               supportedRoles:
                 items:
                   enum:
+                  - duplicator
                   - splitter
                   - combiner
                   - observer
                   - mock
                   - writer
-                  - sink
+                  - consumer
                   type: string
                 type: array
               topology:

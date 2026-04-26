@@ -192,7 +192,7 @@ fn extract_test_id(
 async fn register_case(operator_url: &str, test_id: &str, inception_point: &str) {
     let client = reqwest::Client::new();
     if let Err(e) = client
-        .post(format!("{}/cases", operator_url.trim_end_matches('/')))
+        .post(format!("{}/testcases", operator_url.trim_end_matches('/')))
         .json(&serde_json::json!({
             "testId": test_id,
             "blueGreenRef": "",

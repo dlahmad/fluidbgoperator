@@ -12,15 +12,22 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::runtime::controller::Action;
 use kube::runtime::{Controller, watcher};
+use rand::distr::{Alphanumeric, SampleString};
 use serde_json::json;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{error, info, warn};
 
-use crate::crd::blue_green::{BGDPhase, BlueGreenDeployment, DeploymentRef, DeploymentSelector};
-use crate::crd::inception_plugin::InceptionPlugin;
+use crate::crd::blue_green::{
+    BGDPhase, BlueGreenDeployment, DeploymentRef, DeploymentSelector, ManagedDeploymentSpec,
+};
+use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
 use crate::plugins::reconciler::{reconcile_inception_point, render_container_env_injections};
 use crate::state_store::StateStore;
+use crate::strategy::hard_switch::HardSwitchStrategy;
+use crate::strategy::progressive::ProgressiveStrategy;
+use crate::strategy::{PromotionAction, PromotionStrategy};
+use crate::state_store::VerificationMode;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +135,15 @@ async fn reconcile(
         .and_then(|s| s.phase.clone())
         .unwrap_or(BGDPhase::Pending);
 
+    if rollout_needs_restart(&bgd, &phase) {
+        info!(
+            "detected new spec generation for terminal BGD '{}'; restarting rollout",
+            name
+        );
+        reset_status_for_new_rollout(&bgd, &client, &namespace).await;
+        return Ok(Action::requeue(std::time::Duration::from_secs(1)));
+    }
+
     info!(
         "reconciling BlueGreenDeployment '{}' phase={:?}",
         name, phase
@@ -135,16 +151,45 @@ async fn reconcile(
 
     match phase {
         BGDPhase::Pending => {
+            let Some(generated_name) =
+                ensure_generated_candidate_name(&bgd, &client, &namespace).await?
+            else {
+                return Ok(Action::requeue(std::time::Duration::from_secs(1)));
+            };
+            info!("using generated deployment name '{}'", generated_name);
+            if bootstrap_initial_green_if_empty(&bgd, &client, &namespace).await? {
+                update_status_phase(&bgd, &client, &namespace, BGDPhase::Completed).await;
+                return Ok(Action::requeue(std::time::Duration::from_secs(300)));
+            }
+            resolve_current_green(&client, &namespace, &bgd.spec.selector).await?;
             ensure_declared_deployments(&bgd, &client, &namespace).await?;
             ensure_inception_resources(&bgd, &client, &namespace).await?;
             ensure_test_resources(&bgd, &client, &namespace).await?;
+            initialize_splitter_traffic(&bgd, &client, &namespace).await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Observing).await;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Observing => {
+            validate_test_configuration(&bgd)?;
+
             let counts = ctx
                 .store
                 .counts(&name)
+                .await
+                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+            let data_counts = ctx
+                .store
+                .counts_for_mode(&name, VerificationMode::Data)
+                .await
+                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+            let custom_counts = ctx
+                .store
+                .counts_for_mode(&name, VerificationMode::Custom)
+                .await
+                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+            let latest_failure_message = ctx
+                .store
+                .latest_failure_message(&name)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
 
@@ -155,43 +200,54 @@ async fn reconcile(
                 0.0
             };
 
-            let min_cases = bgd
-                .spec
-                .promotion
-                .as_ref()
-                .and_then(|p| p.success_criteria.min_cases)
-                .unwrap_or(100);
-            let threshold = bgd
-                .spec
-                .promotion
-                .as_ref()
-                .and_then(|p| p.success_criteria.success_rate)
-                .unwrap_or(0.98);
+            update_status_counts(
+                &bgd,
+                &client,
+                &namespace,
+                &counts,
+                success_rate,
+                latest_failure_message,
+            )
+            .await;
 
-            update_status_counts(&bgd, &client, &namespace, &counts, success_rate).await;
+            let action = decide_promotion_action(
+                &bgd,
+                &data_counts,
+                &custom_counts,
+                bgd.status.as_ref().and_then(|s| s.current_step),
+            )
+            .await?;
 
-            if total < min_cases {
-                info!(
-                    "BGD '{}' observing: {}/{} cases, rate={:.4}",
-                    name, total, min_cases, success_rate
-                );
-                return Ok(Action::requeue(std::time::Duration::from_secs(5)));
-            }
-
-            if success_rate >= threshold {
-                info!(
-                    "BGD '{}' promotion threshold met! rate={:.4}",
-                    name, success_rate
-                );
-                update_status_phase(&bgd, &client, &namespace, BGDPhase::Promoting).await;
-            } else {
-                info!(
-                    "BGD '{}' rolling back: rate={:.4} < {}",
-                    name, success_rate, threshold
-                );
-                restore_after_rollback(&bgd, &client, &namespace).await?;
-                update_status_phase(&bgd, &client, &namespace, BGDPhase::RolledBack).await;
-                cleanup_test_resources(&bgd, &client, &namespace).await?;
+            match action {
+                PromotionAction::ContinueObserving => {
+                    info!(
+                        "BGD '{}' observing: total={}, rate={:.4}",
+                        name, total, success_rate
+                    );
+                }
+                PromotionAction::Promote => {
+                    info!("BGD '{}' promotion threshold met! rate={:.4}", name, success_rate);
+                    update_status_phase(&bgd, &client, &namespace, BGDPhase::Promoting).await;
+                }
+                PromotionAction::Rollback => {
+                    info!("BGD '{}' rolling back: rate={:.4}", name, success_rate);
+                    restore_after_rollback(&bgd, &client, &namespace).await?;
+                    update_status_phase(&bgd, &client, &namespace, BGDPhase::RolledBack).await;
+                    cleanup_test_resources(&bgd, &client, &namespace).await?;
+                }
+                PromotionAction::AdvanceStep {
+                    step,
+                    traffic_percent,
+                } => {
+                    apply_splitter_traffic_percent(&bgd, &client, &namespace, traffic_percent)
+                        .await?;
+                    update_status_progress(&bgd, &client, &namespace, step, traffic_percent)
+                        .await;
+                    info!(
+                        "BGD '{}' advanced progressive splitter traffic to {}% (step {})",
+                        name, traffic_percent, step
+                    );
+                }
             }
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
@@ -210,32 +266,247 @@ async fn reconcile(
     }
 }
 
+async fn decide_promotion_action(
+    bgd: &BlueGreenDeployment,
+    data_counts: &crate::state_store::Counts,
+    custom_counts: &crate::state_store::Counts,
+    current_step: Option<i32>,
+) -> std::result::Result<PromotionAction, ReconcileError> {
+    let promotion = bgd.spec.promotion.as_ref().ok_or_else(|| {
+        ReconcileError::Store("blue green deployment is missing promotion spec".into())
+    })?;
+
+    let data_action = if let Some(data) = promotion.data.as_ref() {
+        Some(
+            promotion_strategy_for(&bgd, data)?
+                .decide(data_counts, current_step)
+                .await,
+        )
+    } else {
+        None
+    };
+
+    let custom_action = if let Some(custom) = promotion.custom.as_ref() {
+        Some(decide_custom_promotion(custom_counts, custom))
+    } else {
+        None
+    };
+
+    match (data_action, custom_action) {
+        (Some(PromotionAction::Rollback), _) | (_, Some(PromotionAction::Rollback)) => {
+            Ok(PromotionAction::Rollback)
+        }
+        (Some(PromotionAction::ContinueObserving), _)
+        | (_, Some(PromotionAction::ContinueObserving)) => Ok(PromotionAction::ContinueObserving),
+        (Some(PromotionAction::AdvanceStep { step, traffic_percent }), None) => {
+            Ok(PromotionAction::AdvanceStep {
+                step,
+                traffic_percent,
+            })
+        }
+        (Some(PromotionAction::Promote), Some(PromotionAction::Promote))
+        | (Some(PromotionAction::Promote), None)
+        | (None, Some(PromotionAction::Promote)) => Ok(PromotionAction::Promote),
+        (None, None) => Err(ReconcileError::Store(
+            "promotion must define at least one of data or custom".to_string(),
+        )),
+        _ => Ok(PromotionAction::ContinueObserving),
+    }
+}
+
+fn decide_custom_promotion(
+    counts: &crate::state_store::Counts,
+    _custom: &crate::crd::blue_green::CustomPromotionSpec,
+) -> PromotionAction {
+    if counts.pending > 0 {
+        return PromotionAction::ContinueObserving;
+    }
+    if counts.failed > 0 || counts.timed_out > 0 {
+        return PromotionAction::Rollback;
+    }
+    if counts.passed == 0 {
+        return PromotionAction::ContinueObserving;
+    }
+    PromotionAction::Promote
+}
+
+fn promotion_strategy_for(
+    bgd: &BlueGreenDeployment,
+    data_promotion: &crate::crd::blue_green::DataPromotionSpec,
+) -> std::result::Result<Box<dyn PromotionStrategy>, ReconcileError> {
+    let promotion = bgd.spec.promotion.as_ref().ok_or_else(|| {
+        ReconcileError::Store("blue green deployment is missing promotion spec".into())
+    })?;
+
+    match promotion.strategy.strategy_type {
+        crate::crd::blue_green::StrategyType::HardSwitch => Ok(Box::new(
+            HardSwitchStrategy::from_criteria(data_promotion),
+        )),
+        crate::crd::blue_green::StrategyType::Progressive => {
+            let progressive = promotion.strategy.progressive.as_ref().ok_or_else(|| {
+                ReconcileError::Store("progressive strategy selected without steps".into())
+            })?;
+            Ok(Box::new(ProgressiveStrategy::from_steps(
+                progressive.steps.clone(),
+                progressive.rollback_on_step_failure,
+            )))
+        }
+    }
+}
+
+fn rollout_needs_restart(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
+    if !matches!(*phase, BGDPhase::Completed | BGDPhase::RolledBack) {
+        return false;
+    }
+    let generation = bgd.metadata.generation.unwrap_or_default();
+    let observed_generation = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.observed_generation)
+        .unwrap_or_default();
+    generation > observed_generation
+}
+
+fn validate_test_configuration(bgd: &BlueGreenDeployment) -> std::result::Result<(), ReconcileError> {
+    let Some(promotion) = bgd.spec.promotion.as_ref() else {
+        if bgd.spec.tests.is_empty() {
+            return Ok(());
+        }
+        return Err(ReconcileError::Store(
+            "tests require a promotion spec".to_string(),
+        ));
+    };
+
+    if promotion.data.is_none() && promotion.custom.is_none() {
+        return Err(ReconcileError::Store(
+            "promotion must define at least one of data or custom".to_string(),
+        ));
+    }
+
+    for test in &bgd.spec.tests {
+        if test.data_verification.is_none() && test.custom_verification.is_none() {
+            return Err(ReconcileError::Store(format!(
+                "test '{}' must define at least one of dataVerification or customVerification",
+                test.name
+            )));
+        }
+        if test.data_verification.is_some() && promotion.data.is_none() {
+            return Err(ReconcileError::Store(format!(
+                "test '{}' uses dataVerification but promotion.data is missing",
+                test.name
+            )));
+        }
+        if test.custom_verification.is_some() && promotion.custom.is_none() {
+            return Err(ReconcileError::Store(format!(
+                "test '{}' uses customVerification but promotion.custom is missing",
+                test.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn has_splitter(bgd: &BlueGreenDeployment) -> bool {
+    bgd.spec
+        .inception_points
+        .iter()
+        .any(|ip| ip.roles.iter().any(|role| matches!(role, PluginRole::Splitter)))
+}
+
+fn initial_splitter_traffic_percent(bgd: &BlueGreenDeployment) -> Option<i32> {
+    if !has_splitter(bgd) {
+        return None;
+    }
+    match bgd.spec.promotion.as_ref()?.strategy.strategy_type {
+        crate::crd::blue_green::StrategyType::HardSwitch => Some(100),
+        crate::crd::blue_green::StrategyType::Progressive => bgd
+            .spec
+            .promotion
+            .as_ref()?
+            .strategy
+            .progressive
+            .as_ref()?
+            .steps
+            .first()
+            .map(|step| step.traffic_percent),
+    }
+}
+
+async fn initialize_splitter_traffic(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let Some(traffic_percent) = initial_splitter_traffic_percent(bgd) else {
+        return Ok(());
+    };
+    apply_splitter_traffic_percent(bgd, client, namespace, traffic_percent).await?;
+    update_status_progress(bgd, client, namespace, 0, traffic_percent).await;
+    Ok(())
+}
+
+async fn apply_splitter_traffic_percent(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    traffic_percent: i32,
+) -> std::result::Result<(), ReconcileError> {
+    let mut touched = Vec::new();
+    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+
+    for ip in &bgd.spec.inception_points {
+        if !ip.roles.iter().any(|role| matches!(role, PluginRole::Splitter)) {
+            continue;
+        }
+        let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        if !matches!(plugin.spec.topology, Topology::Standalone) {
+            continue;
+        }
+        let deployment_name = format!("fluidbg-{}", ip.name);
+        patch_targeted_deployment_env(
+            client,
+            namespace,
+            &deployment_name,
+            Some(&deployment_name),
+            &[("FLUIDBG_TRAFFIC_PERCENT", &traffic_percent.to_string())],
+            false,
+        )
+        .await?;
+        touched.push(DeploymentIdentity {
+            namespace: namespace.to_string(),
+            name: deployment_name,
+        });
+    }
+
+    wait_for_deployments_ready(client, &touched).await?;
+    Ok(())
+}
+
 async fn promote(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
-    let current_green = resolve_current_green(client, namespace, &bgd.spec.green.selector).await?;
-    let candidate = &bgd.spec.blue.deployment;
-    let candidate_namespace = deployment_namespace(candidate, namespace);
+    let current_green = resolve_current_green(client, namespace, &bgd.spec.selector).await?;
+    let candidate = candidate_ref(bgd);
+    let candidate_namespace = deployment_namespace(&candidate, namespace);
 
     let candidate_api: Api<Deployment> = Api::namespaced(client.clone(), &candidate_namespace);
     let mut candidate_deploy = candidate_api.get(&candidate.name).await?;
-    apply_selector_labels_to_deployment(
-        &mut candidate_deploy,
-        &bgd.spec.green.selector.match_labels,
-    )?;
+    apply_family_labels_to_deployment(&mut candidate_deploy, &bgd.spec.selector.match_labels)?;
+    set_green_label(&mut candidate_deploy, true)?;
 
     candidate_api
         .replace(&candidate.name, &Default::default(), &candidate_deploy)
         .await?;
 
     info!(
-        "promoted: deployment '{}/{}' now matches green selector",
+        "promoted: deployment '{}/{}' now marked fluidbg.io/green=true",
         candidate_namespace, candidate.name
     );
 
-    delete_current_green(client, namespace, candidate, &current_green).await?;
+    delete_current_green(client, namespace, &candidate, &current_green).await?;
     Ok(())
 }
 
@@ -244,17 +515,60 @@ async fn ensure_declared_deployments(
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
-    if let Some(manifest) = &bgd.spec.blue.manifest {
-        apply_deployment_manifest(
-            client,
-            namespace,
-            &bgd.spec.blue.deployment,
-            manifest,
-            Some(&bgd.spec.green.selector.match_labels),
-        )
-        .await?;
-    }
+    apply_deployment_manifest(
+        client,
+        bgd,
+        namespace,
+        &bgd.spec.deployment,
+        &bgd.spec.selector.match_labels,
+        false,
+    )
+    .await?;
     Ok(())
+}
+
+async fn bootstrap_initial_green_if_empty(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<bool, ReconcileError> {
+    if bgd.spec.selector.match_labels.is_empty() {
+        return Err(ReconcileError::Store(
+            "selector.matchLabels must contain at least one label".to_string(),
+        ));
+    }
+
+    let green_namespace = bgd
+        .spec
+        .selector
+        .namespace
+        .clone()
+        .unwrap_or_else(|| namespace.to_string());
+    let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &green_namespace);
+    let family = deploy_api
+        .list(&ListParams::default().labels(&label_selector(&bgd.spec.selector.match_labels)))
+        .await?;
+
+    if !family.items.is_empty() {
+        return Ok(false);
+    }
+
+    apply_deployment_manifest(
+        client,
+        bgd,
+        namespace,
+        &bgd.spec.deployment,
+        &bgd.spec.selector.match_labels,
+        true,
+    )
+    .await?;
+
+    info!(
+        "bootstrapped initial green deployment '{}/{}' from spec.deployment because selector matched no existing deployments",
+        deployment_namespace_spec(&bgd.spec.deployment, namespace),
+        candidate_ref(bgd).name
+    );
+    Ok(true)
 }
 
 async fn restore_after_promotion(
@@ -274,8 +588,8 @@ async fn restore_after_rollback(
 
     delete_deployment(
         client,
-        &deployment_namespace(&bgd.spec.blue.deployment, namespace),
-        &bgd.spec.blue.deployment.name,
+        &deployment_namespace(&candidate_ref(bgd), namespace),
+        &candidate_ref(bgd).name,
     )
     .await
 }
@@ -385,8 +699,14 @@ async fn ensure_inception_resources(
         .spec
         .tests
         .first()
-        .map(|test| format!("http://{}:{}", test.name, test.port))
+        .map(|test| format!("http://{}.{}:{}", test.name, namespace, test.port))
         .unwrap_or_else(|| "http://localhost:8080".to_string());
+    let test_data_verify_path = bgd
+        .spec
+        .tests
+        .first()
+        .and_then(|test| test.data_verification.as_ref())
+        .map(|verification| verification.verify_path.as_str());
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
@@ -396,7 +716,8 @@ async fn ensure_inception_resources(
             namespace,
             operator_url,
             &test_container_url,
-            &bgd.spec.blue.deployment.name,
+            test_data_verify_path,
+            &candidate_ref(bgd).name,
             bgd.metadata.name.as_deref().unwrap_or(""),
         )
         .map_err(ReconcileError::Store)?;
@@ -469,34 +790,35 @@ async fn ensure_inception_resources(
 
 async fn apply_deployment_manifest(
     client: &kube::Client,
+    bgd: &BlueGreenDeployment,
     default_namespace: &str,
-    deployment_ref: &DeploymentRef,
-    manifest: &Deployment,
-    remove_labels: Option<&BTreeMap<String, String>>,
+    deployment_spec: &ManagedDeploymentSpec,
+    family_labels: &BTreeMap<String, String>,
+    is_green: bool,
 ) -> std::result::Result<(), ReconcileError> {
-    let mut deployment = manifest.clone();
-
-    if deployment.metadata.name.is_none() {
-        deployment.metadata.name = Some(deployment_ref.name.clone());
-    }
-    if deployment.metadata.namespace.is_none() {
-        deployment.metadata.namespace =
-            Some(deployment_namespace(deployment_ref, default_namespace));
-    }
-    if let Some(labels) = remove_labels {
-        strip_labels_from_deployment(&mut deployment, labels);
-    }
+    let candidate = candidate_ref(bgd);
+    let mut deployment = Deployment {
+        metadata: ObjectMeta {
+            name: Some(candidate.name.clone()),
+            namespace: Some(deployment_namespace_spec(deployment_spec, default_namespace)),
+            ..Default::default()
+        },
+        spec: Some(deployment_spec.spec.clone()),
+        ..Default::default()
+    };
+    apply_family_labels_to_deployment(&mut deployment, family_labels)?;
+    set_green_label(&mut deployment, is_green)?;
 
     let name = deployment
         .metadata
         .name
         .clone()
-        .unwrap_or_else(|| deployment_ref.name.clone());
+        .unwrap_or_else(|| candidate.name.clone());
     let deploy_namespace = deployment
         .metadata
         .namespace
         .clone()
-        .unwrap_or_else(|| deployment_namespace(deployment_ref, default_namespace));
+        .unwrap_or_else(|| deployment_namespace_spec(deployment_spec, default_namespace));
 
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &deploy_namespace);
     match deploy_api.get(&name).await {
@@ -516,38 +838,6 @@ async fn apply_deployment_manifest(
         deploy_namespace, name
     );
     Ok(())
-}
-
-fn strip_labels_from_deployment(
-    deployment: &mut Deployment,
-    labels_to_remove: &BTreeMap<String, String>,
-) {
-    if let Some(labels) = deployment.metadata.labels.as_mut() {
-        for key in labels_to_remove.keys() {
-            labels.remove(key);
-        }
-        if labels.is_empty() {
-            deployment.metadata.labels = None;
-        }
-    }
-
-    if let Some(template_labels) = deployment
-        .spec
-        .as_mut()
-        .and_then(|spec| spec.template.metadata.as_mut())
-        .and_then(|metadata| metadata.labels.as_mut())
-    {
-        for key in labels_to_remove.keys() {
-            template_labels.remove(key);
-        }
-        if template_labels.is_empty() {
-            if let Some(spec) = deployment.spec.as_mut() {
-                if let Some(metadata) = spec.template.metadata.as_mut() {
-                    metadata.labels = None;
-                }
-            }
-        }
-    }
 }
 
 async fn apply_resource<K>(
@@ -623,7 +913,7 @@ async fn restore_injected_envs(
 
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     let current_green = if restore_green {
-        Some(resolve_current_green(client, namespace, &bgd.spec.green.selector).await?)
+        Some(resolve_current_green(client, namespace, &bgd.spec.selector).await?)
     } else {
         None
     };
@@ -662,16 +952,16 @@ async fn restore_injected_envs(
         if restore_blue && !injections.blue.is_empty() {
             patch_deployment_env_vars(
                 client,
-                &deployment_namespace(&bgd.spec.blue.deployment, namespace),
-                &bgd.spec.blue.deployment.name,
+                &deployment_namespace(&candidate_ref(bgd), namespace),
+                &candidate_ref(bgd).name,
                 &injections.blue,
             )
             .await?;
             wait_for_deployment_ready(
                 client,
                 &DeploymentIdentity {
-                    namespace: deployment_namespace(&bgd.spec.blue.deployment, namespace),
-                    name: bgd.spec.blue.deployment.name.clone(),
+                    namespace: deployment_namespace(&candidate_ref(bgd), namespace),
+                    name: candidate_ref(bgd).name.clone(),
                 },
             )
             .await?;
@@ -752,7 +1042,7 @@ async fn apply_assignments(
         .iter()
         .any(|assignment| matches!(assignment.target, AssignmentTarget::Green))
     {
-        Some(resolve_current_green(client, namespace, &bgd.spec.green.selector).await?)
+        Some(resolve_current_green(client, namespace, &bgd.spec.selector).await?)
     } else {
         None
     };
@@ -786,14 +1076,14 @@ async fn apply_assignments(
                 }
             }
             AssignmentTarget::Blue => {
-                let deploy_namespace = deployment_namespace(&bgd.spec.blue.deployment, namespace);
+                let deploy_namespace = deployment_namespace(&candidate_ref(bgd), namespace);
                 let identity = DeploymentIdentity {
                     namespace: deploy_namespace.clone(),
-                    name: bgd.spec.blue.deployment.name.clone(),
+                    name: candidate_ref(bgd).name.clone(),
                 };
                 let key = DeploymentPatchKey {
                     namespace: deploy_namespace.clone(),
-                    name: bgd.spec.blue.deployment.name.clone(),
+                    name: candidate_ref(bgd).name.clone(),
                     container_name: assignment.container_name.clone(),
                 };
                 grouped
@@ -949,7 +1239,7 @@ async fn resolve_current_green(
 ) -> std::result::Result<DeploymentRef, ReconcileError> {
     if selector.match_labels.is_empty() {
         return Err(ReconcileError::Store(
-            "green.selector.matchLabels must contain at least one label".to_string(),
+            "selector.matchLabels must contain at least one label".to_string(),
         ));
     }
 
@@ -958,8 +1248,10 @@ async fn resolve_current_green(
         .clone()
         .unwrap_or_else(|| namespace.to_string());
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &green_namespace);
+    let mut labels = selector.match_labels.clone();
+    labels.insert("fluidbg.io/green".to_string(), "true".to_string());
     let deployments = deploy_api
-        .list(&ListParams::default().labels(&label_selector(&selector.match_labels)))
+        .list(&ListParams::default().labels(&label_selector(&labels)))
         .await?;
 
     match deployments.items.as_slice() {
@@ -972,12 +1264,43 @@ async fn resolve_current_green(
                 namespace: Some(green_namespace),
             })
         }
-        [] => Err(ReconcileError::Store(format!(
-            "green.selector matched no deployments in namespace '{}'",
-            green_namespace
-        ))),
+        [] => {
+            let family_deployments = deploy_api
+                .list(&ListParams::default().labels(&label_selector(&selector.match_labels)))
+                .await?;
+
+            match family_deployments.items.as_slice() {
+                [deployment] => {
+                    let name = deployment.metadata.name.clone().ok_or_else(|| {
+                        ReconcileError::Store(
+                            "selected deployment for green adoption has no name".to_string(),
+                        )
+                    })?;
+                    let mut adopted = deployment.clone();
+                    set_green_label(&mut adopted, true)?;
+                    deploy_api.replace(&name, &Default::default(), &adopted).await?;
+                    info!(
+                        "adopted existing deployment '{}/{}' as current green by setting fluidbg.io/green=true",
+                        green_namespace, name
+                    );
+                    Ok(DeploymentRef {
+                        name,
+                        namespace: Some(green_namespace),
+                    })
+                }
+                [] => Err(ReconcileError::Store(format!(
+                    "selector matched no deployments in namespace '{}'",
+                    green_namespace
+                ))),
+                matches => Err(ReconcileError::Store(format!(
+                    "selector matched {} deployments in namespace '{}' but none is marked fluidbg.io/green=true; refusing ambiguous adoption",
+                    matches.len(),
+                    green_namespace
+                ))),
+            }
+        }
         matches => Err(ReconcileError::Store(format!(
-            "green.selector matched {} deployments in namespace '{}'; expected exactly one",
+            "selector matched {} green deployments in namespace '{}'; expected exactly one",
             matches.len(),
             green_namespace
         ))),
@@ -1033,13 +1356,13 @@ fn label_selector(labels: &std::collections::BTreeMap<String, String>) -> String
         .join(",")
 }
 
-fn apply_selector_labels_to_deployment(
+fn apply_family_labels_to_deployment(
     deployment: &mut Deployment,
     labels_to_apply: &std::collections::BTreeMap<String, String>,
 ) -> std::result::Result<(), ReconcileError> {
     if labels_to_apply.is_empty() {
         return Err(ReconcileError::Store(
-            "green.selector.matchLabels must contain at least one label".to_string(),
+            "selector.matchLabels must contain at least one label".to_string(),
         ));
     }
 
@@ -1051,7 +1374,104 @@ fn apply_selector_labels_to_deployment(
         deployment_labels.insert(key.clone(), value.clone());
     }
 
+    let template_labels = deployment
+        .spec
+        .as_mut()
+        .and_then(|spec| spec.template.metadata.as_mut())
+        .map(|metadata| metadata.labels.get_or_insert_with(Default::default))
+        .ok_or_else(|| ReconcileError::Store("deployment template metadata missing".to_string()))?;
+    for (key, value) in labels_to_apply {
+        template_labels.insert(key.clone(), value.clone());
+    }
+
     Ok(())
+}
+
+fn set_green_label(
+    deployment: &mut Deployment,
+    is_green: bool,
+) -> std::result::Result<(), ReconcileError> {
+    let value = if is_green { "true" } else { "false" }.to_string();
+    deployment
+        .metadata
+        .labels
+        .get_or_insert_with(Default::default)
+        .insert("fluidbg.io/green".to_string(), value.clone());
+    let template_labels = deployment
+        .spec
+        .as_mut()
+        .and_then(|spec| spec.template.metadata.as_mut())
+        .map(|metadata| metadata.labels.get_or_insert_with(Default::default))
+        .ok_or_else(|| ReconcileError::Store("deployment template metadata missing".to_string()))?;
+    template_labels.insert("fluidbg.io/green".to_string(), value);
+    Ok(())
+}
+
+fn candidate_ref(bgd: &BlueGreenDeployment) -> DeploymentRef {
+    DeploymentRef {
+        name: bgd
+            .status
+            .as_ref()
+            .and_then(|status| status.generated_deployment_name.clone())
+            .unwrap_or_else(|| {
+                let bgd_name = bgd.metadata.name.as_deref().unwrap_or("bgd");
+                format!("{bgd_name}-pending")
+            }),
+        namespace: bgd.spec.deployment.namespace.clone(),
+    }
+}
+
+async fn ensure_generated_candidate_name(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<Option<String>, ReconcileError> {
+    if let Some(existing) = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.generated_deployment_name.clone())
+    {
+        return Ok(Some(existing));
+    }
+
+    let deploy_namespace = deployment_namespace_spec(&bgd.spec.deployment, namespace);
+    let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &deploy_namespace);
+    let bgd_name = bgd.metadata.name.as_deref().unwrap_or("bgd");
+
+    for _ in 0..32 {
+        let suffix = {
+            let mut rng = rand::rng();
+            Alphanumeric.sample_string(&mut rng, 6).to_ascii_lowercase()
+        };
+        let max_base_len = 253usize.saturating_sub(suffix.len() + 1);
+        let base = if bgd_name.len() > max_base_len {
+            &bgd_name[..max_base_len]
+        } else {
+            bgd_name
+        };
+        let candidate_name = format!("{base}-{suffix}");
+
+        match deploy_api.get(&candidate_name).await {
+            Ok(_) => continue,
+            Err(kube::Error::Api(err)) if err.code == 404 => {
+                update_status_generated_deployment_name(bgd, client, namespace, &candidate_name)
+                    .await;
+                return Ok(None);
+            }
+            Err(err) => return Err(ReconcileError::K8s(err)),
+        }
+    }
+
+    Err(ReconcileError::Store(
+        "failed to generate a non-colliding deployment name after 32 attempts".to_string(),
+    ))
+}
+
+fn deployment_namespace_spec(deployment_spec: &ManagedDeploymentSpec, default_namespace: &str) -> String {
+    deployment_spec
+        .namespace
+        .clone()
+        .unwrap_or_else(|| default_namespace.to_string())
 }
 
 async fn cleanup_test_resources(
@@ -1136,10 +1556,60 @@ async fn update_status_phase(
         None => return,
     };
     let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
-    let patch = json!({ "status": { "phase": phase } });
+    let patch = json!({
+        "status": {
+            "phase": phase,
+            "observedGeneration": bgd.metadata.generation
+        }
+    });
     let pp = PatchParams::default();
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!("failed to update status for '{}': {}", name, e);
+    }
+}
+
+async fn reset_status_for_new_rollout(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({
+        "status": {
+            "phase": "Pending",
+            "generatedDeploymentName": null,
+            "currentStep": null,
+            "currentTrafficPercent": null
+        }
+    });
+    let pp = PatchParams::default();
+    if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
+        warn!("failed to reset rollout status for '{}': {}", name, e);
+    }
+}
+
+async fn update_status_generated_deployment_name(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    generated_deployment_name: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({ "status": { "generatedDeploymentName": generated_deployment_name } });
+    let pp = PatchParams::default();
+    if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
+        warn!(
+            "failed to update generated deployment name for '{}': {}",
+            name, e
+        );
     }
 }
 
@@ -1149,6 +1619,7 @@ async fn update_status_counts(
     namespace: &str,
     counts: &crate::state_store::Counts,
     success_rate: f64,
+    last_failure_message: Option<String>,
 ) {
     let name = match &bgd.metadata.name {
         Some(n) => n.clone(),
@@ -1157,16 +1628,41 @@ async fn update_status_counts(
     let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
     let patch = json!({
         "status": {
-            "casesPassed": counts.passed,
-            "casesFailed": counts.failed,
-            "casesTimedOut": counts.timed_out,
-            "casesPending": counts.pending,
-            "casesObserved": counts.passed + counts.failed + counts.timed_out,
-            "currentSuccessRate": success_rate
+            "testCasesPassed": counts.passed,
+            "testCasesFailed": counts.failed,
+            "testCasesTimedOut": counts.timed_out,
+            "testCasesPending": counts.pending,
+            "testCasesObserved": counts.passed + counts.failed + counts.timed_out,
+            "currentSuccessRate": success_rate,
+            "lastFailureMessage": last_failure_message
         }
     });
     let pp = PatchParams::default();
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!("failed to update status counts for '{}': {}", name, e);
+    }
+}
+
+async fn update_status_progress(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    step: i32,
+    traffic_percent: i32,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({
+        "status": {
+            "currentStep": step,
+            "currentTrafficPercent": traffic_percent
+        }
+    });
+    let pp = PatchParams::default();
+    if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
+        warn!("failed to update status progress for '{}': {}", name, e);
     }
 }

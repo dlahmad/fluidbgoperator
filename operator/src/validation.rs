@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn unsupported_role_rejected() {
-        assert!(validate_roles(&[PluginRole::Observer], &[PluginRole::Splitter]).is_err());
+        assert!(validate_roles(&[PluginRole::Observer], &[PluginRole::Duplicator]).is_err());
     }
 
     #[test]

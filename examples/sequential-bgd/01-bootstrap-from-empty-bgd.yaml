@@ -1,0 +1,78 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-bootstrap
+  namespace: fluidbg-test
+spec:
+  stateStoreRef:
+    name: memory-store
+  selector:
+    matchLabels:
+      fluidbg.io/name: order-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: order-processor-green
+      template:
+        metadata:
+          labels:
+            app: order-processor-green
+            fluidbg.io/name: order-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/green-app:dev
+              imagePullPolicy: Never
+              env:
+                - name: AMQP_URL
+                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                - name: INPUT_QUEUE
+                  value: "orders"
+                - name: OUTPUT_QUEUE
+                  value: "results"
+                - name: HTTP_UPSTREAM
+                  value: "http://httpbin.fluidbg-system/post"
+  inceptionPoints:
+    - name: incoming-orders
+      pluginRef:
+        name: rabbitmq
+      roles: [duplicator, observer]
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        duplicator:
+          inputQueue: orders
+          greenInputQueue: orders-green
+          blueInputQueue: orders-blue
+          greenInputQueueEnvVar: INPUT_QUEUE
+          blueInputQueueEnvVar: INPUT_QUEUE
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          match:
+            - field: queue.body
+              jsonPath: $.type
+              matches: "^order$"
+          notifyPath: /observe/{testId}/incoming-orders
+  tests:
+    - name: test-container
+      image: fluidbg/test-app:dev
+      port: 8080
+      dataVerification:
+        verifyPath: /result/{testId}
+        timeoutSeconds: 120
+      env:
+        - name: PORT
+          value: "8080"
+        - name: AMQP_URL
+          value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+  promotion:
+    data:
+      minTestCases: 1
+      successRate: 1.0
+      timeoutSeconds: 120
+    strategy:
+      type: hard-switch

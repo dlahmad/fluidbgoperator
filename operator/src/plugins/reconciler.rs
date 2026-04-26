@@ -32,6 +32,7 @@ pub fn reconcile_inception_point(
     namespace: &str,
     operator_url: &str,
     test_container_url: &str,
+    test_data_verify_path: Option<&str>,
     _blue_deployment_name: &str,
     blue_green_ref: &str,
 ) -> Result<ReconciledResources, String> {
@@ -82,8 +83,18 @@ pub fn reconcile_inception_point(
             ..Default::default()
         },
         EnvVar {
+            name: "FLUIDBG_TESTCASE_REGISTRATION_URL".to_string(),
+            value: Some(format!("{}/testcases", operator_url.trim_end_matches('/'))),
+            ..Default::default()
+        },
+        EnvVar {
             name: "FLUIDBG_TEST_CONTAINER_URL".to_string(),
             value: Some(test_container_url.to_string()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE".to_string(),
+            value: test_data_verify_path.map(|value| value.to_string()),
             ..Default::default()
         },
         EnvVar {
@@ -289,12 +300,13 @@ fn ensure_config_mount(container: &mut Container) {
 
 fn plugin_role_name(role: &PluginRole) -> &'static str {
     match role {
+        PluginRole::Duplicator => "duplicator",
         PluginRole::Splitter => "splitter",
         PluginRole::Combiner => "combiner",
         PluginRole::Observer => "observer",
         PluginRole::Mock => "mock",
         PluginRole::Writer => "writer",
-        PluginRole::Sink => "sink",
+        PluginRole::Consumer => "consumer",
     }
 }
 
@@ -425,24 +437,38 @@ mod tests {
                 description: "RabbitMQ transport plugin".to_string(),
                 image: "fluidbg/rabbitmq:v0.1.0".to_string(),
                 supported_roles: vec![
+                    PluginRole::Duplicator,
                     PluginRole::Splitter,
                     PluginRole::Observer,
                     PluginRole::Writer,
-                    PluginRole::Sink,
+                    PluginRole::Consumer,
                     PluginRole::Combiner,
                 ],
                 topology: Topology::Standalone,
                 field_namespaces: vec!["queue".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
-                    "required": ["inputQueue", "greenInputQueue", "blueInputQueue"],
                     "properties": {
-                        "inputQueue": { "type": "string" },
-                        "greenInputQueue": { "type": "string" },
-                        "blueInputQueue": { "type": "string" },
-                        "testId": { "type": "object" },
-                        "match": { "type": "array" },
-                        "writeEnvVar": { "type": "string" }
+                        "duplicator": {
+                            "type": "object",
+                            "properties": {
+                                "inputQueue": { "type": "string" },
+                                "greenInputQueue": { "type": "string" },
+                                "blueInputQueue": { "type": "string" }
+                            }
+                        },
+                        "splitter": {
+                            "type": "object",
+                            "properties": {
+                                "inputQueue": { "type": "string" },
+                                "greenInputQueue": { "type": "string" },
+                                "blueInputQueue": { "type": "string" }
+                            }
+                        },
+                        "observer": { "type": "object" },
+                        "writer": { "type": "object" },
+                        "consumer": { "type": "object" },
+                        "combiner": { "type": "object" }
                     }
                 }),
                 config_template: None,
@@ -534,6 +560,7 @@ mod tests {
             "production",
             "http://operator:8090",
             "http://test-container:8080",
+            Some("/result/{testId}"),
             "order-processor-blue",
             "order-processor-bg",
         )
@@ -557,14 +584,18 @@ mod tests {
         let plugin = make_rabbitmq_plugin();
         let ip = make_inception_point(
             "incoming-orders",
-            vec![PluginRole::Splitter, PluginRole::Observer],
+            vec![PluginRole::Duplicator, PluginRole::Observer],
             serde_json::json!({
-                "inputQueue": "orders",
-                "greenInputQueue": "orders-green",
-                "blueInputQueue": "orders-blue",
-                "testId": {"field": "queue.body", "jsonPath": "$.orderId"},
-                "match": [{"field": "queue.body", "jsonPath": "$.type", "matches": "^order$"}],
-                "notifyPath": "/trigger"
+                "duplicator": {
+                    "inputQueue": "orders",
+                    "greenInputQueue": "orders-green",
+                    "blueInputQueue": "orders-blue"
+                },
+                "observer": {
+                    "testId": {"field": "queue.body", "jsonPath": "$.orderId"},
+                    "match": [{"field": "queue.body", "jsonPath": "$.type", "matches": "^order$"}],
+                    "notifyPath": "/trigger"
+                }
             }),
         );
         let resources = reconcile_inception_point(
@@ -573,6 +604,7 @@ mod tests {
             "production",
             "http://operator:8090",
             "http://test-container:8080",
+            Some("/result/{testId}"),
             "order-processor-blue",
             "order-processor-bg",
         )
@@ -631,6 +663,7 @@ mod tests {
             "test-ns",
             "http://operator:8090",
             "http://tc:8080",
+            Some("/result/{testId}"),
             "blue",
             "order-processor-bg",
         )
@@ -666,7 +699,7 @@ mod tests {
         let plugin = make_http_proxy_plugin();
         let ip = make_inception_point(
             "bad-point",
-            vec![PluginRole::Splitter],
+            vec![PluginRole::Duplicator],
             serde_json::json!({
                 "proxyPort": 8082,
                 "realEndpoint": "http://upstream",
@@ -680,6 +713,7 @@ mod tests {
                 "ns",
                 "http://op:8090",
                 "http://tc:8080",
+                Some("/result/{testId}"),
                 "blue",
                 "order-processor-bg"
             )
@@ -688,18 +722,18 @@ mod tests {
     }
 
     #[test]
-    fn sink_role_supported() {
+    fn consumer_role_supported() {
         let ip = make_inception_point(
-            "sink",
-            vec![PluginRole::Sink],
+            "consumer",
+            vec![PluginRole::Consumer],
             serde_json::json!({"target": "q"}),
         );
-        let sink_plugin = InceptionPlugin::new(
-            "sink",
+        let consumer_plugin = InceptionPlugin::new(
+            "consumer",
             InceptionPluginSpec {
-                description: "Sink".to_string(),
+                description: "Consumer".to_string(),
                 image: "test:v1".to_string(),
-                supported_roles: vec![PluginRole::Sink],
+                supported_roles: vec![PluginRole::Consumer],
                 topology: Topology::Standalone,
                 field_namespaces: vec!["queue".to_string()],
                 config_schema: serde_json::json!({"type": "object"}),
@@ -715,11 +749,12 @@ mod tests {
         );
         assert!(
             reconcile_inception_point(
-                &sink_plugin,
+                &consumer_plugin,
                 &ip,
                 "ns",
                 "http://op:8090",
                 "http://tc:8080",
+                Some("/result/{testId}"),
                 "blue",
                 "order-processor-bg"
             )

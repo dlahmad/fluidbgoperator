@@ -5,7 +5,7 @@ metadata:
   namespace: fluidbg-test
   labels:
     app: order-processor-green
-    fluidbg.io/role: green
+    fluidbg.io/name: order-processor
 spec:
   replicas: 1
   selector:
@@ -15,7 +15,7 @@ spec:
     metadata:
       labels:
         app: order-processor-green
-        fluidbg.io/role: green
+        fluidbg.io/name: order-processor
     spec:
       terminationGracePeriodSeconds: 1
       containers:

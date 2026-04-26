@@ -4,7 +4,7 @@ use std::sync::Arc;
 pub async fn evaluate(
     store: &Arc<dyn StateStore>,
     bg_ref: &str,
-    min_cases: i64,
+    min_test_cases: i64,
     success_rate: f64,
 ) -> EvaluationResult {
     let counts = match store.counts(bg_ref).await {
@@ -16,7 +16,7 @@ pub async fn evaluate(
     };
 
     let total = counts.passed + counts.failed + counts.timed_out;
-    if total < min_cases {
+    if total < min_test_cases {
         return EvaluationResult::InsufficientData;
     }
 
@@ -60,19 +60,23 @@ pub enum EvaluationResult {
 mod tests {
     use super::*;
     use crate::state_store::memory::MemoryStore;
-    use crate::state_store::{InceptionTest, TestStatus};
+    use crate::state_store::{TestCaseRecord, TestStatus, VerificationMode};
     use chrono::{Duration, Utc};
     use std::sync::Arc;
 
-    fn make_test(test_id: &str, bg_ref: &str, status: TestStatus) -> InceptionTest {
-        InceptionTest {
+    fn make_test(test_id: &str, bg_ref: &str, status: TestStatus) -> TestCaseRecord {
+        TestCaseRecord {
             test_id: test_id.to_string(),
             blue_green_ref: bg_ref.to_string(),
             triggered_at: Utc::now(),
-            trigger_inception_point: "test-point".to_string(),
+            source_inception_point: "test-point".to_string(),
             timeout: Duration::seconds(60),
             status,
             verdict: None,
+            verification_mode: VerificationMode::Data,
+            verify_url: "http://verify".to_string(),
+            retries_remaining: 0,
+            failure_message: None,
         }
     }
 
@@ -81,7 +85,7 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStore::new());
         let run = make_test("t1", "bg", TestStatus::Triggered);
         store.register(run).await.unwrap();
-        store.set_verdict("t1", true).await.unwrap();
+        store.set_verdict("t1", true, None).await.unwrap();
 
         let result = evaluate(&store, "bg", 100, 0.98).await;
         assert_eq!(result, EvaluationResult::InsufficientData);
@@ -96,7 +100,7 @@ mod tests {
                 .register(make_test(&id, "bg", TestStatus::Triggered))
                 .await
                 .unwrap();
-            store.set_verdict(&id, true).await.unwrap();
+            store.set_verdict(&id, true, None).await.unwrap();
         }
 
         let result = evaluate(&store, "bg", 100, 0.98).await;
@@ -123,9 +127,9 @@ mod tests {
                 .await
                 .unwrap();
             if i < 95 {
-                store.set_verdict(&id, true).await.unwrap();
+                store.set_verdict(&id, true, None).await.unwrap();
             } else {
-                store.set_verdict(&id, false).await.unwrap();
+                store.set_verdict(&id, false, None).await.unwrap();
             }
         }
 
@@ -153,7 +157,7 @@ mod tests {
                 .await
                 .unwrap();
             if i < 96 {
-                store.set_verdict(&id, true).await.unwrap();
+                store.set_verdict(&id, true, None).await.unwrap();
             } else {
                 store.mark_timed_out(&id).await.unwrap();
             }

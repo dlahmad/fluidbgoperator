@@ -1,10 +1,58 @@
 apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-bootstrap
+  namespace: fluidbg-test
+spec:
+  stateStoreRef:
+    name: memory-store
+  selector:
+    matchLabels:
+      fluidbg.io/name: order-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: order-processor-green
+      template:
+        metadata:
+          labels:
+            app: order-processor-green
+            fluidbg.io/name: order-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/green-app:dev
+              imagePullPolicy: Never
+              env:
+                - name: AMQP_URL
+                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                - name: INPUT_QUEUE
+                  value: "orders"
+                - name: OUTPUT_QUEUE
+                  value: "results"
+                - name: HTTP_UPSTREAM
+                  value: "http://httpbin.fluidbg-system/post"
+  inceptionPoints: []
+  tests: []
+  promotion:
+    data:
+      minTestCases: 1
+      successRate: 1.0
+      timeoutSeconds: 120
+    strategy:
+      type: hard-switch
+---
+apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: rabbitmq
+  namespace: fluidbg-test
 spec:
   description: "RabbitMQ transport plugin"
-  image: fluidbg/rabbitmq:v0.1.0
+  image: fluidbg/rabbitmq:dev
   supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
   topology: standalone
   lifecycle:
@@ -59,3 +107,11 @@ spec:
     ports:
       - name: health
         containerPort: 9090
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: StateStore
+metadata:
+  name: memory-store
+  namespace: fluidbg-test
+spec:
+  type: memory

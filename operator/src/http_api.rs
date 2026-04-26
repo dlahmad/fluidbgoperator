@@ -7,20 +7,22 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
-use crate::state_store::{Counts, InceptionTest, StateStore, TestStatus};
+use crate::state_store::{Counts, StateStore, TestCaseRecord, TestStatus, VerificationMode};
 
 #[derive(Debug, Deserialize)]
-pub struct RegisterCaseRequest {
+pub struct RegisterTestCaseRequest {
     pub test_id: String,
     pub blue_green_ref: String,
     pub inception_point: String,
     pub triggered_at: Option<DateTime<Utc>>,
     pub timeout_seconds: Option<i64>,
+    pub verify_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct RegisterCaseResponse {
+pub struct RegisterTestCaseResponse {
     pub test_id: String,
     pub status: String,
 }
@@ -57,35 +59,49 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
-pub async fn register_case(
+pub async fn register_test_case(
     State(store): State<Arc<dyn StateStore>>,
-    Json(req): Json<RegisterCaseRequest>,
+    Json(req): Json<RegisterTestCaseRequest>,
 ) -> impl IntoResponse {
-    let run = InceptionTest {
+    info!(
+        "registering testCase id={} bgd={} inceptionPoint={} verifyUrl={}",
+        req.test_id,
+        req.blue_green_ref,
+        req.inception_point,
+        req.verify_url.as_deref().unwrap_or("")
+    );
+    let run = TestCaseRecord {
         test_id: req.test_id.clone(),
         blue_green_ref: req.blue_green_ref,
         triggered_at: req.triggered_at.unwrap_or_else(Utc::now),
-        trigger_inception_point: req.inception_point,
+        source_inception_point: req.inception_point,
         timeout: Duration::seconds(req.timeout_seconds.unwrap_or(60)),
         status: TestStatus::Triggered,
         verdict: None,
+        verification_mode: VerificationMode::Data,
+        verify_url: req.verify_url.unwrap_or_default(),
+        retries_remaining: 0,
+        failure_message: None,
     };
     let test_id = run.test_id.clone();
     match store.register(run).await {
         Ok(()) => (
             StatusCode::CREATED,
-            Json(RegisterCaseResponse {
+            Json(RegisterTestCaseResponse {
                 test_id,
                 status: "Triggered".to_string(),
             }),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(RegisterCaseResponse {
-                test_id,
-                status: format!("error: {}", e),
-            }),
-        ),
+        Err(e) => {
+            warn!("failed to register testCase {}: {}", test_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RegisterTestCaseResponse {
+                    test_id,
+                    status: format!("error: {}", e),
+                }),
+            )
+        }
     }
 }
 
@@ -93,7 +109,8 @@ pub async fn set_verdict(
     State(store): State<Arc<dyn StateStore>>,
     Json(req): Json<VerdictRequest>,
 ) -> impl IntoResponse {
-    match store.set_verdict(&req.test_id, req.passed).await {
+    info!("setting verdict for testCase id={} passed={}", req.test_id, req.passed);
+    match store.set_verdict(&req.test_id, req.passed, None).await {
         Ok(()) => (
             StatusCode::OK,
             Json(VerdictResponse {
@@ -147,8 +164,8 @@ pub async fn get_counts(
 pub fn router(store: Arc<dyn StateStore>) -> axum::Router {
     axum::Router::new()
         .route("/health", get(health))
-        .route("/cases", post(register_case))
-        .route("/verdict", post(set_verdict))
+        .route("/testcases", post(register_test_case))
+        .route("/testcase-verdicts", post(set_verdict))
         .route("/counts/{bg_ref}", get(get_counts))
         .with_state(store)
 }

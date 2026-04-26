@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -20,13 +22,15 @@ struct Config {
     #[serde(default)]
     amqp_url: Option<String>,
     #[serde(default)]
+    duplicator: Option<DuplicatorConfig>,
+    #[serde(default)]
     splitter: Option<SplitterConfig>,
     #[serde(default)]
     combiner: Option<CombinerConfig>,
     #[serde(default)]
     writer: Option<WriterConfig>,
     #[serde(default)]
-    sink: Option<SinkConfig>,
+    consumer: Option<ConsumerConfig>,
     #[serde(default)]
     observer: Option<ObserverConfig>,
 }
@@ -34,6 +38,16 @@ struct Config {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SplitterConfig {
+    input_queue: Option<String>,
+    green_input_queue: Option<String>,
+    blue_input_queue: Option<String>,
+    green_input_queue_env_var: Option<String>,
+    blue_input_queue_env_var: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DuplicatorConfig {
     input_queue: Option<String>,
     green_input_queue: Option<String>,
     blue_input_queue: Option<String>,
@@ -59,7 +73,7 @@ struct WriterConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SinkConfig {
+struct ConsumerConfig {
     input_queue: Option<String>,
 }
 
@@ -76,11 +90,12 @@ struct ObserverConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActiveRole {
+    Duplicator,
     Splitter,
     Combiner,
     Observer,
     Writer,
-    Sink,
+    Consumer,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,8 +163,11 @@ struct AppState {
     config: Config,
     roles: Vec<ActiveRole>,
     amqp_url: String,
+    testcase_registration_url: String,
     test_container_url: String,
+    testcase_verify_path_template: Option<String>,
     inception_point: String,
+    blue_green_ref: String,
 }
 
 fn load_config() -> Result<Config> {
@@ -164,11 +182,12 @@ fn load_roles() -> Vec<ActiveRole> {
         .unwrap_or_default()
         .split(',')
         .filter_map(|value| match value.trim() {
+            "duplicator" => Some(ActiveRole::Duplicator),
             "splitter" => Some(ActiveRole::Splitter),
             "combiner" => Some(ActiveRole::Combiner),
             "observer" => Some(ActiveRole::Observer),
             "writer" => Some(ActiveRole::Writer),
-            "sink" => Some(ActiveRole::Sink),
+            "consumer" => Some(ActiveRole::Consumer),
             _ => None,
         })
         .collect()
@@ -182,6 +201,13 @@ fn required<'a>(value: &'a Option<String>, name: &str) -> Result<&'a str> {
     value
         .as_deref()
         .with_context(|| format!("missing config field '{name}'"))
+}
+
+fn duplicator_config(config: &Config) -> Result<&DuplicatorConfig> {
+    config
+        .duplicator
+        .as_ref()
+        .context("missing config block 'duplicator'")
 }
 
 fn splitter_config(config: &Config) -> Result<&SplitterConfig> {
@@ -205,15 +231,35 @@ fn writer_config(config: &Config) -> Result<&WriterConfig> {
         .context("missing config block 'writer'")
 }
 
-fn sink_config(config: &Config) -> Result<&SinkConfig> {
+fn consumer_config(config: &Config) -> Result<&ConsumerConfig> {
     config
-        .sink
+        .consumer
         .as_ref()
-        .context("missing config block 'sink'")
+        .context("missing config block 'consumer'")
 }
 
 fn observer_config(config: &Config) -> Option<&ObserverConfig> {
     config.observer.as_ref()
+}
+
+fn blue_traffic_percent() -> u8 {
+    std::env::var("FLUIDBG_TRAFFIC_PERCENT")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(100)
+        .min(100)
+}
+
+fn routes_to_blue(payload: &[u8], traffic_percent: u8) -> bool {
+    if traffic_percent == 0 {
+        return false;
+    }
+    if traffic_percent >= 100 {
+        return true;
+    }
+    let mut hasher = DefaultHasher::new();
+    payload.hash(&mut hasher);
+    (hasher.finish() % 100) < traffic_percent as u64
 }
 
 fn extract_json_path(value: &Value, path: &str) -> Option<String> {
@@ -363,8 +409,71 @@ async fn notify_test_container(
     Ok(())
 }
 
+async fn register_test_case(
+    client: &reqwest::Client,
+    testcase_registration_url: &str,
+    blue_green_ref: &str,
+    inception_point: &str,
+    test_id: &str,
+    test_container_url: &str,
+    testcase_verify_path_template: Option<&str>,
+) -> Result<()> {
+    let verify_url = testcase_verify_path_template.map(|path| {
+        format!(
+            "{}{}",
+            test_container_url.trim_end_matches('/'),
+            path.replace("{testId}", test_id)
+        )
+    });
+    client
+        .post(testcase_registration_url)
+        .json(&serde_json::json!({
+            "test_id": test_id,
+            "blue_green_ref": blue_green_ref,
+            "inception_point": inception_point,
+            "timeout_seconds": 120,
+            "verify_url": verify_url,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    info!(
+        "registered testCase '{}' for blueGreenRef '{}' via {}",
+        test_id, blue_green_ref, testcase_registration_url
+    );
+    Ok(())
+}
+
 fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
     let mut assignments = Vec::new();
+    if has_role(roles, ActiveRole::Duplicator)
+        && let Some(duplicator) = config.duplicator.as_ref()
+    {
+        if let (Some(env_name), Some(queue)) = (
+            &duplicator.green_input_queue_env_var,
+            &duplicator.green_input_queue,
+        ) {
+            assignments.push(PropertyAssignment {
+                target: AssignmentTarget::Green,
+                kind: AssignmentKind::Env,
+                name: env_name.clone(),
+                value: queue.clone(),
+                container_name: None,
+            });
+        }
+        if let (Some(env_name), Some(queue)) = (
+            &duplicator.blue_input_queue_env_var,
+            &duplicator.blue_input_queue,
+        ) {
+            assignments.push(PropertyAssignment {
+                target: AssignmentTarget::Blue,
+                kind: AssignmentKind::Env,
+                name: env_name.clone(),
+                value: queue.clone(),
+                container_name: None,
+            });
+        }
+    }
     if has_role(roles, ActiveRole::Splitter)
         && let Some(splitter) = config.splitter.as_ref()
     {
@@ -426,6 +535,34 @@ fn build_prepare_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<Prope
 
 fn build_cleanup_assignments(config: &Config, roles: &[ActiveRole]) -> Vec<PropertyAssignment> {
     let mut assignments = Vec::new();
+    if has_role(roles, ActiveRole::Duplicator)
+        && let Some(duplicator) = config.duplicator.as_ref()
+    {
+        if let (Some(env_name), Some(queue)) = (
+            &duplicator.green_input_queue_env_var,
+            &duplicator.input_queue,
+        ) {
+            assignments.push(PropertyAssignment {
+                target: AssignmentTarget::Green,
+                kind: AssignmentKind::Env,
+                name: env_name.clone(),
+                value: queue.clone(),
+                container_name: None,
+            });
+        }
+        if let (Some(env_name), Some(queue)) = (
+            &duplicator.blue_input_queue_env_var,
+            &duplicator.input_queue,
+        ) {
+            assignments.push(PropertyAssignment {
+                target: AssignmentTarget::Blue,
+                kind: AssignmentKind::Env,
+                name: env_name.clone(),
+                value: queue.clone(),
+                container_name: None,
+            });
+        }
+    }
     if has_role(roles, ActiveRole::Splitter)
         && let Some(splitter) = config.splitter.as_ref()
     {
@@ -496,6 +633,21 @@ async fn prepare_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    if has_role(&state.roles, ActiveRole::Duplicator) {
+        let duplicator = duplicator_config(&state.config)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        for queue in [
+            duplicator.green_input_queue.as_deref(),
+            duplicator.blue_input_queue.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            declare_queue(&channel, queue)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+    }
     if has_role(&state.roles, ActiveRole::Splitter) {
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -553,6 +705,21 @@ async fn cleanup_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    if has_role(&state.roles, ActiveRole::Duplicator) {
+        let duplicator = duplicator_config(&state.config)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        for queue in [
+            duplicator.green_input_queue.as_deref(),
+            duplicator.blue_input_queue.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            delete_queue(&channel, queue)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+    }
     if has_role(&state.roles, ActiveRole::Splitter) {
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -657,14 +824,20 @@ async fn write_handler(
 async fn run_input_pipeline_once(state: AppState) -> Result<()> {
     let conn = connect_with_retry(&state.amqp_url).await?;
     let channel = conn.create_channel().await?;
-    let input_queue = if has_role(&state.roles, ActiveRole::Splitter) {
+    let input_queue = if has_role(&state.roles, ActiveRole::Duplicator) {
+        required(
+            &duplicator_config(&state.config)?.input_queue,
+            "duplicator.inputQueue",
+        )?
+        .to_string()
+    } else if has_role(&state.roles, ActiveRole::Splitter) {
         required(
             &splitter_config(&state.config)?.input_queue,
             "splitter.inputQueue",
         )?
         .to_string()
     } else {
-        required(&sink_config(&state.config)?.input_queue, "sink.inputQueue")?.to_string()
+        required(&consumer_config(&state.config)?.input_queue, "consumer.inputQueue")?.to_string()
     };
     declare_queue(&channel, &input_queue).await?;
 
@@ -694,9 +867,9 @@ async fn run_input_pipeline_once(state: AppState) -> Result<()> {
             continue;
         }
 
-        if has_role(&state.roles, ActiveRole::Splitter) {
-            let splitter = splitter_config(&state.config)?;
-            if let Some(green_queue) = &splitter.green_input_queue {
+        if has_role(&state.roles, ActiveRole::Duplicator) {
+            let duplicator = duplicator_config(&state.config)?;
+            if let Some(green_queue) = &duplicator.green_input_queue {
                 channel
                     .basic_publish(
                         "",
@@ -707,11 +880,37 @@ async fn run_input_pipeline_once(state: AppState) -> Result<()> {
                     )
                     .await?;
             }
-            if let Some(blue_queue) = &splitter.blue_input_queue {
+            if let Some(blue_queue) = &duplicator.blue_input_queue {
                 channel
                     .basic_publish(
                         "",
                         blue_queue,
+                        BasicPublishOptions::default(),
+                        &body_data,
+                        BasicProperties::default().with_headers(headers.clone()),
+                    )
+                    .await?;
+            }
+        } else if has_role(&state.roles, ActiveRole::Splitter) {
+            let splitter = splitter_config(&state.config)?;
+            let send_to_blue = routes_to_blue(&body_data, blue_traffic_percent());
+            if send_to_blue {
+                if let Some(blue_queue) = &splitter.blue_input_queue {
+                    channel
+                        .basic_publish(
+                            "",
+                            blue_queue,
+                            BasicPublishOptions::default(),
+                            &body_data,
+                            BasicProperties::default().with_headers(headers.clone()),
+                        )
+                        .await?;
+                }
+            } else if let Some(green_queue) = &splitter.green_input_queue {
+                channel
+                    .basic_publish(
+                        "",
+                        green_queue,
                         BasicPublishOptions::default(),
                         &body_data,
                         BasicProperties::default().with_headers(headers.clone()),
@@ -724,18 +923,33 @@ async fn run_input_pipeline_once(state: AppState) -> Result<()> {
             && let Some(observer) = observer
             && let Some(selector) = &observer.test_id
             && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
-            && let Some(notify_path) = &observer.notify_path
-            && let Err(e) = notify_test_container(
+        {
+            if let Err(err) = register_test_case(
                 &http_client,
-                &state.test_container_url,
-                notify_path,
-                &test_id,
+                &state.testcase_registration_url,
+                &state.blue_green_ref,
                 &state.inception_point,
-                &body_json,
+                &test_id,
+                &state.test_container_url,
+                state.testcase_verify_path_template.as_deref(),
             )
             .await
-        {
-            warn!("failed to notify test container for {}: {}", test_id, e);
+            {
+                warn!("failed to register test case {}: {}", test_id, err);
+            }
+            if let Some(notify_path) = &observer.notify_path
+                && let Err(err) = notify_test_container(
+                    &http_client,
+                    &state.test_container_url,
+                    notify_path,
+                    &test_id,
+                    &state.inception_point,
+                    &body_json,
+                )
+                .await
+            {
+                warn!("failed to notify test container for {}: {}", test_id, err);
+            }
         }
 
         delivery.ack(BasicAckOptions::default()).await?;
@@ -798,21 +1012,36 @@ async fn run_combine_loop_once(
             && matches_filter(&observer.r#match, &body_json, &headers)
             && let Some(selector) = &observer.test_id
             && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
-            && let Some(notify_path) = &observer.notify_path
-            && let Err(err) = notify_test_container(
+        {
+            if let Err(err) = register_test_case(
                 &http_client,
-                &state.test_container_url,
-                notify_path,
-                &test_id,
+                &state.testcase_registration_url,
+                &state.blue_green_ref,
                 &state.inception_point,
-                &body_json,
+                &test_id,
+                &state.test_container_url,
+                state.testcase_verify_path_template.as_deref(),
             )
             .await
-        {
-            warn!(
-                "failed to notify test container for {} from {}: {}",
-                test_id, source_queue, err
-            );
+            {
+                warn!("failed to register test case {}: {}", test_id, err);
+            }
+            if let Some(notify_path) = &observer.notify_path
+                && let Err(err) = notify_test_container(
+                    &http_client,
+                    &state.test_container_url,
+                    notify_path,
+                    &test_id,
+                    &state.inception_point,
+                    &body_json,
+                )
+                .await
+            {
+                warn!(
+                    "failed to notify test container for {} from {}: {}",
+                    test_id, source_queue, err
+                );
+            }
         }
         delivery.ack(BasicAckOptions::default()).await?;
     }
@@ -879,17 +1108,27 @@ async fn main() -> Result<()> {
         .amqp_url
         .clone()
         .unwrap_or_else(|| "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string());
+    let testcase_registration_url =
+        std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
+            .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string());
     let test_container_url = std::env::var("FLUIDBG_TEST_CONTAINER_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let testcase_verify_path_template =
+        std::env::var("FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE").ok();
     let inception_point =
         std::env::var("FLUIDBG_INCEPTION_POINT").unwrap_or_else(|_| "unknown".to_string());
+    let blue_green_ref =
+        std::env::var("FLUIDBG_BLUE_GREEN_REF").unwrap_or_else(|_| "unknown".to_string());
 
     let state = AppState {
         config: config.clone(),
         roles: roles.clone(),
         amqp_url: amqp_url.clone(),
+        testcase_registration_url,
         test_container_url,
+        testcase_verify_path_template,
         inception_point,
+        blue_green_ref,
     };
 
     info!("rabbitmq plugin starting with roles {:?}", roles);
@@ -912,9 +1151,10 @@ async fn main() -> Result<()> {
         tokio::spawn(async { Ok::<(), anyhow::Error>(()) })
     } else if has_role(&roles, ActiveRole::Combiner) {
         tokio::spawn(async move { run_combiner(state).await })
-    } else if has_role(&roles, ActiveRole::Splitter)
+    } else if has_role(&roles, ActiveRole::Duplicator)
+        || has_role(&roles, ActiveRole::Splitter)
         || has_role(&roles, ActiveRole::Observer)
-        || has_role(&roles, ActiveRole::Sink)
+        || has_role(&roles, ActiveRole::Consumer)
     {
         tokio::spawn(async move { run_input_pipeline(state).await })
     } else {
