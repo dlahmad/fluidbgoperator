@@ -625,6 +625,7 @@ kubectl rollout status deployment/"$PROGRESSIVE_DEPLOYMENT" -n "$NS" --timeout=1
 kubectl rollout status deployment/test-container -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$PROGRESSIVE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+sleep 5
 
 echo ""
 echo "--- Step 20: Publish progressive splitter messages ---"
