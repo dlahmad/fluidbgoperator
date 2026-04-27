@@ -4,15 +4,17 @@ title: Release
 
 # Release
 
-Releases are tag driven and can also be started manually from the `Release`
-workflow with a `version` input.
+Releases are tag driven. The consolidated `CI/CD` workflow only publishes
+release assets, GHCR release tags, multi-architecture image manifests, and the
+OCI Helm chart when it runs from a pushed `v*.*.*` tag. Manual workflow runs and
+normal branch pushes never create releases.
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow builds stripped static musl release binaries, publishes
+The release path builds stripped static musl release binaries, publishes
 multi-architecture container image manifests to GHCR, and publishes the Helm
 chart as both a GitHub Release asset and an OCI chart.
 Container images are not attached to the GitHub Release as image tarballs; GHCR
@@ -23,6 +25,14 @@ with the matching musl Rust target. Do not run the Rust compiler inside an
 emulated arm64 container for releases; that makes the build slow and brittle.
 The release jobs publish per-architecture tags first and then assemble the
 canonical multi-architecture manifests.
+
+The same `build-binaries` artifacts feed the image build, e2e run, and release
+asset upload. This avoids rebuilding the Rust executables independently in
+multiple jobs. Cargo caches are shared by purpose:
+
+- `cargo-host` for host checks, CRD generation, and e2e helper builds.
+- `cargo-linux-amd64-musl` for static amd64 release binaries.
+- `cargo-linux-arm64-musl` for static arm64 release binaries.
 
 GitHub Release assets contain executable archives and chart packages only:
 

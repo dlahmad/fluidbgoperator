@@ -45,6 +45,11 @@ flowchart TD
 
 ## State Store Modes
 
+The consolidated `CI/CD` workflow runs this suite on release tag builds,
+nightly schedules, and manual workflow dispatches with `run_e2e=true`. Normal
+branch and pull-request runs still build and validate the project without
+publishing release artifacts.
+
 The default e2e mode uses the in-memory state store and one operator replica:
 
 ```sh

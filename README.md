@@ -111,7 +111,7 @@ Observed arm64 image sizes:
 
 ## Documentation
 
-- Published docs are served from GitHub Pages once the `Docs` workflow succeeds: <https://dlahmad.github.io/fluidbgoperator/>.
+- Published docs are served from GitHub Pages once the `CI/CD` workflow docs job succeeds on `main`: <https://dlahmad.github.io/fluidbgoperator/>.
 - [docs/index.md](docs/index.md) is the GitHub Pages entry point.
 - [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
 - [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.

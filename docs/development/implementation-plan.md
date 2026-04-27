@@ -43,7 +43,7 @@ controller/status.rs           BlueGreenDeployment status patches
 | Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
 | Operator API | `/health`, `/testcases`, `/testcase-verdicts` keyed by `blue_green_ref` plus `test_id`, `/counts/{bg_ref}` |
 | Test harness | Unit tests plus kind-based e2e assets |
-| Packaging | Helm chart, GitHub Actions CI/docs/e2e/release workflows, GHCR release targets |
+| Packaging | Helm chart, consolidated GitHub Actions CI/CD workflow, docs publishing, optional e2e gate, GHCR release targets |
 
 ## Near-Term Work
 
