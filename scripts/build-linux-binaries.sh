@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 TARGET_ARCH="${TARGET_ARCH:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
+DOCKER_PLATFORM="${DOCKER_PLATFORM:-}"
 LOCAL=false
 
 while [ "$#" -gt 0 ]; do
@@ -19,6 +20,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --target)
             TARGET_TRIPLE="$2"
+            shift 2
+            ;;
+        --docker-platform)
+            DOCKER_PLATFORM="$2"
             shift 2
             ;;
         *)
@@ -36,10 +41,12 @@ case "$TARGET_ARCH" in
     x86_64|amd64)
         TARGET_ARCH="amd64"
         TARGET_TRIPLE="${TARGET_TRIPLE:-x86_64-unknown-linux-musl}"
+        MUSL_CROSS_IMAGE_TAG="x86_64-musl"
         ;;
     arm64|aarch64)
         TARGET_ARCH="arm64"
         TARGET_TRIPLE="${TARGET_TRIPLE:-aarch64-unknown-linux-musl}"
+        MUSL_CROSS_IMAGE_TAG="aarch64-musl"
         ;;
     *)
         echo "unsupported target architecture: $TARGET_ARCH" >&2
@@ -49,7 +56,24 @@ esac
 
 mkdir -p "$DIST_DIR"
 
+if [ -z "$DOCKER_PLATFORM" ]; then
+    case "$(uname -m)" in
+        x86_64|amd64)
+            DOCKER_PLATFORM="linux/amd64"
+            ;;
+        arm64|aarch64)
+            DOCKER_PLATFORM="linux/arm64"
+            ;;
+        *)
+            DOCKER_PLATFORM="linux/amd64"
+            ;;
+    esac
+fi
+
 if [ "$LOCAL" = true ]; then
+    if command -v rustup >/dev/null 2>&1; then
+        rustup target add "$TARGET_TRIPLE"
+    fi
     cargo build --release --locked --target "$TARGET_TRIPLE" --bin fluidbg-operator
     cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-http
     cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-rabbitmq
@@ -61,7 +85,8 @@ if [ "$LOCAL" = true ]; then
     cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-azure-servicebus" "$DIST_DIR/fluidbg-azure-servicebus"
 else
     mkdir -p "$ROOT_DIR/.docker-target" "$ROOT_DIR/.docker-cargo-home/registry" "$ROOT_DIR/.docker-cargo-home/git"
-    docker run --rm --platform "linux/$TARGET_ARCH" \
+    docker run --rm --platform "$DOCKER_PLATFORM" \
+        --user "$(id -u):$(id -g)" \
         -v "$ROOT_DIR":/work \
         -v "$ROOT_DIR/.docker-target":/cargo-target \
         -v "$ROOT_DIR/.docker-cargo-home":/cargo-home \
@@ -71,14 +96,9 @@ else
         -e CARGO_NET_RETRY=10 \
         -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
         -w /work \
-        rust:bookworm \
+        "ghcr.io/rust-cross/rust-musl-cross:$MUSL_CROSS_IMAGE_TAG" \
         bash -lc "
             set -euo pipefail
-            export PATH=/usr/local/cargo/bin:\$PATH
-            apt-get update
-            apt-get install -y --no-install-recommends musl-tools
-            rm -rf /var/lib/apt/lists/*
-            rustup target add '$TARGET_TRIPLE'
             cargo build --release --locked --target '$TARGET_TRIPLE' --bin fluidbg-operator
             cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-http
             cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-rabbitmq
