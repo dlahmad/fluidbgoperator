@@ -443,6 +443,78 @@ wait_deployment_replicas() {
     return 1
 }
 
+get_deployment_env_value() {
+    local deployment="$1"
+    local namespace="$2"
+    local env_name="$3"
+    local deployment_json
+    deployment_json="$(kubectl get deployment "$deployment" -n "$namespace" -o json 2>/dev/null || true)"
+    DEPLOYMENT_JSON="$deployment_json" python3 - "$env_name" <<'PY' || true
+import json
+import os
+import sys
+
+env_name = sys.argv[1]
+try:
+    deployment = json.loads(os.environ.get("DEPLOYMENT_JSON", ""))
+except Exception:
+    sys.exit(1)
+
+containers = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+for container in containers:
+    for env in container.get("env", []) or []:
+        if env.get("name") == env_name:
+            print(env.get("value", ""))
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
+wait_deployment_env_value() {
+    local deployment="$1"
+    local namespace="$2"
+    local env_name="$3"
+    local expected="$4"
+    for i in $(seq 1 60); do
+        local value
+        value="$(get_deployment_env_value "$deployment" "$namespace" "$env_name")"
+        if [ "$value" = "$expected" ]; then
+            return 0
+        fi
+        echo "Waiting for deployment/$deployment env $env_name=$expected, current=${value:-<none>} ($i/60)"
+        sleep 1
+    done
+    echo "deployment/$deployment did not reach env $env_name=$expected in namespace $namespace" >&2
+    kubectl get deployment "$deployment" -n "$namespace" -o yaml >&2 || true
+    return 1
+}
+
+wait_deployment_env_pair_values() {
+    local first_deployment="$1"
+    local second_deployment="$2"
+    local namespace="$3"
+    local env_name="$4"
+    local expected_a="$5"
+    local expected_b="$6"
+    local forbidden="$7"
+    for i in $(seq 1 60); do
+        local first_value second_value
+        first_value="$(get_deployment_env_value "$first_deployment" "$namespace" "$env_name")"
+        second_value="$(get_deployment_env_value "$second_deployment" "$namespace" "$env_name")"
+        if [ "$first_value" != "$forbidden" ] && [ "$second_value" != "$forbidden" ] && [ -n "$first_value" ] && [ -n "$second_value" ] && [ "$first_value" != "$second_value" ]; then
+            if { [ "$first_value" = "$expected_a" ] && [ "$second_value" = "$expected_b" ]; } || { [ "$first_value" = "$expected_b" ] && [ "$second_value" = "$expected_a" ]; }; then
+                return 0
+            fi
+        fi
+        echo "Waiting for deployments/$first_deployment,$second_deployment env $env_name to use distinct temp values $expected_a/$expected_b and not $forbidden, current=$first_value/$second_value ($i/60)"
+        sleep 1
+    done
+    echo "deployments/$first_deployment,$second_deployment did not reach distinct temp env $env_name values in namespace $namespace" >&2
+    kubectl get deployment "$first_deployment" -n "$namespace" -o yaml >&2 || true
+    kubectl get deployment "$second_deployment" -n "$namespace" -o yaml >&2 || true
+    return 1
+}
+
 wait_bgd_generated_name() {
     local bgd="$1"
     local namespace="$2"
@@ -1026,22 +1098,24 @@ PROGRESSIVE_INPUT_POD_BEFORE="$(kubectl get pod -n "$NS" -l "app=$PROGRESSIVE_IN
 
 echo ""
 echo "--- Step 20: Publish progressive splitter messages ---"
-PROGRESSIVE_PUBLISHED=120
-for i in $(seq 1 "$PROGRESSIVE_PUBLISHED"); do
-    publish_rabbitmq_message "orders" "{\"orderId\":\"progressive-$i\",\"type\":\"progressive-order\",\"action\":\"process\"}"
-done
+PROGRESSIVE_TARGET_PUBLISHED=120
+PROGRESSIVE_PUBLISHED=0
+publish_progressive_message() {
+    PROGRESSIVE_PUBLISHED=$((PROGRESSIVE_PUBLISHED + 1))
+    publish_rabbitmq_message "orders" "{\"orderId\":\"progressive-$PROGRESSIVE_PUBLISHED\",\"type\":\"progressive-order\",\"action\":\"process\"}"
+}
 
 echo ""
 echo "--- Step 21: Wait for progressive promotion and green-route skip semantics ---"
 PROGRESSIVE_LIVE_SHIFT_VERIFIED=false
-for i in $(seq 1 60); do
+for i in $(seq 1 180); do
     STATUS_JSON="$(kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o json)"
     OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
     PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
     TRAFFIC_PERCENT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("currentTrafficPercent", 0))')"
     PHASE="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("phase", ""))')"
-    echo "  Progressive phase=${PHASE:-<none>} traffic=$TRAFFIC_PERCENT observed=$OBSERVED_COUNT pending=$PENDING_COUNT ($i/60)"
-    if [ "$TRAFFIC_PERCENT" = "100" ] && [ "$PROGRESSIVE_LIVE_SHIFT_VERIFIED" != "true" ] && [ "$PHASE" != "Completed" ]; then
+    echo "  Progressive phase=${PHASE:-<none>} traffic=$TRAFFIC_PERCENT observed=$OBSERVED_COUNT pending=$PENDING_COUNT published=$PROGRESSIVE_PUBLISHED ($i/180)"
+    if [ "$TRAFFIC_PERCENT" = "100" ] && [ "$PROGRESSIVE_LIVE_SHIFT_VERIFIED" != "true" ] && [ "$PHASE" = "Observing" ]; then
         PROGRESSIVE_INPUT_POD_CURRENT="$(kubectl get pod -n "$NS" -l "app=$PROGRESSIVE_INPUT_PLUGIN_DEPLOYMENT" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
         if [ "$PROGRESSIVE_INPUT_POD_CURRENT" != "$PROGRESSIVE_INPUT_POD_BEFORE" ]; then
             echo "Expected progressive traffic shift to update live without restarting splitter pod; before=$PROGRESSIVE_INPUT_POD_BEFORE current=$PROGRESSIVE_INPUT_POD_CURRENT" >&2
@@ -1049,6 +1123,9 @@ for i in $(seq 1 60); do
             exit 1
         fi
         PROGRESSIVE_LIVE_SHIFT_VERIFIED=true
+        while [ "$PROGRESSIVE_PUBLISHED" -lt "$PROGRESSIVE_TARGET_PUBLISHED" ]; do
+            publish_progressive_message
+        done
     fi
     if [ "$PHASE" = "Completed" ]; then
         break
@@ -1058,7 +1135,10 @@ for i in $(seq 1 60); do
         kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
         exit 1
     fi
-    sleep 5
+    if [ "$PROGRESSIVE_LIVE_SHIFT_VERIFIED" != "true" ] && [ "$OBSERVED_COUNT" -lt 1 ]; then
+        publish_progressive_message
+    fi
+    sleep 1
 done
 
 PROGRESSIVE_STATUS="$(kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o json)"
@@ -1070,8 +1150,8 @@ if [ "$PROGRESSIVE_PHASE" != "Completed" ]; then
     kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
     exit 1
 fi
-if [ "$PROGRESSIVE_OBSERVED" -ge "$PROGRESSIVE_PUBLISHED" ]; then
-    echo "Expected green-routed progressive messages to be skipped by operator registration; observed=$PROGRESSIVE_OBSERVED published=$PROGRESSIVE_PUBLISHED" >&2
+if [ "$PROGRESSIVE_OBSERVED" -ge "$PROGRESSIVE_TARGET_PUBLISHED" ]; then
+    echo "Expected green-routed progressive messages to be skipped by operator registration; observed=$PROGRESSIVE_OBSERVED published=$PROGRESSIVE_TARGET_PUBLISHED" >&2
     kubectl get bluegreendeployment order-processor-progressive-upgrade -n "$NS" -o yaml >&2
     exit 1
 fi
@@ -1180,6 +1260,14 @@ kubectl rollout status deployment/"$FORCE_DELETE_TEST_DEPLOYMENT" -n "$NS" --tim
 kubectl rollout status deployment/"$FORCE_DELETE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FORCE_DELETE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 wait_bgd_phase order-processor-force-delete "$NS" Observing 60
+FORCE_DELETE_BLUE_INPUT_QUEUE="$(get_inception_config_value order-processor-force-delete incoming-orders "$NS" duplicator.blueInputQueue)"
+FORCE_DELETE_GREEN_INPUT_QUEUE="$(get_inception_config_value order-processor-force-delete incoming-orders "$NS" duplicator.greenInputQueue)"
+FORCE_DELETE_BLUE_OUTPUT_QUEUE="$(get_inception_config_value order-processor-force-delete outgoing-results "$NS" combiner.blueOutputQueue)"
+FORCE_DELETE_GREEN_OUTPUT_QUEUE="$(get_inception_config_value order-processor-force-delete outgoing-results "$NS" combiner.greenOutputQueue)"
+wait_deployment_env_pair_values "$HTTP_DEPLOYMENT" "$FORCE_DELETE_DEPLOYMENT" "$NS" INPUT_QUEUE "$FORCE_DELETE_BLUE_INPUT_QUEUE" "$FORCE_DELETE_GREEN_INPUT_QUEUE" orders
+wait_deployment_env_pair_values "$HTTP_DEPLOYMENT" "$FORCE_DELETE_DEPLOYMENT" "$NS" OUTPUT_QUEUE "$FORCE_DELETE_BLUE_OUTPUT_QUEUE" "$FORCE_DELETE_GREEN_OUTPUT_QUEUE" results
+kubectl rollout status deployment/"$HTTP_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FORCE_DELETE_DEPLOYMENT" -n "$NS" --timeout=120s
 echo "Publishing force-delete verification message..."
 FORCE_DELETE_ORDER_ID="force-delete-$(date +%s)"
 publish_rabbitmq_message "orders" "{\"orderId\":\"$FORCE_DELETE_ORDER_ID\",\"type\":\"order\",\"action\":\"force-delete-check\"}"
