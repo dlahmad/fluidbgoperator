@@ -69,7 +69,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
       - name: Build release binaries
-        run: ./scripts/build-linux-binaries.sh
+        run: ./scripts/build-linux-binaries.sh --local --arch amd64
       - name: Build local images
         run: ./scripts/build-images.sh --tag ci
