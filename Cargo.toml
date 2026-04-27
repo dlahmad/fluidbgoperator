@@ -28,16 +28,16 @@ chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 async-trait = "0.1"
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-jsonschema = { version = "0.30", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+jsonschema = { version = "0.46", default-features = false }
 regex = "1"
 jsonpath-rust = "1"
-lapin = "2"
+lapin = "4"
 serde_yaml_ng = "0.10"
 futures-lite = "2"
-rand = "0.9"
+rand = "0.10"
 futures = "0.3"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [profile.release]
 codegen-units = 1

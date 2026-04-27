@@ -105,14 +105,18 @@ fn matches_filter(conditions: &[FilterCondition], body: &Value, properties: &Fie
 
 async fn declare_queue(channel: &Channel, queue: &str) -> Result<()> {
     channel
-        .queue_declare(queue, QueueDeclareOptions::default(), FieldTable::default())
+        .queue_declare(
+            queue.into(),
+            QueueDeclareOptions::default(),
+            FieldTable::default(),
+        )
         .await?;
     Ok(())
 }
 
 async fn delete_queue(channel: &Channel, queue: &str) -> Result<()> {
     match channel
-        .queue_delete(queue, QueueDeleteOptions::default())
+        .queue_delete(queue.into(), QueueDeleteOptions::default())
         .await
     {
         Ok(_) => Ok(()),
@@ -131,8 +135,8 @@ async fn publish_confirmed(
 ) -> Result<()> {
     channel
         .basic_publish(
-            "",
-            routing_key,
+            "".into(),
+            routing_key.into(),
             BasicPublishOptions::default(),
             payload,
             properties,
@@ -149,7 +153,7 @@ fn is_missing_queue_error(err: &lapin::Error) -> bool {
 async fn queue_state(channel: &Channel, queue: &str) -> Result<(u32, u32)> {
     let declared = match channel
         .queue_declare(
-            queue,
+            queue.into(),
             QueueDeclareOptions {
                 passive: true,
                 ..Default::default()
@@ -173,7 +177,7 @@ async fn move_queue_messages(
     let mut moved = 0;
     loop {
         let delivery = match channel
-            .basic_get(source_queue, BasicGetOptions::default())
+            .basic_get(source_queue.into(), BasicGetOptions::default())
             .await
         {
             Ok(delivery) => delivery,
@@ -918,7 +922,7 @@ async fn run_input_pipeline(state: AppState) -> Result<()> {
             }
 
             match channel
-                .basic_get(&input_queue, BasicGetOptions::default())
+                .basic_get(input_queue.as_str().into(), BasicGetOptions::default())
                 .await
             {
                 Ok(Some(delivery)) => {
@@ -955,8 +959,8 @@ async fn run_combine_loop_once(
 
     let mut consumer = consume_channel
         .basic_consume(
-            &source_queue,
-            "fluidbg-rabbitmq-combiner",
+            source_queue.as_str().into(),
+            "fluidbg-rabbitmq-combiner".into(),
             BasicConsumeOptions::default(),
             FieldTable::default(),
         )
