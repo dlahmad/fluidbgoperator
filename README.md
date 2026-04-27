@@ -102,6 +102,13 @@ Observed arm64 image sizes:
 
 ## Documentation
 
+- Published docs are served from GitHub Pages once the `Docs` workflow succeeds: <https://dlahmad.github.io/fluidbgoperator/>.
+- [docs/index.md](docs/index.md) is the GitHub Pages entry point.
+- [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
+- [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
+- [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
+- [docs/reference/sdk.md](docs/reference/sdk.md) documents the SDK layout and language-neutral spec.
+- [docs/reference/crds.md](docs/reference/crds.md) documents CRD generation and chart mirroring.
 - `ARCHITECTURE.md` describes the operator model, CRDs, state store, plugin orchestration, and project layout.
 - `PLUGIN.md` defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
 - `IMPLEMENTATION_PLAN.md` tracks the current implementation state and near-term work.

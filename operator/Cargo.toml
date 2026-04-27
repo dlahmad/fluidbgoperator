@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "gen-crds"
-path = "src/crd/bin/gen_crds.rs"
+path = "src/crd_gen.rs"
 
 [dependencies]
 fluidbg-plugin-sdk = { path = "../sdk/rust" }
