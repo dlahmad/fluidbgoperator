@@ -15,6 +15,8 @@ git push origin v0.1.0
 The release workflow builds stripped static musl release binaries, publishes
 multi-architecture container image manifests to GHCR, and publishes the Helm
 chart as both a GitHub Release asset and an OCI chart.
+Container images are not attached to the GitHub Release as image tarballs; GHCR
+is the source for image distribution.
 
 The amd64 and arm64 binaries are built on native GitHub-hosted Linux runners
 with the matching musl Rust target. Do not run the Rust compiler inside an
@@ -22,7 +24,7 @@ emulated arm64 container for releases; that makes the build slow and brittle.
 The release jobs publish per-architecture tags first and then assemble the
 canonical multi-architecture manifests.
 
-GitHub Release assets:
+GitHub Release assets contain executable archives and chart packages only:
 
 - `fluidbg-<version>-linux-amd64.tar.gz`
 - `fluidbg-<version>-linux-arm64.tar.gz`
