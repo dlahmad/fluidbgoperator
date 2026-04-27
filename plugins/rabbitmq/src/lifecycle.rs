@@ -13,13 +13,19 @@ use fluidbg_plugin_sdk::{
 
 use crate::amqp::{connect_with_retry, declare_queue, delete_queue, queue_state};
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
+use crate::combiner::drain_output_queues;
 use crate::config::{
     AppState, RuntimeMode, combiner_config, duplicator_config, has_role, inceptor_infra_disabled,
     required, shadow_queue_name, splitter_config, writer_config,
 };
+use crate::input::drain_input_roles;
 use crate::management::{ManagementClient, QueueDepth};
 
 pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusResponse> {
+    if matches!(state.runtime_mode(), RuntimeMode::Draining) {
+        drain_runtime_queues(state).await?;
+    }
+
     let conn = connect_with_retry(&state.amqp_url).await?;
     let channel = conn.create_channel().await?;
 
@@ -63,6 +69,12 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
         drained: true,
         message: Some("no drain-sensitive RabbitMQ roles active".to_string()),
     })
+}
+
+async fn drain_runtime_queues(state: &AppState) -> Result<()> {
+    drain_input_roles(state).await?;
+    drain_output_queues(state).await?;
+    Ok(())
 }
 
 async fn input_drain_status(
@@ -307,6 +319,9 @@ pub(crate) async fn drain_handler(
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Draining);
+    drain_runtime_queues(&state)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(PluginLifecycleResponse {
         assignments: build_drain_assignments(&state.config, &state.roles),
     }))

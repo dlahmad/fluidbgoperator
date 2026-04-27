@@ -147,6 +147,18 @@ async fn drain_input_queues(state: &AppState, channel: &Channel) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn drain_input_roles(state: &AppState) -> Result<()> {
+    if !has_role(&state.roles, PluginRole::Duplicator)
+        && !has_role(&state.roles, PluginRole::Splitter)
+    {
+        return Ok(());
+    }
+
+    let conn = connect_with_retry(&state.amqp_url).await?;
+    let channel = conn.create_channel().await?;
+    drain_input_queues(state, &channel).await
+}
+
 pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
     loop {
         if matches!(state.runtime_mode(), RuntimeMode::Idle) {

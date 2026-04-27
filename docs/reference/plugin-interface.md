@@ -267,6 +267,12 @@ endpoint, it must not accept new work into temporary/proxied paths for that
 inception point. `/drain-status` may only report work that was already admitted
 before the barrier or broker state that is still visible to the plugin.
 
+Drain operations must be active and idempotent. A plugin must not rely on a
+background worker eventually noticing drain mode for correctness; `/drain` and
+subsequent `/drain-status` calls should themselves retry safe drain work, such
+as moving temporary queue, shadow queue, or dead-letter messages back to their
+base resources before reporting completion.
+
 The response shape is the same as `/prepare`.
 
 ### `GET /drain-status`

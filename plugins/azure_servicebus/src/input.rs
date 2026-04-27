@@ -78,7 +78,7 @@ async fn process_input_message(state: &AppState, message: &LockedMessage) -> Res
     Ok(route)
 }
 
-async fn drain_input_queues(state: &AppState) -> Result<()> {
+pub(crate) async fn drain_input_queues(state: &AppState) -> Result<()> {
     let (base_queue, green_queue, blue_queue) = if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         (

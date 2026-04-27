@@ -13,6 +13,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEPLOY_DIR="$SCRIPT_DIR/deploy"
 
 RABBITMQ_MGMT_PID=""
+RABBITMQ_MGMT_PORT="${RABBITMQ_MGMT_PORT:-$((25000 + RANDOM % 20000))}"
+RABBITMQ_MGMT_URL="http://localhost:${RABBITMQ_MGMT_PORT}"
 
 cleanup() {
     if [ -n "$RABBITMQ_MGMT_PID" ]; then kill "$RABBITMQ_MGMT_PID" 2>/dev/null || true; fi
@@ -82,14 +84,80 @@ wait_http() {
     return 1
 }
 
+ensure_rabbitmq_management_port_forward() {
+    if [ -n "$RABBITMQ_MGMT_PID" ] && kill -0 "$RABBITMQ_MGMT_PID" 2>/dev/null; then
+        if curl -sf "$RABBITMQ_MGMT_URL" >/dev/null 2>&1; then
+            return 0
+        fi
+        kill "$RABBITMQ_MGMT_PID" 2>/dev/null || true
+    fi
+
+    kubectl port-forward svc/rabbitmq "$RABBITMQ_MGMT_PORT:15672" -n "$NS_SYSTEM" >/tmp/fluidbg-rabbitmq-port-forward.log 2>&1 &
+    RABBITMQ_MGMT_PID=$!
+    sleep 3
+    if ! kill -0 "$RABBITMQ_MGMT_PID" 2>/dev/null; then
+        echo "RabbitMQ management port-forward exited unexpectedly" >&2
+        cat /tmp/fluidbg-rabbitmq-port-forward.log >&2 || true
+        return 1
+    fi
+    wait_http "$RABBITMQ_MGMT_URL" rabbitmq-management
+}
+
+publish_rabbitmq_message() {
+    local routing_key="$1"
+    local payload="$2"
+    local request response
+
+    request="$(RABBITMQ_ROUTING_KEY="$routing_key" RABBITMQ_PAYLOAD="$payload" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "properties": {},
+    "routing_key": os.environ["RABBITMQ_ROUTING_KEY"],
+    "payload": os.environ["RABBITMQ_PAYLOAD"],
+    "payload_encoding": "string",
+}))
+PY
+)"
+
+    for i in $(seq 1 10); do
+        ensure_rabbitmq_management_port_forward
+        response="$(curl -sf -u fluidbg:fluidbg \
+            -H "Content-Type: application/json" \
+            -X POST "$RABBITMQ_MGMT_URL/api/exchanges/%2F/amq.default/publish" \
+            -d "$request" || true)"
+        if [ -n "$response" ] && RABBITMQ_PUBLISH_RESPONSE="$response" python3 - <<'PY'
+import json
+import os
+import sys
+
+try:
+    payload = json.loads(os.environ["RABBITMQ_PUBLISH_RESPONSE"])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if payload.get("routed") is True else 1)
+PY
+        then
+            return 0
+        fi
+        echo "RabbitMQ publish to '$routing_key' was not routed, retrying... ($i/10)"
+        sleep 1
+    done
+
+    echo "RabbitMQ publish to '$routing_key' was not routed after retries. Last response: ${response:-<empty>}" >&2
+    return 1
+}
+
 queue_contains_processed_message() {
     local queue="$1"
     local recovery_token="$2"
     local instance_prefix="$3"
     local payload
+    ensure_rabbitmq_management_port_forward
     payload="$(curl -sf -u fluidbg:fluidbg \
         -H "Content-Type: application/json" \
-        -X POST "http://localhost:15672/api/queues/%2F/$queue/get" \
+        -X POST "$RABBITMQ_MGMT_URL/api/queues/%2F/$queue/get" \
         -d '{"count":100,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' || true)"
     if [ -z "$payload" ]; then
         return 1
@@ -123,9 +191,10 @@ queue_contains_json_field() {
     local field="$2"
     local expected="$3"
     local payload
+    ensure_rabbitmq_management_port_forward
     payload="$(curl -sf -u fluidbg:fluidbg \
         -H "Content-Type: application/json" \
-        -X POST "http://localhost:15672/api/queues/%2F/$queue/get" \
+        -X POST "$RABBITMQ_MGMT_URL/api/queues/%2F/$queue/get" \
         -d '{"count":100,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' || true)"
     if [ -z "$payload" ]; then
         return 1
@@ -155,7 +224,8 @@ PY
 assert_rabbitmq_management_queue_drained() {
     local queue="$1"
     local response status payload
-    response="$(curl -s -u fluidbg:fluidbg -w $'\n%{http_code}' "http://localhost:15672/api/queues/%2F/$queue" || true)"
+    ensure_rabbitmq_management_port_forward
+    response="$(curl -s -u fluidbg:fluidbg -w $'\n%{http_code}' "$RABBITMQ_MGMT_URL/api/queues/%2F/$queue" || true)"
     status="${response##*$'\n'}"
     payload="${response%$'\n'*}"
     if [ "$status" = "404" ]; then
@@ -698,19 +768,13 @@ kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o yaml
 
 echo ""
 echo "--- Step 7: Port-forward RabbitMQ management API ---"
-kubectl port-forward svc/rabbitmq 15672:15672 -n "$NS_SYSTEM" >/tmp/fluidbg-rabbitmq-port-forward.log 2>&1 &
-RABBITMQ_MGMT_PID=$!
-sleep 3
-wait_http http://localhost:15672 rabbitmq-management
+ensure_rabbitmq_management_port_forward
 
 echo ""
 echo "--- Step 8: Publish input messages to RabbitMQ ---"
 for i in 1 2 3 4 5; do
     echo "Publishing order-$i..."
-    curl -sf -u fluidbg:fluidbg \
-        -H "Content-Type: application/json" \
-        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"order-$i\\\",\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+    publish_rabbitmq_message "orders" "{\"orderId\":\"order-$i\",\"type\":\"order\",\"action\":\"process\"}"
     sleep 1
 done
 
@@ -820,31 +884,19 @@ SHADOW_INPUT_TOKEN="input-shadow-rollback-$(date +%s)"
 SHADOW_OUTPUT_TOKEN="output-shadow-rollback-$(date +%s)"
 
 echo "Publishing shadow input recovery message to $FAILING_GREEN_INPUT_SHADOW_QUEUE..."
-curl -sf -u fluidbg:fluidbg \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-    -d "{\"properties\":{},\"routing_key\":\"$FAILING_GREEN_INPUT_SHADOW_QUEUE\",\"payload\":\"{\\\"shadowToken\\\":\\\"$SHADOW_INPUT_TOKEN\\\",\\\"type\\\":\\\"order\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+publish_rabbitmq_message "$FAILING_GREEN_INPUT_SHADOW_QUEUE" "{\"shadowToken\":\"$SHADOW_INPUT_TOKEN\",\"type\":\"order\"}"
 echo "Publishing shadow output recovery message to $FAILING_GREEN_OUTPUT_SHADOW_QUEUE..."
-curl -sf -u fluidbg:fluidbg \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-    -d "{\"properties\":{},\"routing_key\":\"$FAILING_GREEN_OUTPUT_SHADOW_QUEUE\",\"payload\":\"{\\\"shadowToken\\\":\\\"$SHADOW_OUTPUT_TOKEN\\\",\\\"type\\\":\\\"result\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+publish_rabbitmq_message "$FAILING_GREEN_OUTPUT_SHADOW_QUEUE" "{\"shadowToken\":\"$SHADOW_OUTPUT_TOKEN\",\"type\":\"result\"}"
 
 echo ""
 echo "--- Step 14: Publish failing input messages ---"
 RECOVERY_TOKEN="rollback-recovery-1"
 echo "Publishing delayed recovery message $RECOVERY_TOKEN..."
-curl -sf -u fluidbg:fluidbg \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-    -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\",\\\"recoveryToken\\\":\\\"$RECOVERY_TOKEN\\\",\\\"greenInitialProcessingDelaySeconds\\\":30}\",\"payload_encoding\":\"string\"}" >/dev/null
+publish_rabbitmq_message "orders" "{\"type\":\"order\",\"action\":\"process\",\"recoveryToken\":\"$RECOVERY_TOKEN\",\"greenInitialProcessingDelaySeconds\":30}"
 sleep 2
 for i in 1 2 3 4 5; do
     echo "Publishing failing order-$i..."
-    curl -sf -u fluidbg:fluidbg \
-        -H "Content-Type: application/json" \
-        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"fail-$i\\\",\\\"type\\\":\\\"order\\\",\\\"action\\\":\\\"process\\\",\\\"shouldPass\\\":false,\\\"failureReason\\\":\\\"synthetic failed promotion case\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+    publish_rabbitmq_message "orders" "{\"orderId\":\"fail-$i\",\"type\":\"order\",\"action\":\"process\",\"shouldPass\":false,\"failureReason\":\"synthetic failed promotion case\"}"
     sleep 1
 done
 
@@ -894,9 +946,10 @@ done
 
 if ! queue_contains_processed_message "results" "$RECOVERY_TOKEN" "$UPGRADE_DEPLOYMENT"; then
     echo "Expected recovered message $RECOVERY_TOKEN to be processed by restored green deployment $UPGRADE_DEPLOYMENT" >&2
+    ensure_rabbitmq_management_port_forward
     curl -sf -u fluidbg:fluidbg \
         -H "Content-Type: application/json" \
-        -X POST "http://localhost:15672/api/queues/%2F/results/get" \
+        -X POST "$RABBITMQ_MGMT_URL/api/queues/%2F/results/get" \
         -d '{"count":20,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' | python3 -m json.tool >&2 || true
     exit 1
 fi
@@ -975,10 +1028,7 @@ echo ""
 echo "--- Step 20: Publish progressive splitter messages ---"
 PROGRESSIVE_PUBLISHED=120
 for i in $(seq 1 "$PROGRESSIVE_PUBLISHED"); do
-    curl -sf -u fluidbg:fluidbg \
-        -H "Content-Type: application/json" \
-        -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-        -d "{\"properties\":{},\"routing_key\":\"orders\",\"payload\":\"{\\\"orderId\\\":\\\"progressive-$i\\\",\\\"type\\\":\\\"progressive-order\\\",\\\"action\\\":\\\"process\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+    publish_rabbitmq_message "orders" "{\"orderId\":\"progressive-$i\",\"type\":\"progressive-order\",\"action\":\"process\"}"
 done
 
 echo ""
@@ -1063,10 +1113,7 @@ wait_bgd_phase order-processor-http-upgrade "$NS" Observing 60
 wait_deployment_replicas "$HTTP_DEPLOYMENT" "$NS" 1
 
 echo "Publishing HTTP proxy verification message..."
-curl -sf -u fluidbg:fluidbg \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-    -d '{"properties":{},"routing_key":"orders","payload":"{\"orderId\":\"http-proxy-1\",\"type\":\"order\",\"action\":\"http-proxy-check\"}","payload_encoding":"string"}' >/dev/null
+publish_rabbitmq_message "orders" '{"orderId":"http-proxy-1","type":"order","action":"http-proxy-check"}'
 
 HTTP_CASE_VERIFIED=false
 for i in $(seq 1 40); do
@@ -1134,10 +1181,8 @@ kubectl rollout status deployment/"$FORCE_DELETE_INPUT_PLUGIN_DEPLOYMENT" -n "$N
 kubectl rollout status deployment/"$FORCE_DELETE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 wait_bgd_phase order-processor-force-delete "$NS" Observing 60
 echo "Publishing force-delete verification message..."
-curl -sf -u fluidbg:fluidbg \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
-    -d '{"properties":{},"routing_key":"orders","payload":"{\"orderId\":\"force-delete-1\",\"type\":\"order\",\"action\":\"force-delete-check\"}","payload_encoding":"string"}' >/dev/null
+FORCE_DELETE_ORDER_ID="force-delete-$(date +%s)"
+publish_rabbitmq_message "orders" "{\"orderId\":\"$FORCE_DELETE_ORDER_ID\",\"type\":\"order\",\"action\":\"force-delete-check\"}"
 for i in $(seq 1 30); do
     STATUS_JSON="$(kubectl get bluegreendeployment order-processor-force-delete -n "$NS" -o json)"
     OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"

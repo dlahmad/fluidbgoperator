@@ -40,6 +40,10 @@ async fn run_combine_loop_once(
     let combiner = combiner_config(&state.config)?;
 
     loop {
+        match state.runtime_mode() {
+            RuntimeMode::Idle | RuntimeMode::Draining => return Ok(()),
+            RuntimeMode::Active => {}
+        }
         let delivery = match consume_channel
             .basic_get(source_queue.as_str().into(), BasicGetOptions::default())
             .await?
@@ -172,6 +176,21 @@ async fn drain_output_queue(
             );
         }
     }
+    Ok(())
+}
+
+pub(crate) async fn drain_output_queues(state: &AppState) -> Result<()> {
+    if !has_role(&state.roles, PluginRole::Combiner) {
+        return Ok(());
+    }
+
+    let config = combiner_config(&state.config)?;
+    let green_queue = required(&config.green_output_queue, "combiner.greenOutputQueue")?;
+    let blue_queue = required(&config.blue_output_queue, "combiner.blueOutputQueue")?;
+    let result_queue = required(&config.output_queue, "combiner.outputQueue")?;
+
+    drain_output_queue(state, green_queue, result_queue).await?;
+    drain_output_queue(state, blue_queue, result_queue).await?;
     Ok(())
 }
 

@@ -9,14 +9,20 @@ use fluidbg_plugin_sdk::{
 };
 
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
+use crate::combiner::drain_output_queues;
 use crate::config::{
     AppState, RuntimeMode, combiner_config, duplicator_config, has_role, inceptor_infra_disabled,
     required, shadow_queue_name, splitter_config, writer_config,
 };
+use crate::input::drain_input_queues;
 
 pub(crate) async fn compute_drain_status(
     state: &AppState,
 ) -> anyhow::Result<PluginDrainStatusResponse> {
+    if matches!(state.runtime_mode(), RuntimeMode::Draining) {
+        drain_runtime_queues(state).await?;
+    }
+
     if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         return input_drain_status(
@@ -67,6 +73,12 @@ pub(crate) async fn compute_drain_status(
         drained: true,
         message: Some("no drain-sensitive Azure Service Bus roles active".to_string()),
     })
+}
+
+async fn drain_runtime_queues(state: &AppState) -> anyhow::Result<()> {
+    drain_input_queues(state).await?;
+    drain_output_queues(state).await?;
+    Ok(())
 }
 
 async fn input_drain_status(
@@ -209,6 +221,9 @@ pub(crate) async fn drain_handler(
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Draining);
+    drain_runtime_queues(&state)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(PluginLifecycleResponse {
         assignments: build_drain_assignments(&state.config, &state.roles),
     }))
