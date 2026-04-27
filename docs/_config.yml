@@ -13,3 +13,8 @@ header_pages:
   - reference/architecture.md
   - reference/plugin-interface.md
 
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: page

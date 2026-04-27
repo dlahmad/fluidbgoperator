@@ -11,11 +11,13 @@
   });
 
   document.addEventListener("DOMContentLoaded", async () => {
-    document.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
+    document.querySelectorAll("pre > code.language-mermaid, pre > code[data-lang='mermaid']").forEach((code) => {
       const diagram = document.createElement("div");
       diagram.className = "mermaid";
       diagram.textContent = code.textContent;
-      code.parentElement.replaceWith(diagram);
+      const pre = code.parentElement;
+      const figure = pre.parentElement && pre.parentElement.tagName === "FIGURE" ? pre.parentElement : null;
+      (figure || pre).replaceWith(diagram);
     });
 
     if (document.querySelector(".mermaid")) {

@@ -315,12 +315,7 @@ flowchart LR
     POD -->|"FLUIDBG_OPERATOR_URL"| OP
     POD -->|"FLUIDBG_TEST_CONTAINER_URL"| TEST
 
-    note1["Discovery sources:
-- operator service DNS
-- test service DNS
-- BGD name
-- inception point name
-- verify path template"] --> POD
+    note1["Discovery sources:<br/>operator service DNS<br/>test service DNS<br/>BGD name<br/>inception point name<br/>verify path template"] --> POD
 ```
 
 ### 2. Queue-Driven Rollout with Duplicator + Observer + Combiner
