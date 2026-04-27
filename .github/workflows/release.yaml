@@ -191,10 +191,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${{ steps.version.outputs.value }}"
-          notes="FluidBG Operator $tag release.
+          notes="$(cat <<NOTES
+          FluidBG Operator $tag release.
 
-Container images are published to GHCR and are not attached as release files.
-Attached release files contain executable archives, checksums, and the Helm chart package."
+          Container images are published to GHCR and are not attached as release files.
+          Attached release files contain executable archives, checksums, and the Helm chart package.
+          NOTES
+          )"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" \
               dist/release/**/*.tar.gz \
