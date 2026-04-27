@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -105,6 +105,14 @@ impl StateStore for MemoryStore {
         Ok(data.values().filter(|r| r.is_pending()).cloned().collect())
     }
 
+    async fn list_blue_green_refs(&self) -> Result<BTreeSet<String>> {
+        let data = self.data.read().await;
+        Ok(data
+            .values()
+            .map(|run| run.blue_green_ref.clone())
+            .collect())
+    }
+
     async fn counts(&self, bg: &str) -> Result<Counts> {
         let data = self.data.read().await;
         Ok(counts_for_runs(
@@ -134,16 +142,18 @@ impl StateStore for MemoryStore {
             .last())
     }
 
+    async fn cleanup_blue_green(&self, bg: &str) -> Result<usize> {
+        let mut data = self.data.write().await;
+        let before = data.len();
+        data.retain(|_, run| run.blue_green_ref != bg);
+        Ok(before - data.len())
+    }
+
     async fn cleanup_expired(&self) -> Result<usize> {
         let mut data = self.data.write().await;
         let now = Utc::now();
         let before = data.len();
-        data.retain(|_, run| {
-            if run.is_pending() && run.expires_at() < now {
-                return false;
-            }
-            true
-        });
+        data.retain(|_, run| !(run.is_pending() && run.expires_at() < now));
         Ok(before - data.len())
     }
 }
@@ -308,6 +318,22 @@ mod tests {
         assert!(store.get("EXP-1").await.unwrap().is_none());
         assert!(store.get("LIVE-1").await.unwrap().is_some());
         assert!(store.get("EXP-2").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn cleanup_blue_green_removes_all_cases_for_bgd() {
+        let store = MemoryStore::new();
+        store.register(make_test("DONE-1", "bg")).await.unwrap();
+        store.set_verdict("DONE-1", true, None).await.unwrap();
+        store.register(make_test("PENDING-1", "bg")).await.unwrap();
+        store.register(make_test("OTHER-1", "other")).await.unwrap();
+        store.set_verdict("OTHER-1", true, None).await.unwrap();
+
+        let removed = store.cleanup_blue_green("bg").await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(store.get("DONE-1").await.unwrap().is_none());
+        assert!(store.get("PENDING-1").await.unwrap().is_none());
+        assert!(store.get("OTHER-1").await.unwrap().is_some());
     }
 
     #[tokio::test]

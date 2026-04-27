@@ -28,6 +28,12 @@
             "signingSecretKey": { "type": "string" },
             "signingSecretValue": { "type": "string" }
           }
+        },
+        "orphanCleanup": {
+          "type": "object",
+          "properties": {
+            "intervalSeconds": { "type": "integer", "minimum": 1 }
+          }
         }
       }
     },
@@ -59,21 +65,57 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["memory", "postgres"]
+          "enum": ["memory", "postgres", "cosmosdb"]
         },
         "postgres": {
           "type": "object",
           "properties": {
+            "authMode": {
+              "type": "string",
+              "enum": ["password", "workloadIdentity"]
+            },
             "url": { "type": "string" },
             "urlSecretName": { "type": "string" },
             "urlSecretKey": { "type": "string" },
-            "tableName": { "type": "string", "minLength": 1 }
+            "host": { "type": "string" },
+            "database": { "type": "string" },
+            "user": { "type": "string" },
+            "tableName": { "type": "string", "minLength": 1 },
+            "workloadIdentity": { "$ref": "#/$defs/workloadIdentity" }
+          }
+        },
+        "cosmos": {
+          "type": "object",
+          "properties": {
+            "authMode": {
+              "type": "string",
+              "enum": ["connectionString", "accountKey", "workloadIdentity"]
+            },
+            "endpoint": { "type": "string" },
+            "database": { "type": "string" },
+            "container": { "type": "string" },
+            "connectionString": { "type": "string" },
+            "connectionStringSecretName": { "type": "string" },
+            "connectionStringSecretKey": { "type": "string" },
+            "accountKey": { "type": "string" },
+            "accountKeySecretName": { "type": "string" },
+            "accountKeySecretKey": { "type": "string" },
+            "workloadIdentity": { "$ref": "#/$defs/workloadIdentity" }
           }
         }
       }
     }
   },
   "$defs": {
+    "workloadIdentity": {
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string" },
+        "clientId": { "type": "string" },
+        "federatedTokenFile": { "type": "string" },
+        "authorityHost": { "type": "string" }
+      }
+    },
     "builtinPlugin": {
       "type": "object",
       "properties": {

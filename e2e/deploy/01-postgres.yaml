@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fluidbg-postgres
+  namespace: fluidbg-system
+type: Opaque
+stringData:
+  postgres-password: fluidbg
+  url: "postgres://fluidbg:fluidbg@postgres.fluidbg-system:5432/fluidbg?sslmode=disable"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: fluidbg-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: postgres
+          image: postgres:18-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: fluidbg
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fluidbg-postgres
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: fluidbg
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "fluidbg", "-d", "fluidbg"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: fluidbg-system
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

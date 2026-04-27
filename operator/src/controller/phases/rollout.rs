@@ -3,8 +3,9 @@ use kube::api::{Api, ListParams};
 use tracing::info;
 
 use super::super::deployments::{
-    apply_family_labels_to_deployment, candidate_ref, delete_current_green, deployment_namespace,
-    deployment_namespace_spec, label_selector, set_green_label,
+    apply_family_labels_to_deployment, candidate_ref, clear_rollout_candidate_labels,
+    delete_current_green, deployment_namespace, deployment_namespace_spec, label_selector,
+    set_green_label,
 };
 use super::super::plugin_lifecycle::{AssignmentTarget, start_plugin_draining};
 use super::super::resources::{apply_deployment_manifest, delete_deployment};
@@ -26,6 +27,7 @@ pub(in crate::controller) async fn promote(
     let mut candidate_deploy = candidate_api.get(&candidate.name).await?;
     apply_family_labels_to_deployment(&mut candidate_deploy, &bgd.spec.selector.match_labels)?;
     set_green_label(&mut candidate_deploy, true)?;
+    clear_rollout_candidate_labels(&mut candidate_deploy)?;
 
     candidate_api
         .replace(&candidate.name, &Default::default(), &candidate_deploy)

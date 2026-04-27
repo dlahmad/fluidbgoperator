@@ -1087,6 +1087,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "fluidbg-plugin-sdk",
  "futures",

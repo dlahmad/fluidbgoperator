@@ -60,3 +60,9 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
 ```sh
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```
+
+Run the HA state-store path with Postgres and two operator replicas:
+
+```sh
+KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 E2E_STATE_STORE=postgres OPERATOR_REPLICAS=2 ./e2e/run-test.sh
+```

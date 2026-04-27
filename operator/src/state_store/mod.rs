@@ -1,8 +1,11 @@
+pub mod azure_identity;
+pub mod cosmos;
 pub mod memory;
 pub mod postgres;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -87,8 +90,10 @@ pub trait StateStore: Send + Sync {
     async fn mark_timed_out(&self, test_id: &str) -> Result<()>;
     async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>>;
     async fn list_pending(&self) -> Result<Vec<TestCaseRecord>>;
+    async fn list_blue_green_refs(&self) -> Result<BTreeSet<String>>;
     async fn counts(&self, bg: &str) -> Result<Counts>;
     async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts>;
     async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>>;
+    async fn cleanup_blue_green(&self, bg: &str) -> Result<usize>;
     async fn cleanup_expired(&self) -> Result<usize>;
 }

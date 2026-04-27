@@ -66,6 +66,12 @@ End-to-end tests require Docker, kind, kubectl, and local images:
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```
 
+HA state-store e2e uses Postgres and two operator replicas:
+
+```sh
+KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 E2E_STATE_STORE=postgres OPERATOR_REPLICAS=2 ./e2e/run-test.sh
+```
+
 ## Install
 
 ```sh

@@ -1,7 +1,14 @@
 use async_trait::async_trait;
 use chrono::Duration;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use std::collections::BTreeSet;
 
-use super::{Counts, Result, StateStore, StoreError, TestCaseRecord, TestStatus, VerificationMode};
+use super::{
+    Counts, Result, StateStore, StoreError, TestCaseRecord, TestStatus, VerificationMode,
+    azure_identity::{TokenProvider, WorkloadIdentityConfig},
+};
+
+const POSTGRES_ENTRA_SCOPE: &str = "https://ossrdbms-aad.database.windows.net/.default";
 
 pub struct PostgresStore {
     pool: sqlx::PgPool,
@@ -10,7 +17,7 @@ pub struct PostgresStore {
 
 impl PostgresStore {
     pub async fn new(url: &str, table_name: &str) -> Result<Self> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(url)
             .await
@@ -22,7 +29,7 @@ impl PostgresStore {
     }
 
     pub fn new_lazy(url: &str, table_name: &str) -> Self {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect_lazy(url)
             .expect("failed to create postgres pool");
@@ -30,6 +37,33 @@ impl PostgresStore {
             pool,
             table_name: table_name.to_string(),
         }
+    }
+
+    pub async fn new_workload_identity(
+        host: &str,
+        database: &str,
+        user: &str,
+        table_name: &str,
+        identity: WorkloadIdentityConfig,
+    ) -> Result<Self> {
+        let token = TokenProvider::new(identity)
+            .access_token(POSTGRES_ENTRA_SCOPE)
+            .await?;
+        let options = PgConnectOptions::new()
+            .host(host)
+            .database(database)
+            .username(user)
+            .password(&token)
+            .ssl_mode(PgSslMode::Require);
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .map_err(StoreError::Postgres)?;
+        Ok(Self {
+            pool,
+            table_name: table_name.to_string(),
+        })
     }
 
     pub async fn migrate(&self) -> Result<()> {
@@ -48,8 +82,16 @@ impl PostgresStore {
                 retries_remaining INTEGER NOT NULL DEFAULT 0,
                 failure_message TEXT,
                 expires_at TIMESTAMPTZ NOT NULL,
-                PRIMARY KEY (blue_green_ref, test_id)
+                PRIMARY KEY (test_id)
             )"#,
+            table = self.table_name
+        );
+        let create_bg_index = format!(
+            r#"CREATE INDEX IF NOT EXISTS idx_{table}_blue_green_ref ON {table} (blue_green_ref)"#,
+            table = self.table_name
+        );
+        let create_test_id_index = format!(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_test_id_unique ON {table} (test_id)"#,
             table = self.table_name
         );
         let create_index = format!(
@@ -58,6 +100,14 @@ impl PostgresStore {
             table = self.table_name
         );
         sqlx::query(&create_table)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        sqlx::query(&create_bg_index)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        sqlx::query(&create_test_id_index)
             .execute(&self.pool)
             .await
             .map_err(StoreError::Postgres)?;
@@ -110,7 +160,20 @@ impl StateStore for PostgresStore {
         };
         let query = format!(
             r#"INSERT INTO {table} (test_id, blue_green_ref, triggered_at, trigger_inception_point, timeout_seconds, status, verdict, verification_mode, verify_url, retries_remaining, failure_message, expires_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               ON CONFLICT (test_id) DO UPDATE SET
+                 triggered_at = LEAST({table}.triggered_at, EXCLUDED.triggered_at),
+                 timeout_seconds = GREATEST({table}.timeout_seconds, EXCLUDED.timeout_seconds),
+                 trigger_inception_point = CASE
+                   WHEN {table}.trigger_inception_point = '' THEN EXCLUDED.trigger_inception_point
+                   ELSE {table}.trigger_inception_point
+                 END,
+                 verify_url = CASE
+                   WHEN {table}.verify_url = '' THEN EXCLUDED.verify_url
+                   ELSE {table}.verify_url
+                 END,
+                 expires_at = GREATEST({table}.expires_at, EXCLUDED.expires_at)
+               WHERE {table}.status IN ('Triggered', 'Observing')"#,
             table = self.table_name
         );
         sqlx::query(&query)
@@ -212,6 +275,19 @@ impl StateStore for PostgresStore {
         Ok(rows.iter().map(row_to_test).collect())
     }
 
+    async fn list_blue_green_refs(&self) -> Result<BTreeSet<String>> {
+        let query = format!("SELECT DISTINCT blue_green_ref FROM {}", self.table_name);
+        let rows = sqlx::query(&query)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        use sqlx::Row;
+        Ok(rows
+            .iter()
+            .map(|row| row.get::<String, _>("blue_green_ref"))
+            .collect())
+    }
+
     async fn counts(&self, bg: &str) -> Result<Counts> {
         self.counts_query("blue_green_ref = $1", vec![bg.to_string()])
             .await
@@ -241,6 +317,16 @@ impl StateStore for PostgresStore {
             .map_err(StoreError::Postgres)?;
         use sqlx::Row;
         Ok(row.map(|row| row.get::<String, _>("failure_message")))
+    }
+
+    async fn cleanup_blue_green(&self, bg: &str) -> Result<usize> {
+        let query = format!("DELETE FROM {} WHERE blue_green_ref = $1", self.table_name);
+        let result = sqlx::query(&query)
+            .bind(bg)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        Ok(result.rows_affected() as usize)
     }
 
     async fn cleanup_expired(&self) -> Result<usize> {

@@ -8,7 +8,10 @@ metadata:
 rules:
   - apiGroups: ["fluidbg.io"]
     resources: ["inceptionplugins", "bluegreendeployments"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["fluidbg.io"]
+    resources: ["bluegreendeployments/finalizers"]
+    verbs: ["update"]
   - apiGroups: ["fluidbg.io"]
     resources: ["bluegreendeployments/status"]
     verbs: ["get", "patch", "update"]

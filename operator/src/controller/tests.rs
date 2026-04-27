@@ -1,6 +1,6 @@
 use super::{
-    BlueGreenDeployment, ManagedDeploymentSpec, candidate_name_with_suffix,
-    deterministic_candidate_suffixes, generated_candidate_name_seed,
+    BGD_FINALIZER, BlueGreenDeployment, ManagedDeploymentSpec, candidate_name_with_suffix,
+    deterministic_candidate_suffixes, generated_candidate_name_seed, has_finalizer,
     select_previous_green_for_promotion, validate_progressive_splitter_plugin,
 };
 use crate::crd::blue_green::{
@@ -62,6 +62,14 @@ fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> Inc
             }),
         },
     )
+}
+
+#[test]
+fn finalizer_detection_uses_fluidbg_cleanup_finalizer() {
+    let mut bgd = sample_bgd(1);
+    assert!(!has_finalizer(&bgd, BGD_FINALIZER));
+    bgd.metadata.finalizers = Some(vec![BGD_FINALIZER.to_string()]);
+    assert!(has_finalizer(&bgd, BGD_FINALIZER));
 }
 
 fn deployment_named(name: &str) -> Deployment {

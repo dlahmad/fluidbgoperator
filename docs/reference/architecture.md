@@ -30,7 +30,7 @@ flowchart LR
     LIFE["manager/inceptor lifecycle client<br/>prepare, traffic, drain, cleanup"]
     AUTH["operator auth Secret<br/>JWT signing key"]
     API["operator HTTP API<br/>testcases, verdicts, counts"]
-    STORE["state store<br/>memory or postgres"]
+    STORE["state store<br/>memory, postgres,<br/>or cosmosdb"]
     SDK["plugin SDK<br/>v1alpha1 HTTP models"]
     MGR["plugin managers<br/>operator namespace"]
     PLUG["plugin inceptors<br/>HTTP, RabbitMQ,<br/>Azure Service Bus"]
@@ -93,7 +93,7 @@ flowchart TD
 | Plugin inceptor | Per-inception traffic component in the application namespace. It moves, observes, writes, mocks, or combines traffic but should not hold infrastructure-admin credentials when a manager is configured. |
 | Plugin role | The behavior activated for an inception point: `duplicator`, `splitter`, `combiner`, `observer`, `mock`, `writer`, or `consumer`. |
 | Verifier test container | User-owned HTTP service that stores domain observations and returns `passed: true`, `passed: false`, or `passed: null` for a `testId`. |
-| State store | Operator persistence for registered test cases and counts. Implemented backends are `memory` and `postgres`. |
+| State store | Operator-global persistence for registered test cases and counts. Implemented backends are `memory`, `postgres`, and `cosmosdb`. |
 | Progressive shifting | Weighted blue traffic controlled by the operator through inceptor lifecycle `trafficShiftPath` calls. |
 | Operator auth Secret | User-selected Kubernetes Secret containing the JWT signing key used to mint per-inception plugin tokens. |
 
@@ -229,8 +229,23 @@ promotion:
 ### State Store
 
 The state store is operator-global, not selected per `BlueGreenDeployment`.
-`memory` is useful for development and tests. `postgres` is the production
-backend and is configured on the operator Deployment through Helm values.
+`memory` is useful for development and tests, but it is blocked when the Helm
+chart is configured with more than one operator replica. HA deployments must use
+a shared backend: Postgres or Azure Cosmos DB. Both persistent backends support
+secret-based credentials and AKS workload identity.
+
+Store records are short-lived rollout state, not an audit log. The operator
+keeps pending cases while the owning BGD still exists. After a BGD reaches a
+terminal state or is deleted through the finalizer path, temporary Kubernetes
+resources are removed and all cases for that BGD are deleted from the store.
+
+Forced deletion is handled by an orphan sweeper. It periodically collects BGD
+refs from the store and from Kubernetes resources labeled
+`fluidbg.io/blue-green-ref`, compares them with existing BGD CR names, and
+cleans any ref whose CR no longer exists. Unpromoted candidate deployments are
+labeled so they can be removed after a forced delete; the label is cleared when
+the candidate is promoted to the active green deployment. The cleanup is
+idempotent and safe when multiple operator replicas race to perform it.
 
 ## Operator Reconciliation
 
@@ -429,11 +444,15 @@ Important implementation boundaries:
 
 - Green keeps serving unless the configured promotion path replaces it.
 - Temporary plugin and test resources are removed after promotion or rollback.
+- Forced-deleted BGDs are recovered by orphan cleanup using store refs and
+  `fluidbg.io/blue-green-ref` labels.
 - Draining gives plugins a chance to move or consume temporary work before
   cleanup; drain timeout is explicit and reflected in status.
 - Progressive shifting changes plugin state through lifecycle HTTP calls, so it
   does not require plugin pod restarts.
 - The test container owns semantic correctness; application payload formats are
   not part of the operator contract.
-- `postgres` state store preserves registered cases across operator restarts.
+- `postgres` and `cosmosdb` state stores preserve registered cases across operator restarts and support multi-replica operator deployments.
+- Store records are deleted when their BGD is terminal, deleted, or detected as
+  orphaned after a forced delete.
 - CRD models and plugin API models are versioned under `v1alpha1`.

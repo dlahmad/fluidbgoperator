@@ -391,6 +391,54 @@ pub(super) fn apply_family_labels_to_deployment(
     Ok(())
 }
 
+pub(super) fn apply_rollout_candidate_labels(
+    deployment: &mut Deployment,
+    bgd: &BlueGreenDeployment,
+) -> std::result::Result<(), ReconcileError> {
+    let bgd_name = bgd.metadata.name.as_deref().unwrap_or("");
+    let bgd_uid = bgd.metadata.uid.as_deref().unwrap_or("");
+    let deployment_labels = deployment
+        .metadata
+        .labels
+        .get_or_insert_with(Default::default);
+    deployment_labels.insert(
+        "fluidbg.io/blue-green-ref".to_string(),
+        bgd_name.to_string(),
+    );
+    deployment_labels.insert("fluidbg.io/blue-green-uid".to_string(), bgd_uid.to_string());
+
+    let template_labels = deployment
+        .spec
+        .as_mut()
+        .and_then(|spec| spec.template.metadata.as_mut())
+        .map(|metadata| metadata.labels.get_or_insert_with(Default::default))
+        .ok_or_else(|| ReconcileError::Store("deployment template metadata missing".to_string()))?;
+    template_labels.insert(
+        "fluidbg.io/blue-green-ref".to_string(),
+        bgd_name.to_string(),
+    );
+    template_labels.insert("fluidbg.io/blue-green-uid".to_string(), bgd_uid.to_string());
+    Ok(())
+}
+
+pub(super) fn clear_rollout_candidate_labels(
+    deployment: &mut Deployment,
+) -> std::result::Result<(), ReconcileError> {
+    if let Some(labels) = deployment.metadata.labels.as_mut() {
+        labels.remove("fluidbg.io/blue-green-ref");
+        labels.remove("fluidbg.io/blue-green-uid");
+    }
+    let template_labels = deployment
+        .spec
+        .as_mut()
+        .and_then(|spec| spec.template.metadata.as_mut())
+        .map(|metadata| metadata.labels.get_or_insert_with(Default::default))
+        .ok_or_else(|| ReconcileError::Store("deployment template metadata missing".to_string()))?;
+    template_labels.remove("fluidbg.io/blue-green-ref");
+    template_labels.remove("fluidbg.io/blue-green-uid");
+    Ok(())
+}
+
 pub(super) fn set_green_label(
     deployment: &mut Deployment,
     is_green: bool,

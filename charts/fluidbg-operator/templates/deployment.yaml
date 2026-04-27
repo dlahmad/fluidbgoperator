@@ -1,3 +1,6 @@
+{{- if and (eq .Values.stateStore.type "memory") (gt (int .Values.operator.replicaCount) 1) }}
+{{- fail "operator.replicaCount > 1 requires stateStore.type=postgres or stateStore.type=cosmosdb; memory is per-pod and not HA-safe" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,6 +16,9 @@ spec:
     metadata:
       labels:
         {{- include "fluidbg.selectorLabels" . | nindent 8 }}
+        {{- if or (and (eq .Values.stateStore.type "postgres") (eq .Values.stateStore.postgres.authMode "workloadIdentity")) (and (eq .Values.stateStore.type "cosmosdb") (eq .Values.stateStore.cosmos.authMode "workloadIdentity")) }}
+        azure.workload.identity/use: "true"
+        {{- end }}
         {{- with .Values.operator.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -49,7 +55,35 @@ spec:
               value: {{ .Values.operator.auth.signingSecretNamespace | default .Release.Namespace | quote }}
             - name: FLUIDBG_STATE_STORE_TYPE
               value: {{ .Values.stateStore.type | quote }}
+            - name: FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS
+              value: {{ .Values.operator.orphanCleanup.intervalSeconds | quote }}
             {{- if eq .Values.stateStore.type "postgres" }}
+            - name: FLUIDBG_POSTGRES_AUTH_MODE
+              value: {{ .Values.stateStore.postgres.authMode | quote }}
+            {{- if eq .Values.stateStore.postgres.authMode "workloadIdentity" }}
+            - name: FLUIDBG_POSTGRES_HOST
+              value: {{ required "stateStore.postgres.host is required when stateStore.postgres.authMode=workloadIdentity" .Values.stateStore.postgres.host | quote }}
+            - name: FLUIDBG_POSTGRES_DATABASE
+              value: {{ required "stateStore.postgres.database is required when stateStore.postgres.authMode=workloadIdentity" .Values.stateStore.postgres.database | quote }}
+            - name: FLUIDBG_POSTGRES_USER
+              value: {{ required "stateStore.postgres.user is required when stateStore.postgres.authMode=workloadIdentity" .Values.stateStore.postgres.user | quote }}
+            {{- with .Values.stateStore.postgres.workloadIdentity.tenantId }}
+            - name: FLUIDBG_POSTGRES_TENANT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.postgres.workloadIdentity.clientId }}
+            - name: FLUIDBG_POSTGRES_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.postgres.workloadIdentity.federatedTokenFile }}
+            - name: FLUIDBG_POSTGRES_FEDERATED_TOKEN_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.postgres.workloadIdentity.authorityHost }}
+            - name: FLUIDBG_POSTGRES_AUTHORITY_HOST
+              value: {{ . | quote }}
+            {{- end }}
+            {{- else }}
             - name: FLUIDBG_POSTGRES_URL
               {{- if .Values.stateStore.postgres.urlSecretName }}
               valueFrom:
@@ -59,8 +93,58 @@ spec:
               {{- else }}
               value: {{ required "stateStore.postgres.url or stateStore.postgres.urlSecretName is required when stateStore.type=postgres" .Values.stateStore.postgres.url | quote }}
               {{- end }}
+            {{- end }}
             - name: FLUIDBG_POSTGRES_TABLE
               value: {{ .Values.stateStore.postgres.tableName | quote }}
+            {{- end }}
+            {{- if eq .Values.stateStore.type "cosmosdb" }}
+            - name: FLUIDBG_COSMOS_AUTH_MODE
+              value: {{ .Values.stateStore.cosmos.authMode | quote }}
+            - name: FLUIDBG_COSMOS_DATABASE
+              value: {{ required "stateStore.cosmos.database is required when stateStore.type=cosmosdb" .Values.stateStore.cosmos.database | quote }}
+            - name: FLUIDBG_COSMOS_CONTAINER
+              value: {{ required "stateStore.cosmos.container is required when stateStore.type=cosmosdb" .Values.stateStore.cosmos.container | quote }}
+            {{- if eq .Values.stateStore.cosmos.authMode "workloadIdentity" }}
+            - name: FLUIDBG_COSMOS_ENDPOINT
+              value: {{ required "stateStore.cosmos.endpoint is required when stateStore.cosmos.authMode=workloadIdentity" .Values.stateStore.cosmos.endpoint | quote }}
+            {{- with .Values.stateStore.cosmos.workloadIdentity.tenantId }}
+            - name: FLUIDBG_COSMOS_TENANT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.cosmos.workloadIdentity.clientId }}
+            - name: FLUIDBG_COSMOS_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.cosmos.workloadIdentity.federatedTokenFile }}
+            - name: FLUIDBG_COSMOS_FEDERATED_TOKEN_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.stateStore.cosmos.workloadIdentity.authorityHost }}
+            - name: FLUIDBG_COSMOS_AUTHORITY_HOST
+              value: {{ . | quote }}
+            {{- end }}
+            {{- else if .Values.stateStore.cosmos.connectionStringSecretName }}
+            - name: FLUIDBG_COSMOS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.stateStore.cosmos.connectionStringSecretName | quote }}
+                  key: {{ .Values.stateStore.cosmos.connectionStringSecretKey | quote }}
+            {{- else if .Values.stateStore.cosmos.connectionString }}
+            - name: FLUIDBG_COSMOS_CONNECTION_STRING
+              value: {{ .Values.stateStore.cosmos.connectionString | quote }}
+            {{- else }}
+            - name: FLUIDBG_COSMOS_ENDPOINT
+              value: {{ required "stateStore.cosmos.endpoint is required when using account key auth" .Values.stateStore.cosmos.endpoint | quote }}
+            - name: FLUIDBG_COSMOS_ACCOUNT_KEY
+              {{- if .Values.stateStore.cosmos.accountKeySecretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.stateStore.cosmos.accountKeySecretName | quote }}
+                  key: {{ .Values.stateStore.cosmos.accountKeySecretKey | quote }}
+              {{- else }}
+              value: {{ required "stateStore.cosmos.accountKey or stateStore.cosmos.accountKeySecretName is required when using account key auth" .Values.stateStore.cosmos.accountKey | quote }}
+              {{- end }}
+            {{- end }}
             {{- end }}
           livenessProbe:
             httpGet:

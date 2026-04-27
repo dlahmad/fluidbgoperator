@@ -5,6 +5,8 @@ NS="${NS:-fluidbg-test}"
 NS_SYSTEM="${NS_SYSTEM:-fluidbg-system}"
 KIND_CLUSTER="${KIND_CLUSTER:-}"
 BUILD_IMAGES="${BUILD_IMAGES:-1}"
+E2E_STATE_STORE="${E2E_STATE_STORE:-memory}"
+OPERATOR_REPLICAS="${OPERATOR_REPLICAS:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -166,6 +168,27 @@ wait_no_inception_resources() {
     return 1
 }
 
+wait_no_blue_green_ref_resources() {
+    local namespace="$1"
+    local bgd="$2"
+    for i in $(seq 1 90); do
+        local deployments services configmaps secrets pods
+        deployments="$(kubectl get deployment -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        services="$(kubectl get service -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        configmaps="$(kubectl get configmap -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        secrets="$(kubectl get secret -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        pods="$(kubectl get pods -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$deployments" = "0" ] && [ "$services" = "0" ] && [ "$configmaps" = "0" ] && [ "$secrets" = "0" ] && [ "$pods" = "0" ]; then
+            return 0
+        fi
+        echo "Waiting for orphaned resources for $bgd to disappear... deployments=$deployments services=$services configmaps=$configmaps secrets=$secrets pods=$pods ($i/90)"
+        sleep 1
+    done
+    echo "orphaned resources for $bgd still exist in namespace $namespace" >&2
+    kubectl get deployment,service,configmap,secret,pods -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd" >&2 || true
+    return 1
+}
+
 wait_deployment_label() {
     local deployment="$1"
     local namespace="$2"
@@ -311,6 +334,9 @@ if [ "$BUILD_IMAGES" = "1" ]; then
     docker build -t fluidbg/blue-app:dev "$ROOT_DIR/e2e/blue-app"
     docker build -t fluidbg/green-app:dev "$ROOT_DIR/e2e/green-app"
     docker build -t fluidbg/test-app:dev "$ROOT_DIR/e2e/test-app"
+    if [ "$E2E_STATE_STORE" = "postgres" ]; then
+        docker pull --platform "linux/$IMAGE_ARCH" postgres:18-alpine
+    fi
 
     if command -v kind >/dev/null 2>&1; then
         if [ -z "$KIND_CLUSTER" ]; then
@@ -332,6 +358,10 @@ if [ "$BUILD_IMAGES" = "1" ]; then
         kind load docker-image fluidbg/blue-app:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/green-app:dev --name "$KIND_CLUSTER"
         kind load docker-image fluidbg/test-app:dev --name "$KIND_CLUSTER"
+        if [ "$E2E_STATE_STORE" = "postgres" ]; then
+            kind load docker-image postgres:18-alpine --name "$KIND_CLUSTER" || \
+                echo "Warning: failed to preload postgres:18-alpine into kind; cluster image pull will be used"
+        fi
     fi
 fi
 
@@ -341,9 +371,15 @@ apply_namespace "$NS_SYSTEM"
 apply_namespace "$NS"
 kubectl apply -f "$DEPLOY_DIR/01-httpbin.yaml"
 kubectl apply -f "$DEPLOY_DIR/01-rabbitmq.yaml"
+if [ "$E2E_STATE_STORE" = "postgres" ]; then
+    kubectl apply -f "$DEPLOY_DIR/01-postgres.yaml"
+fi
 reset_deployment "$NS_SYSTEM" rabbitmq rabbitmq
 kubectl rollout status deployment/rabbitmq -n "$NS_SYSTEM" --timeout=120s
 kubectl rollout status deployment/httpbin -n "$NS_SYSTEM" --timeout=120s
+if [ "$E2E_STATE_STORE" = "postgres" ]; then
+    kubectl rollout status deployment/postgres -n "$NS_SYSTEM" --timeout=120s
+fi
 echo "Waiting for RabbitMQ readiness (extra 15s)..."
 sleep 15
 
@@ -356,6 +392,11 @@ kubectl delete service test-container -n "$NS" --ignore-not-found
 kubectl delete deployment,service -n "$NS" -l fluidbg.io/test --ignore-not-found
 kubectl delete deployment,service,configmap -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 kubectl delete pod -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
+if [ "$E2E_STATE_STORE" != "postgres" ]; then
+    kubectl delete deployment postgres -n "$NS_SYSTEM" --ignore-not-found
+    kubectl delete service postgres -n "$NS_SYSTEM" --ignore-not-found
+    kubectl delete secret fluidbg-postgres -n "$NS_SYSTEM" --ignore-not-found
+fi
 kubectl delete crd \
     bluegreendeployments.fluidbg.io \
     inceptionplugins.fluidbg.io \
@@ -367,15 +408,30 @@ wait_no_inception_resources "$NS"
 
 echo ""
 echo "--- Step 3: Deploy operator and built-in plugins with Helm ---"
+HELM_STATE_STORE_ARGS=()
+if [ "$E2E_STATE_STORE" = "postgres" ]; then
+    HELM_STATE_STORE_ARGS=(
+        --set stateStore.type=postgres
+        --set stateStore.postgres.authMode=password
+        --set stateStore.postgres.urlSecretName=fluidbg-postgres
+        --set stateStore.postgres.urlSecretKey=url
+        --set stateStore.postgres.tableName=fluidbg_cases
+    )
+elif [ "$E2E_STATE_STORE" != "memory" ]; then
+    echo "Unsupported E2E_STATE_STORE=$E2E_STATE_STORE" >&2
+    exit 1
+fi
 helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
     --namespace "$NS_SYSTEM" \
     --create-namespace \
     --set fullnameOverride=fluidbg-operator \
     --set serviceAccount.name=fluidbg-operator \
+    --set operator.replicaCount="$OPERATOR_REPLICAS" \
     --set operator.image.repository=fluidbg/fbg-operator \
     --set operator.image.tag=dev \
     --set operator.image.pullPolicy=Never \
     --set operator.watchNamespace="$NS" \
+    --set operator.orphanCleanup.intervalSeconds=5 \
     --set operator.auth.createSigningSecret=true \
     --set operator.auth.signingSecretNamespace="$NS_SYSTEM" \
     --set operator.auth.signingSecretName=fluidbg-e2e-auth \
@@ -388,7 +444,8 @@ helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
     --set builtinPlugins.rabbitmq.image.tag=dev \
     --set builtinPlugins.rabbitmq.manager.enabled=true \
     --set builtinPlugins.rabbitmq.manager.amqpUrl="amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f" \
-    --set builtinPlugins.azureServiceBus.enabled=false
+    --set builtinPlugins.azureServiceBus.enabled=false \
+    "${HELM_STATE_STORE_ARGS[@]}"
 kubectl rollout status deployment/fluidbg-operator -n "$NS_SYSTEM" --timeout=120s
 kubectl rollout status deployment/fluidbg-rabbitmq-manager -n "$NS_SYSTEM" --timeout=120s
 kubectl get inceptionplugin http -n "$NS" >/dev/null
@@ -803,12 +860,61 @@ wait_no_inception_resources "$NS"
 wait_deployment_label "$HTTP_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
 
 echo ""
-echo "--- Step 23: Final pod state ---"
+echo "--- Step 23: Force-delete BGD and verify orphan cleanup ---"
+kubectl apply -f "$DEPLOY_DIR/11-force-delete-bgd.yaml"
+sleep 5
+FORCE_DELETE_DEPLOYMENT="$(wait_bgd_generated_name order-processor-force-delete "$NS")"
+FORCE_DELETE_INPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-force-delete incoming-orders "$NS")"
+FORCE_DELETE_OUTPUT_PLUGIN_DEPLOYMENT="$(wait_inception_deployment_name order-processor-force-delete outgoing-results "$NS")"
+FORCE_DELETE_TEST_DEPLOYMENT="$(wait_test_deployment_name order-processor-force-delete test-container "$NS")"
+wait_exists deployment "$FORCE_DELETE_DEPLOYMENT" "$NS"
+kubectl rollout status deployment/"$HTTP_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FORCE_DELETE_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FORCE_DELETE_TEST_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FORCE_DELETE_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+kubectl rollout status deployment/"$FORCE_DELETE_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
+wait_bgd_phase order-processor-force-delete "$NS" Observing 60
+echo "Publishing force-delete verification message..."
+curl -sf -u fluidbg:fluidbg \
+    -H "Content-Type: application/json" \
+    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+    -d '{"properties":{},"routing_key":"orders","payload":"{\"orderId\":\"force-delete-1\",\"type\":\"order\",\"action\":\"force-delete-check\"}","payload_encoding":"string"}' >/dev/null
+for i in $(seq 1 30); do
+    STATUS_JSON="$(kubectl get bluegreendeployment order-processor-force-delete -n "$NS" -o json)"
+    OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
+    PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
+    TRACKED_COUNT="$((OBSERVED_COUNT + PENDING_COUNT))"
+    echo "  Force-delete BGD tracked=$TRACKED_COUNT observed=$OBSERVED_COUNT pending=$PENDING_COUNT ($i/30)"
+    if [ "$TRACKED_COUNT" -ge 1 ]; then
+        break
+    fi
+    sleep 2
+done
+if [ "$TRACKED_COUNT" -lt 1 ]; then
+    echo "Expected force-delete BGD to register at least one store record before forced deletion" >&2
+    kubectl get bluegreendeployment order-processor-force-delete -n "$NS" -o yaml >&2
+    exit 1
+fi
+kubectl patch bluegreendeployment order-processor-force-delete -n "$NS" --type=merge -p '{"metadata":{"finalizers":[]}}'
+kubectl delete bluegreendeployment order-processor-force-delete -n "$NS" --wait=false
+wait_deleted bluegreendeployment order-processor-force-delete "$NS"
+wait_no_blue_green_ref_resources "$NS" order-processor-force-delete
+if [ "$E2E_STATE_STORE" = "postgres" ]; then
+    FORCE_DELETE_ROWS="$(kubectl exec -n "$NS_SYSTEM" deploy/postgres -- env PGPASSWORD=fluidbg psql -U fluidbg -d fluidbg -tAc "select count(*) from fluidbg_cases where blue_green_ref='order-processor-force-delete';" | tr -d '[:space:]')"
+    if [ "$FORCE_DELETE_ROWS" != "0" ]; then
+        echo "Expected Postgres store rows for force-deleted BGD to be cleaned, got $FORCE_DELETE_ROWS" >&2
+        exit 1
+    fi
+fi
+wait_deployment_label "$HTTP_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
+
+echo ""
+echo "--- Step 24: Final pod state ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
 
 echo ""
-echo "--- Step 24: Verify Helm uninstall cleanup ---"
+echo "--- Step 25: Verify Helm uninstall cleanup ---"
 helm uninstall fluidbg-e2e -n "$NS_SYSTEM" --wait
 wait_deleted deployment fluidbg-operator "$NS_SYSTEM"
 wait_deleted deployment fluidbg-rabbitmq-manager "$NS_SYSTEM"

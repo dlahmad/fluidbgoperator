@@ -26,6 +26,8 @@ operator:
     signingSecretValue: ""
   api:
     port: 8090
+  orphanCleanup:
+    intervalSeconds: 60
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -58,10 +60,35 @@ stateStore:
   # The operator process uses one global backend for all watched BGDs.
   type: memory
   postgres:
+    authMode: password
     url: ""
     urlSecretName: ""
     urlSecretKey: url
+    host: ""
+    database: ""
+    user: ""
     tableName: fluidbg_cases
+    workloadIdentity:
+      tenantId: ""
+      clientId: ""
+      federatedTokenFile: ""
+      authorityHost: ""
+  cosmos:
+    authMode: connectionString
+    endpoint: ""
+    database: ""
+    container: ""
+    connectionString: ""
+    connectionStringSecretName: ""
+    connectionStringSecretKey: connection-string
+    accountKey: ""
+    accountKeySecretName: ""
+    accountKeySecretKey: account-key
+    workloadIdentity:
+      tenantId: ""
+      clientId: ""
+      federatedTokenFile: ""
+      authorityHost: ""
 
 builtinPlugins:
   install: true

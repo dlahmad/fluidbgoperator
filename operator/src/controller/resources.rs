@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
@@ -7,8 +7,10 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube::ResourceExt;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
+use kube::core::NamespaceResourceScope;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::info;
@@ -21,8 +23,8 @@ use crate::plugins::reconciler::{
 };
 
 use super::{
-    AuthConfig, ReconcileError, apply_family_labels_to_deployment, candidate_ref,
-    deployment_namespace_spec, set_green_label,
+    AuthConfig, ReconcileError, apply_family_labels_to_deployment, apply_rollout_candidate_labels,
+    candidate_ref, clear_rollout_candidate_labels, deployment_namespace_spec, set_green_label,
 };
 
 pub(super) async fn ensure_test_resources(
@@ -443,6 +445,11 @@ pub(super) async fn apply_deployment_manifest(
     };
     apply_family_labels_to_deployment(&mut deployment, family_labels)?;
     set_green_label(&mut deployment, is_green)?;
+    if is_green {
+        clear_rollout_candidate_labels(&mut deployment)?;
+    } else {
+        apply_rollout_candidate_labels(&mut deployment, bgd)?;
+    }
 
     let name = deployment
         .metadata
@@ -552,6 +559,33 @@ pub(super) async fn cleanup_inception_resources(
     wait_for_inception_resources_deleted(client, namespace, blue_green_ref).await
 }
 
+pub(super) async fn cleanup_orphaned_blue_green_resources(
+    client: &kube::Client,
+    namespace: &str,
+    blue_green_ref: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let selector = blue_green_ref_selector(blue_green_ref);
+    delete_labeled_resources::<Deployment>(client, namespace, "deployment", &selector).await?;
+    delete_labeled_resources::<Service>(client, namespace, "service", &selector).await?;
+    delete_labeled_resources::<ConfigMap>(client, namespace, "configmap", &selector).await?;
+    delete_labeled_resources::<Secret>(client, namespace, "secret", &selector).await?;
+    delete_labeled_resources::<Pod>(client, namespace, "pod", &selector).await?;
+    wait_for_blue_green_resources_deleted(client, namespace, blue_green_ref).await
+}
+
+pub(super) async fn blue_green_refs_from_owned_resources(
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<BTreeSet<String>, ReconcileError> {
+    let mut refs = BTreeSet::new();
+    collect_blue_green_refs::<Deployment>(client, namespace, &mut refs).await?;
+    collect_blue_green_refs::<Service>(client, namespace, &mut refs).await?;
+    collect_blue_green_refs::<ConfigMap>(client, namespace, &mut refs).await?;
+    collect_blue_green_refs::<Secret>(client, namespace, &mut refs).await?;
+    collect_blue_green_refs::<Pod>(client, namespace, &mut refs).await?;
+    Ok(refs)
+}
+
 pub(super) async fn delete_deployment(
     client: &kube::Client,
     namespace: &str,
@@ -586,6 +620,54 @@ async fn delete_secret(
 ) -> std::result::Result<(), ReconcileError> {
     let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     delete_resource(api, "secret", namespace, name).await
+}
+
+async fn collect_blue_green_refs<K>(
+    client: &kube::Client,
+    namespace: &str,
+    refs: &mut BTreeSet<String>,
+) -> std::result::Result<(), ReconcileError>
+where
+    K: kube::Resource<DynamicType = (), Scope = NamespaceResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug,
+{
+    let api: Api<K> = Api::namespaced(client.clone(), namespace);
+    let params = ListParams::default().labels("fluidbg.io/blue-green-ref");
+    for item in api.list(&params).await?.items {
+        if let Some(value) = item.labels().get("fluidbg.io/blue-green-ref") {
+            refs.insert(value.clone());
+        }
+    }
+    Ok(())
+}
+
+async fn delete_labeled_resources<K>(
+    client: &kube::Client,
+    namespace: &str,
+    kind: &str,
+    selector: &str,
+) -> std::result::Result<(), ReconcileError>
+where
+    K: kube::Resource<DynamicType = (), Scope = NamespaceResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    let api: Api<K> = Api::namespaced(client.clone(), namespace);
+    let params = ListParams::default().labels(selector);
+    for item in api.list(&params).await?.items {
+        delete_resource(api.clone(), kind, namespace, &item.name_any()).await?;
+    }
+    Ok(())
+}
+
+fn blue_green_ref_selector(blue_green_ref: &str) -> String {
+    format!("fluidbg.io/blue-green-ref={blue_green_ref}")
 }
 
 async fn wait_for_inception_resources_deleted(
@@ -631,6 +713,51 @@ async fn wait_for_inception_resources_deleted(
 
     Err(ReconcileError::Store(format!(
         "inception resources for BGD '{blue_green_ref}' were not deleted in namespace {namespace}"
+    )))
+}
+
+async fn wait_for_blue_green_resources_deleted(
+    client: &kube::Client,
+    namespace: &str,
+    blue_green_ref: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let selector = blue_green_ref_selector(blue_green_ref);
+    let params = ListParams::default().labels(&selector);
+
+    for attempt in 1..=60 {
+        let deployment_count = deployments.list(&params).await?.items.len();
+        let service_count = services.list(&params).await?.items.len();
+        let config_map_count = config_maps.list(&params).await?.items.len();
+        let secret_count = secrets.list(&params).await?.items.len();
+        let pod_count = pods.list(&params).await?.items.len();
+        if deployment_count == 0
+            && service_count == 0
+            && config_map_count == 0
+            && secret_count == 0
+            && pod_count == 0
+        {
+            return Ok(());
+        }
+        info!(
+            "waiting for orphaned resources for BGD '{}' to disappear: deployments={} services={} configmaps={} secrets={} pods={} ({}/60)",
+            blue_green_ref,
+            deployment_count,
+            service_count,
+            config_map_count,
+            secret_count,
+            pod_count,
+            attempt
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    Err(ReconcileError::Store(format!(
+        "orphaned resources for BGD '{blue_green_ref}' were not deleted in namespace {namespace}"
     )))
 }
 

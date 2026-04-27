@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::info;
 
@@ -6,6 +7,7 @@ use fluidbg_operator::controller::AuthConfig;
 use fluidbg_operator::http_api;
 use fluidbg_operator::inception::InceptionTracker;
 use fluidbg_operator::state_store::{StateStore, memory::MemoryStore, postgres::PostgresStore};
+use fluidbg_operator::state_store::{azure_identity, cosmos::CosmosStore};
 
 #[tokio::main]
 async fn main() {
@@ -52,8 +54,28 @@ async fn main() {
     let ctrl_store = store.clone();
     let ctrl_client = client.clone();
     let ctrl_ns = namespace.clone();
+    let orphan_store = store.clone();
+    let orphan_client = client.clone();
+    let orphan_ns = namespace.clone();
+    let orphan_interval = Duration::from_secs(
+        std::env::var("FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(60),
+    );
     tokio::spawn(async move {
         fluidbg_operator::controller::run_controller(ctrl_client, ctrl_ns, auth, ctrl_store).await;
+    });
+
+    tokio::spawn(async move {
+        fluidbg_operator::controller::run_orphan_cleanup(
+            orphan_client,
+            orphan_ns,
+            orphan_store,
+            orphan_interval,
+        )
+        .await;
     });
 
     tokio::spawn(async move {
@@ -76,19 +98,64 @@ async fn build_state_store() -> Arc<dyn StateStore> {
     {
         "memory" => Arc::new(MemoryStore::new()),
         "postgres" => {
-            let url = std::env::var("FLUIDBG_POSTGRES_URL")
-                .expect("FLUIDBG_POSTGRES_URL is required when FLUIDBG_STATE_STORE_TYPE=postgres");
             let table = std::env::var("FLUIDBG_POSTGRES_TABLE")
                 .unwrap_or_else(|_| "fluidbg_cases".to_string());
-            let store = PostgresStore::new(&url, &table)
+            let auth_mode = std::env::var("FLUIDBG_POSTGRES_AUTH_MODE")
+                .unwrap_or_else(|_| "password".to_string());
+            let store = if auth_mode == "workloadIdentity" {
+                PostgresStore::new_workload_identity(
+                    &required_env("FLUIDBG_POSTGRES_HOST"),
+                    &required_env("FLUIDBG_POSTGRES_DATABASE"),
+                    &required_env("FLUIDBG_POSTGRES_USER"),
+                    &table,
+                    azure_identity::workload_identity_from_env("FLUIDBG_POSTGRES"),
+                )
                 .await
-                .expect("failed to connect to postgres state store");
+            } else {
+                let url = required_env("FLUIDBG_POSTGRES_URL");
+                PostgresStore::new(&url, &table).await
+            }
+            .expect("failed to connect to postgres state store");
             store
                 .migrate()
                 .await
                 .expect("failed to migrate postgres state store");
             Arc::new(store)
         }
+        "cosmosdb" => {
+            let database = required_env("FLUIDBG_COSMOS_DATABASE");
+            let container = required_env("FLUIDBG_COSMOS_CONTAINER");
+            let auth_mode = std::env::var("FLUIDBG_COSMOS_AUTH_MODE")
+                .unwrap_or_else(|_| "connectionString".to_string());
+            let store = if auth_mode == "workloadIdentity" {
+                CosmosStore::new_workload_identity(
+                    &required_env("FLUIDBG_COSMOS_ENDPOINT"),
+                    &database,
+                    &container,
+                    azure_identity::workload_identity_from_env("FLUIDBG_COSMOS"),
+                )
+            } else if let Ok(connection_string) = std::env::var("FLUIDBG_COSMOS_CONNECTION_STRING")
+            {
+                CosmosStore::from_connection_string(&connection_string, &database, &container)
+                    .expect("failed to parse cosmos connection string")
+            } else {
+                CosmosStore::new_master_key(
+                    &required_env("FLUIDBG_COSMOS_ENDPOINT"),
+                    &database,
+                    &container,
+                    &required_env("FLUIDBG_COSMOS_ACCOUNT_KEY"),
+                )
+            };
+            store
+                .validate_container()
+                .await
+                .expect("failed to validate cosmos state store container");
+            Arc::new(store)
+        }
         other => panic!("unsupported FLUIDBG_STATE_STORE_TYPE: {other}"),
     }
+}
+
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
 }
