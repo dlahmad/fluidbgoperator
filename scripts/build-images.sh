@@ -60,7 +60,7 @@ build_image() {
     fi
 }
 
-for binary in fluidbg-operator fluidbg-http fluidbg-rabbitmq; do
+for binary in fluidbg-operator fluidbg-http fluidbg-rabbitmq fluidbg-azure-servicebus; do
     if [ ! -x "$ROOT_DIR/dist/$binary" ]; then
         echo "missing dist/$binary; run ./scripts/build-linux-binaries.sh first" >&2
         exit 1
@@ -70,3 +70,4 @@ done
 build_image fbg-operator "$ROOT_DIR/Dockerfile"
 build_image fbg-plugin-http "$ROOT_DIR/plugins/http/Dockerfile"
 build_image fbg-plugin-rabbitmq "$ROOT_DIR/plugins/rabbitmq/Dockerfile"
+build_image fbg-plugin-azure-servicebus "$ROOT_DIR/plugins/azure_servicebus/Dockerfile"

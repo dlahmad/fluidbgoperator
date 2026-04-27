@@ -132,5 +132,107 @@ spec:
         - nameFromConfig: writeEnvVar
           valueTemplate: "http://{{`{{pluginServiceName}}`}}:9090"
 {{- end }}
+{{- if $root.Values.builtinPlugins.azureServiceBus.enabled }}
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: azure-servicebus
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "fluidbg.labels" $root | nindent 4 }}
+spec:
+  description: "Azure Service Bus transport plugin"
+  image: "{{ $root.Values.builtinPlugins.azureServiceBus.image.repository }}:{{ $root.Values.builtinPlugins.azureServiceBus.image.tag | default $root.Chart.AppVersion }}"
+  supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+    trafficShiftPath: /traffic
+  features:
+    supportsProgressiveShifting: true
+  fieldNamespaces: [queue, servicebus]
+  configSchema:
+    type: object
+    properties:
+      connectionString: { type: string }
+      fullyQualifiedNamespace: { type: string }
+      drainStabilitySeconds: { type: integer }
+      auth:
+        type: object
+        properties:
+          mode:
+            type: string
+            enum: [connectionString, workloadIdentity]
+          tenantId: { type: string }
+          clientId: { type: string }
+          federatedTokenFile: { type: string }
+          authorityHost: { type: string }
+          sasTokenTtlSeconds: { type: integer }
+      management:
+        type: object
+        properties:
+          subscriptionId: { type: string }
+          resourceGroup: { type: string }
+          namespaceName: { type: string }
+          createQueues: { type: boolean }
+          deleteQueues: { type: boolean }
+      duplicator:
+        type: object
+        properties:
+          inputQueue: { type: string }
+          greenInputQueue: { type: string }
+          blueInputQueue: { type: string }
+          greenInputQueueEnvVar: { type: string }
+          blueInputQueueEnvVar: { type: string }
+      splitter:
+        type: object
+        properties:
+          inputQueue: { type: string }
+          greenInputQueue: { type: string }
+          blueInputQueue: { type: string }
+          greenInputQueueEnvVar: { type: string }
+          blueInputQueueEnvVar: { type: string }
+      combiner:
+        type: object
+        properties:
+          outputQueue: { type: string }
+          greenOutputQueue: { type: string }
+          blueOutputQueue: { type: string }
+          greenOutputQueueEnvVar: { type: string }
+          blueOutputQueueEnvVar: { type: string }
+      writer:
+        type: object
+        properties:
+          targetQueue: { type: string }
+      consumer:
+        type: object
+        properties:
+          inputQueue: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  container:
+    {{- if $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.enabled }}
+    podLabels:
+      azure.workload.identity/use: "true"
+    {{- with $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.podAnnotations }}
+    podAnnotations:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.serviceAccountName }}
+    serviceAccountName: {{ . | quote }}
+    {{- end }}
+    {{- end }}
+    ports:
+      - name: health
+        containerPort: 9090
+{{- end }}
 {{- end }}
 {{- end }}

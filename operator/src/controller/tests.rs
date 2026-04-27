@@ -55,6 +55,7 @@ fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> Inc
             container: PluginContainer {
                 ports: Vec::new(),
                 volume_mounts: Vec::new(),
+                ..Default::default()
             },
             lifecycle: None,
             injects: None,

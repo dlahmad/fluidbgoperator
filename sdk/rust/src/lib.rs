@@ -8,6 +8,11 @@ mod routing;
 mod runtime;
 mod version;
 
+pub use auth::{
+    AUTHORIZATION_HEADER, PLUGIN_AUTH_AUDIENCE, PLUGIN_AUTH_ISSUER, PLUGIN_AUTH_TOKEN_ENV,
+    PluginAuthClaims, auth_token_from_env, bearer_matches, bearer_token, bearer_value,
+    sign_plugin_auth_token, verify_plugin_auth_token,
+};
 pub use config::{active_roles, has_role, load_yaml_config, traffic_percent_from_env};
 pub use fields::{condition_matches, extract_json_path, match_conditions};
 pub use http::{extract_http_test_id, resolve_http_field};
@@ -17,7 +22,7 @@ pub use models::{
     PluginLifecycleResponse, PluginRole, PropertyAssignment, RegisterTestCaseRequest,
     TestIdSelector, TrafficRoute, TrafficShiftRequest, TrafficShiftResponse,
 };
-pub use notify::{notify_observer, register_test_case, render_path};
+pub use notify::{RegisterTestCaseArgs, notify_observer, register_test_case, render_path};
 pub use routing::routes_to_blue;
 pub use runtime::PluginRuntime;
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};
@@ -82,8 +87,3 @@ mod tests {
         assert_eq!(manifest["sdk"]["version"], SDK_VERSION);
     }
 }
-pub use auth::{
-    AUTHORIZATION_HEADER, PLUGIN_AUTH_AUDIENCE, PLUGIN_AUTH_ISSUER, PLUGIN_AUTH_TOKEN_ENV,
-    PluginAuthClaims, auth_token_from_env, bearer_matches, bearer_token, bearer_value,
-    sign_plugin_auth_token, verify_plugin_auth_token,
-};

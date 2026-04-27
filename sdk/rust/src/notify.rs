@@ -5,6 +5,16 @@ use serde_json::Value;
 use crate::auth::{AUTHORIZATION_HEADER, bearer_value};
 use crate::models::{ObservationNotification, RegisterTestCaseRequest, TrafficRoute};
 
+pub struct RegisterTestCaseArgs<'a> {
+    pub testcase_registration_url: &'a str,
+    pub blue_green_ref: &'a str,
+    pub inception_point: &'a str,
+    pub test_id: &'a str,
+    pub test_container_url: &'a str,
+    pub testcase_verify_path_template: Option<&'a str>,
+    pub auth_token: Option<&'a str>,
+}
+
 pub fn render_path(template: &str, test_id: &str, inception_point: &str) -> String {
     template
         .replace("{testId}", test_id)
@@ -42,31 +52,25 @@ pub async fn notify_observer(
 
 pub async fn register_test_case(
     client: &reqwest::Client,
-    testcase_registration_url: &str,
-    blue_green_ref: &str,
-    inception_point: &str,
-    test_id: &str,
-    test_container_url: &str,
-    testcase_verify_path_template: Option<&str>,
-    auth_token: Option<&str>,
+    args: RegisterTestCaseArgs<'_>,
 ) -> Result<()> {
-    let verify_url = testcase_verify_path_template.map(|path| {
+    let verify_url = args.testcase_verify_path_template.map(|path| {
         format!(
             "{}{}",
-            test_container_url.trim_end_matches('/'),
-            render_path(path, test_id, inception_point)
+            args.test_container_url.trim_end_matches('/'),
+            render_path(path, args.test_id, args.inception_point)
         )
     });
     let request = RegisterTestCaseRequest {
-        test_id: test_id.to_string(),
-        blue_green_ref: blue_green_ref.to_string(),
-        inception_point: inception_point.to_string(),
+        test_id: args.test_id.to_string(),
+        blue_green_ref: args.blue_green_ref.to_string(),
+        inception_point: args.inception_point.to_string(),
         triggered_at: Some(Utc::now()),
         timeout_seconds: Some(120),
         verify_url,
     };
-    let mut builder = client.post(testcase_registration_url).json(&request);
-    if let Some(auth_token) = auth_token {
+    let mut builder = client.post(args.testcase_registration_url).json(&request);
+    if let Some(auth_token) = args.auth_token {
         builder = builder.header(AUTHORIZATION_HEADER, bearer_value(auth_token));
     }
     builder.send().await?.error_for_status()?;

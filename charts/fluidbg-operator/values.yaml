@@ -66,3 +66,12 @@ builtinPlugins:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
+  azureServiceBus:
+    enabled: true
+    workloadIdentity:
+      enabled: false
+      serviceAccountName: ""
+      podAnnotations: {}
+    image:
+      repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
+      tag: 0.1.0

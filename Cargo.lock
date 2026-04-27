@@ -1047,6 +1047,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluidbg-azure-servicebus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "fluidbg-plugin-sdk",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fluidbg-http"
 version = "0.1.0"
 dependencies = [

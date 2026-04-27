@@ -37,6 +37,35 @@
         "namespaces": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
+        },
+        "http": { "$ref": "#/$defs/builtinPlugin" },
+        "rabbitmq": { "$ref": "#/$defs/builtinPlugin" },
+        "azureServiceBus": { "$ref": "#/$defs/builtinPlugin" }
+      }
+    }
+  },
+  "$defs": {
+    "builtinPlugin": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "workloadIdentity": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "serviceAccountName": { "type": "string" },
+            "podAnnotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" }
+          }
         }
       }
     }

@@ -62,7 +62,7 @@ An `InceptionPlugin` declares:
 - `fieldNamespaces`
 - `features`
 
-For the built-in RabbitMQ plugin the important roles are:
+For the built-in RabbitMQ and Azure Service Bus plugins the important roles are:
 
 - `duplicator`
 - `splitter`
@@ -327,12 +327,12 @@ Notification shape:
 |---|---|
 | `blue` | The resource was routed only to the candidate blue path. |
 | `green` | The resource was routed only to the current green path. |
-| `both` | The resource was duplicated to both green and blue. This is the RabbitMQ `duplicator` behavior. |
+| `both` | The resource was duplicated to both green and blue. This is the queue `duplicator` behavior. |
 | `unknown` | The plugin cannot determine the route for this observation. |
 
-For RabbitMQ, input routes come from the duplicator/splitter decision. Output routes come from the combiner source queue: `blueOutputQueue` maps to `blue`, and `greenOutputQueue` maps to `green`.
+For RabbitMQ and Azure Service Bus, input routes come from the duplicator/splitter decision. Output routes come from the combiner source queue: `blueOutputQueue` maps to `blue`, and `greenOutputQueue` maps to `green`.
 
-RabbitMQ operator registration semantics:
+Queue plugin operator registration semantics:
 
 - `blue`, `both`, and `unknown` observations register an operator `testCase`.
 - `green` observations still call `observer.notifyPath`, but do not register an operator `testCase`; this prevents progressive splitter traffic sent only to green from becoming pending blue verification cases.
@@ -524,6 +524,91 @@ operator drain phase:
 - For rollback, blue-only temporary messages are either consumed by blue during the drain window or left/moved so the base queue can continue safely after cleanup.
 - For promotion, surviving traffic is moved back to the base wiring before cleanup removes temporary resources.
 - If drain exceeds the configured wait, the operator records `TimedOutMaybeSuccessful` and proceeds; this is explicit risk accounting rather than silent success.
+
+## Current Built-In Azure Service Bus Plugin Behavior
+
+The Azure Service Bus plugin is named `azure-servicebus` in the built-in
+`InceptionPlugin` registration and ships as
+`ghcr.io/dlahmad/fbg-plugin-azure-servicebus`. It supports the same queue roles
+as RabbitMQ where Service Bus semantics map cleanly: `duplicator`, `splitter`,
+`combiner`, `observer`, `writer`, and `consumer`.
+
+```mermaid
+flowchart TD
+    SRC["Base Service Bus queue"]
+    ASB["fbg-plugin-azure-servicebus"]
+    GREENQ["green input queue"]
+    BLUEQ["blue input queue"]
+    GREEN["green app"]
+    BLUE["blue app"]
+    GOUT["green output queue"]
+    BOUT["blue output queue"]
+    OUT["base output queue"]
+    TEST["test container"]
+    OP["operator"]
+
+    SRC -->|"peek-lock"| ASB
+    ASB -->|"duplicate or split"| GREENQ
+    ASB -->|"duplicate or split"| BLUEQ
+    GREENQ --> GREEN --> GOUT
+    BLUEQ --> BLUE --> BOUT
+    GOUT --> ASB
+    BOUT --> ASB
+    ASB --> OUT
+    ASB -->|"complete after publish"| SRC
+    ASB -->|"register and notify"| OP
+    ASB --> TEST
+```
+
+### Authentication to Azure
+
+The plugin supports two Azure authentication modes:
+
+| Mode | Config | Use |
+|---|---|---|
+| `connectionString` | `connectionString` with `Endpoint`, `SharedAccessKeyName`, and `SharedAccessKey` | Uses Service Bus SAS tokens for runtime send, receive, complete, unlock, and data-plane queue management. |
+| `workloadIdentity` | `fullyQualifiedNamespace` plus AKS workload identity env vars or explicit `auth.tenantId`, `auth.clientId`, `auth.federatedTokenFile` | Exchanges the projected Kubernetes service account token for Microsoft Entra tokens and uses Bearer auth for Service Bus runtime access. |
+
+For AKS workload identity, the plugin expects the standard projected values
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE` unless
+they are set explicitly in plugin config. The plugin requests Service Bus data
+plane tokens for `https://servicebus.azure.net/.default`. If
+`management.subscriptionId` and `management.resourceGroup` are also set, queue
+create/delete/status calls use Azure Resource Manager with
+`https://management.azure.com/.default`.
+
+The Kubernetes service account used by the plugin pod must be configured for
+Azure Workload Identity by the cluster owner, including the
+`azure.workload.identity/use: "true"` pod label or equivalent chart overlay, and
+the managed identity must have Service Bus data-plane permissions. Automatic
+queue create/delete additionally requires permission to manage
+`Microsoft.ServiceBus/namespaces/queues/*` in the target namespace resource.
+
+`InceptionPlugin.spec.container` supports pod-level metadata needed for this:
+`podLabels`, `podAnnotations`, and `serviceAccountName`. The Helm chart exposes
+these for the built-in Azure Service Bus plugin under
+`builtinPlugins.azureServiceBus.workloadIdentity`.
+
+### Service Bus Semantics
+
+- The plugin uses Service Bus REST runtime APIs directly to keep the image small.
+- Reads use peek-lock, not receive-and-delete.
+- The source message is completed only after the downstream send and optional observer notification have succeeded.
+- On processing failure, the plugin unlocks the message so Service Bus can redeliver it.
+- The writer role publishes JSON payloads to `writer.targetQueue` and maps `properties` to Service Bus custom message headers.
+- Filters and test-id selectors support both `queue.*` and `servicebus.*` field namespaces. Applications do not need to add FluidBG route fields to message bodies.
+
+### Promotion and Rollback Safety
+
+Azure Service Bus does not expose RabbitMQ-style active consumer counts through
+the portable REST path used by this plugin. The plugin therefore uses the
+following safety model:
+
+- During drain, duplicator and splitter roles stop taking new base-queue work and move available messages from temporary green/blue queues back to the base queue.
+- Combiner roles stop forwarding temporary output work during drain and rely on queue counts before cleanup.
+- Drain status reports success only after temporary queues are empty for a configurable stability window, `drainStabilitySeconds` defaulting to `65`.
+- The stability window covers normal one-minute Service Bus locks so messages locked by old consumers can either complete or become visible again before cleanup.
+- If the configured operator drain timeout is shorter than this window, the operator may still time out and record explicit risk through `TimedOutMaybeSuccessful`.
 
 ## Current Built-In HTTP Plugin Behavior
 

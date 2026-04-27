@@ -25,7 +25,7 @@ are promoted.
 ## What Ships
 
 - A Rust Kubernetes operator.
-- Built-in RabbitMQ and HTTP inception plugins.
+- Built-in RabbitMQ, Azure Service Bus, and HTTP inception plugins.
 - Versioned CRDs under `fluidbg.io/v1alpha1`.
 - A versioned plugin API under `fluidbg.plugin/v1alpha1`.
 - A Rust plugin SDK plus OpenAPI specs for generated SDKs in other languages.

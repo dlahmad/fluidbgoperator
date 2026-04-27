@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::auth::auth_token_from_env;
 use crate::config::{active_roles, has_role};
 use crate::models::{PluginRole, TrafficRoute};
-use crate::notify::{notify_observer, register_test_case};
+use crate::notify::{RegisterTestCaseArgs, notify_observer, register_test_case};
 
 #[derive(Clone)]
 pub struct PluginRuntime {
@@ -85,13 +85,15 @@ impl PluginRuntime {
     pub async fn register_test_case(&self, test_id: &str) -> Result<()> {
         register_test_case(
             &self.client,
-            &self.testcase_registration_url,
-            &self.blue_green_ref,
-            &self.inception_point,
-            test_id,
-            &self.test_container_url,
-            self.testcase_verify_path_template.as_deref(),
-            self.auth_token.as_deref(),
+            RegisterTestCaseArgs {
+                testcase_registration_url: &self.testcase_registration_url,
+                blue_green_ref: &self.blue_green_ref,
+                inception_point: &self.inception_point,
+                test_id,
+                test_container_url: &self.test_container_url,
+                testcase_verify_path_template: self.testcase_verify_path_template.as_deref(),
+                auth_token: self.auth_token.as_deref(),
+            },
         )
         .await
     }

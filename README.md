@@ -16,8 +16,9 @@ The repository is structured as a production-ready Rust workspace:
 
 ```text
 operator/              Rust operator crate and CRD generator
-plugins/http/          Built-in HTTP observe/mock/write plugin
-plugins/rabbitmq/      Built-in RabbitMQ multi-role plugin
+plugins/http/             Built-in HTTP observe/mock/write plugin
+plugins/rabbitmq/         Built-in RabbitMQ multi-role plugin
+plugins/azure_servicebus/ Built-in Azure Service Bus multi-role plugin
 sdk/                   Versioned plugin SDK models and language-neutral OpenAPI spec
 charts/                Helm chart for CRDs, operator, and built-in plugin CRs
 docs/                  GitHub Pages/Jekyll documentation source
@@ -89,6 +90,7 @@ Published release image names are:
 - `ghcr.io/dlahmad/fbg-operator`
 - `ghcr.io/dlahmad/fbg-plugin-http`
 - `ghcr.io/dlahmad/fbg-plugin-rabbitmq`
+- `ghcr.io/dlahmad/fbg-plugin-azure-servicebus`
 
 Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base.
 

@@ -28,6 +28,14 @@ spec:
                 type: string
               container:
                 properties:
+                  podAnnotations:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  podLabels:
+                    additionalProperties:
+                      type: string
+                    type: object
                   ports:
                     items:
                       properties:
@@ -41,6 +49,9 @@ spec:
                       - name
                       type: object
                     type: array
+                  serviceAccountName:
+                    nullable: true
+                    type: string
                   volumeMounts:
                     items:
                       properties:

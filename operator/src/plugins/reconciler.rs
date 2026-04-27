@@ -298,6 +298,13 @@ pub fn reconcile_inception_point(
                     context.blue_green_ref.to_string(),
                 ),
             ]);
+            let mut pod_labels = labels.clone();
+            pod_labels.extend(plugin.spec.container.pod_labels.clone());
+            let pod_annotations = if plugin.spec.container.pod_annotations.is_empty() {
+                None
+            } else {
+                Some(plugin.spec.container.pod_annotations.clone())
+            };
 
             let pod_spec = PodSpec {
                 containers: vec![{
@@ -307,6 +314,7 @@ pub fn reconcile_inception_point(
                 }],
                 volumes: Some(volumes),
                 termination_grace_period_seconds: Some(1),
+                service_account_name: plugin.spec.container.service_account_name.clone(),
                 ..Default::default()
             };
 
@@ -324,7 +332,8 @@ pub fn reconcile_inception_point(
                     },
                     template: PodTemplateSpec {
                         metadata: Some(ObjectMeta {
-                            labels: Some(labels.clone()),
+                            labels: Some(pod_labels),
+                            annotations: pod_annotations,
                             ..Default::default()
                         }),
                         spec: Some(pod_spec),
@@ -570,6 +579,7 @@ mod tests {
                         mount_path: "/etc/fluidbg".to_string(),
                         read_only: Some(true),
                     }],
+                    ..Default::default()
                 },
                 lifecycle: None,
                 injects: Some(Injects {
@@ -642,6 +652,7 @@ mod tests {
                         container_port: 9090,
                     }],
                     volume_mounts: vec![],
+                    ..Default::default()
                 },
                 lifecycle: None,
                 injects: None,
@@ -679,6 +690,7 @@ mod tests {
                         mount_path: "/etc/fluidbg".to_string(),
                         read_only: Some(true),
                     }],
+                    ..Default::default()
                 },
                 lifecycle: None,
                 injects: None,
@@ -956,6 +968,74 @@ mod tests {
     }
 
     #[test]
+    fn standalone_plugin_can_request_pod_identity_metadata() {
+        let mut plugin = make_fake_plugin();
+        plugin.spec.container.pod_labels.insert(
+            "azure.workload.identity/use".to_string(),
+            "true".to_string(),
+        );
+        plugin
+            .spec
+            .container
+            .pod_annotations
+            .insert("example.com/token".to_string(), "enabled".to_string());
+        plugin.spec.container.service_account_name = Some("fluidbg-azure".to_string());
+        let ip = make_inception_point(
+            "custom-point",
+            vec![PluginRole::Observer],
+            serde_json::json!({"target": "custom-queue"}),
+        );
+
+        let resources = reconcile_inception_point(
+            &plugin,
+            &ip,
+            ReconcileInceptionContext {
+                namespace: "test-ns",
+                operator_url: "http://operator:8090",
+                test_container_url: "http://tc:8080",
+                test_data_verify_path: Some("/result/{testId}"),
+                blue_deployment_name: "blue",
+                blue_green_ref: "order-processor-bg",
+                auth_token: "signed-token",
+            },
+        )
+        .unwrap();
+
+        let template = &resources.deployments[0].spec.as_ref().unwrap().template;
+        assert_eq!(
+            template
+                .metadata
+                .as_ref()
+                .unwrap()
+                .labels
+                .as_ref()
+                .unwrap()
+                .get("azure.workload.identity/use"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            template
+                .metadata
+                .as_ref()
+                .unwrap()
+                .annotations
+                .as_ref()
+                .unwrap()
+                .get("example.com/token"),
+            Some(&"enabled".to_string())
+        );
+        assert_eq!(
+            template
+                .spec
+                .as_ref()
+                .unwrap()
+                .service_account_name
+                .as_deref(),
+            Some("fluidbg-azure")
+        );
+    }
+
+    #[test]
     fn unsupported_role_rejected() {
         let plugin = make_http_plugin();
         let ip = make_inception_point(
@@ -1005,6 +1085,7 @@ mod tests {
                 container: crate::crd::inception_plugin::PluginContainer {
                     ports: vec![],
                     volume_mounts: vec![],
+                    ..Default::default()
                 },
                 lifecycle: None,
                 injects: None,

@@ -31,7 +31,7 @@ flowchart LR
     API["operator HTTP API<br/>testcases, verdicts, counts"]
     STORE["state store<br/>memory or postgres"]
     SDK["plugin SDK<br/>v1alpha1 HTTP models"]
-    PLUG["plugin pods<br/>HTTP and RabbitMQ"]
+    PLUG["plugin pods<br/>HTTP, RabbitMQ,<br/>Azure Service Bus"]
     TEST["verifier pods"]
     APP["green and blue app deployments"]
 

@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMES: fbg-operator fbg-plugin-http fbg-plugin-rabbitmq
+  IMAGE_NAMES: fbg-operator fbg-plugin-http fbg-plugin-rabbitmq fbg-plugin-azure-servicebus
 
 jobs:
   publish-images:

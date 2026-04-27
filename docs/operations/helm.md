@@ -8,7 +8,7 @@ The chart at `charts/fluidbg-operator` installs:
 
 - `fluidbg.io/v1alpha1` CRDs.
 - Operator Deployment, Service, ServiceAccount, ClusterRole, and ClusterRoleBinding.
-- Optional built-in `InceptionPlugin` resources for HTTP and RabbitMQ.
+- Optional built-in `InceptionPlugin` resources for HTTP, RabbitMQ, and Azure Service Bus.
 
 ## Basic Install
 
@@ -38,6 +38,27 @@ builtinPlugins:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
+  azureServiceBus:
+    workloadIdentity:
+      enabled: false
+      serviceAccountName: ""
+    image:
+      repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
+      tag: 0.1.0
+```
+
+For Azure Service Bus workload identity, create a Kubernetes ServiceAccount in
+each application namespace and annotate it for Microsoft Entra Workload ID. Then
+enable the pod label and ServiceAccount reference in the built-in plugin CR:
+
+```yaml
+builtinPlugins:
+  azureServiceBus:
+    workloadIdentity:
+      enabled: true
+      serviceAccountName: fluidbg-azure-servicebus
+      podAnnotations:
+        azure.workload.identity/service-account-token-expiration: "3600"
 ```
 
 ## Plugin Namespaces

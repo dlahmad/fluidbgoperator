@@ -4,6 +4,7 @@ members = [
     "operator",
     "plugins/http",
     "plugins/rabbitmq",
+    "plugins/azure_servicebus",
 ]
 resolver = "3"
 
