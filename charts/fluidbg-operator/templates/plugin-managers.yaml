@@ -1,0 +1,211 @@
+{{- if and .Values.builtinPlugins.install .Values.builtinPlugins.rabbitmq.enabled .Values.builtinPlugins.rabbitmq.manager.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluidbg-rabbitmq-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rabbitmq-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluidbg-rabbitmq-manager
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluidbg-rabbitmq-manager
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: rabbitmq-manager
+        {{- with .Values.builtinPlugins.rabbitmq.manager.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- toYaml .Values.builtinPlugins.rabbitmq.manager.podAnnotations | nindent 8 }}
+    spec:
+      {{- with .Values.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.builtinPlugins.rabbitmq.image.repository }}:{{ .Values.builtinPlugins.rabbitmq.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 9090
+          env:
+            - name: FLUIDBG_PLUGIN_MANAGER
+              value: "true"
+            - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.operator.auth.signingSecretName | quote }}
+                  key: {{ .Values.operator.auth.signingSecretKey | quote }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_AMQP_URL
+              {{- if .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName | quote }}
+                  key: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretKey | quote }}
+              {{- else }}
+              value: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrl | quote }}
+              {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {{- toYaml .Values.builtinPlugins.rabbitmq.manager.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluidbg-rabbitmq-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rabbitmq-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fluidbg-rabbitmq-manager
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}
+{{- if and .Values.builtinPlugins.install .Values.builtinPlugins.azureServiceBus.enabled .Values.builtinPlugins.azureServiceBus.manager.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluidbg-azure-servicebus-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-servicebus-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluidbg-azure-servicebus-manager
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluidbg-azure-servicebus-manager
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: azure-servicebus-manager
+        {{- if .Values.builtinPlugins.azureServiceBus.manager.workloadIdentity.enabled }}
+        azure.workload.identity/use: "true"
+        {{- end }}
+        {{- with .Values.builtinPlugins.azureServiceBus.manager.workloadIdentity.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.builtinPlugins.azureServiceBus.manager.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.builtinPlugins.azureServiceBus.manager.workloadIdentity.podAnnotations .Values.builtinPlugins.azureServiceBus.manager.podAnnotations }}
+      annotations:
+        {{- with .Values.builtinPlugins.azureServiceBus.manager.workloadIdentity.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.builtinPlugins.azureServiceBus.manager.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.builtinPlugins.azureServiceBus.manager.workloadIdentity.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.builtinPlugins.azureServiceBus.image.repository }}:{{ .Values.builtinPlugins.azureServiceBus.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 9090
+          env:
+            - name: FLUIDBG_PLUGIN_MANAGER
+              value: "true"
+            - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.operator.auth.signingSecretName | quote }}
+                  key: {{ .Values.operator.auth.signingSecretKey | quote }}
+            {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
+            - name: FLUIDBG_MANAGER_CONFIG_PATH
+              value: /etc/fluidbg-manager/config.yaml
+            {{- end }}
+            {{- if .Values.builtinPlugins.azureServiceBus.manager.connectionStringSecretName }}
+            - name: AZURE_SERVICEBUS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.builtinPlugins.azureServiceBus.manager.connectionStringSecretName | quote }}
+                  key: {{ .Values.builtinPlugins.azureServiceBus.manager.connectionStringSecretKey | quote }}
+            {{- end }}
+            {{- with .Values.builtinPlugins.azureServiceBus.manager.fullyQualifiedNamespace }}
+            - name: AZURE_SERVICEBUS_NAMESPACE
+              value: {{ . | quote }}
+            {{- end }}
+          {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
+          volumeMounts:
+            - name: manager-config
+              mountPath: /etc/fluidbg-manager
+              readOnly: true
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {{- toYaml .Values.builtinPlugins.azureServiceBus.manager.resources | nindent 12 }}
+      {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
+      volumes:
+        - name: manager-config
+          secret:
+            secretName: {{ .Values.builtinPlugins.azureServiceBus.manager.configSecretName | quote }}
+            items:
+              - key: {{ .Values.builtinPlugins.azureServiceBus.manager.configSecretKey | quote }}
+                path: config.yaml
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluidbg-azure-servicebus-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-servicebus-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fluidbg-azure-servicebus-manager
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}

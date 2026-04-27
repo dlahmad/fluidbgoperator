@@ -3,14 +3,14 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use fluidbg_plugin_sdk::PluginRuntime;
+use fluidbg_plugin_sdk::PluginInceptorRuntime;
 
 use crate::config::Config;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Config,
-    pub(crate) runtime: PluginRuntime,
+    pub(crate) runtime: PluginInceptorRuntime,
     pub(crate) draining: Arc<AtomicBool>,
     pub(crate) active_requests: Arc<AtomicUsize>,
     pub(crate) traffic_percent: Arc<AtomicUsize>,

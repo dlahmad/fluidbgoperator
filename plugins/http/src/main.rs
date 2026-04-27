@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use fluidbg_plugin_sdk::{PluginRuntime, traffic_percent_from_env};
+use fluidbg_plugin_sdk::{PluginInceptorRuntime, traffic_percent_from_env};
 use tracing::info;
 
 mod config;
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         .init();
 
     let config = load_config()?;
-    let runtime = PluginRuntime::from_env();
+    let runtime = PluginInceptorRuntime::from_env();
     let port = config.listen_port();
 
     info!(

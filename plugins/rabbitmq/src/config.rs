@@ -4,10 +4,10 @@ use std::sync::{
 };
 
 use anyhow::{Context, Result};
-use fluidbg_plugin_sdk::{ObserverConfig, PluginRole, PluginRuntime};
+use fluidbg_plugin_sdk::{ObserverConfig, PluginInceptorRuntime, PluginRole};
 use serde::Deserialize;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Config {
     #[serde(default)]
@@ -81,7 +81,7 @@ pub(crate) struct AppState {
     pub(crate) config: Config,
     pub(crate) roles: Vec<PluginRole>,
     pub(crate) amqp_url: String,
-    pub(crate) runtime: PluginRuntime,
+    pub(crate) runtime: PluginInceptorRuntime,
     mode: Arc<AtomicU8>,
     traffic_percent: Arc<AtomicU8>,
 }
@@ -108,7 +108,7 @@ impl AppState {
         config: Config,
         roles: Vec<PluginRole>,
         amqp_url: String,
-        runtime: PluginRuntime,
+        runtime: PluginInceptorRuntime,
     ) -> Self {
         Self {
             config,
@@ -197,4 +197,8 @@ pub(crate) fn blue_traffic_percent() -> u8 {
 
 pub(crate) fn routes_to_blue(payload: &[u8], traffic_percent: u8) -> bool {
     fluidbg_plugin_sdk::routes_to_blue(payload, traffic_percent)
+}
+
+pub(crate) fn inceptor_infra_disabled() -> bool {
+    std::env::var("FLUIDBG_INCEPTOR_INFRA_DISABLED").as_deref() == Ok("true")
 }

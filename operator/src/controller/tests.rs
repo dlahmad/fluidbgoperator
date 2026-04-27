@@ -7,7 +7,7 @@ use crate::crd::blue_green::{
     BlueGreenDeploymentSpec, DeploymentRef, DeploymentSelector, PluginRef, TestSpec,
 };
 use crate::crd::inception_plugin::{
-    InceptionPlugin, InceptionPluginSpec, PluginContainer, PluginFeatures, Topology,
+    InceptionPlugin, InceptionPluginSpec, PluginFeatures, PluginInceptor, Topology,
 };
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -52,12 +52,13 @@ fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> Inc
             field_namespaces: Vec::new(),
             config_schema: serde_json::json!({}),
             config_template: None,
-            container: PluginContainer {
+            inceptor: PluginInceptor {
                 ports: Vec::new(),
                 volume_mounts: Vec::new(),
                 ..Default::default()
             },
             lifecycle: None,
+            manager: None,
             injects: None,
             features: Some(PluginFeatures {
                 supports_progressive_shifting,

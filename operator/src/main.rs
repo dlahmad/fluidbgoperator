@@ -22,7 +22,10 @@ async fn main() {
 
     let namespace =
         std::env::var("FLUIDBG_NAMESPACE").unwrap_or_else(|_| "fluidbg-system".to_string());
+    let signing_secret_namespace = std::env::var("FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE")
+        .unwrap_or_else(|_| "fluidbg-system".to_string());
     let auth = AuthConfig {
+        signing_secret_namespace,
         signing_secret_name: std::env::var("FLUIDBG_AUTH_SIGNING_SECRET_NAME")
             .unwrap_or_else(|_| "fluidbg-operator-auth".to_string()),
         signing_secret_key: std::env::var("FLUIDBG_AUTH_SIGNING_SECRET_KEY")

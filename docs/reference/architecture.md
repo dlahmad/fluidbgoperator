@@ -12,7 +12,8 @@ verifier containers decide whether observed test cases passed, and the operator
 promotes or rolls back from configured success criteria.
 
 The operator is intentionally transport-agnostic. Transport behavior lives in
-`InceptionPlugin` resources and their plugin containers. A
+`InceptionPlugin` resources, optional privileged plugin managers, and
+per-inception plugin inceptors. A
 `BlueGreenDeployment` selects plugins through named `inceptionPoints`, activates
 one or more roles, and provides plugin-specific config. The operator renders the
 declared Kubernetes resources, calls lifecycle endpoints, tracks test cases, and
@@ -25,13 +26,14 @@ flowchart LR
     CRD["fluidbg.io CRDs<br/>BlueGreenDeployment<br/>InceptionPlugin<br/>StateStore"]
     CTRL["controller<br/>phase machine"]
     VAL["validation<br/>roles, schemas, namespaces"]
-    PLUGREC["plugin reconciler<br/>ConfigMap, Deployment, Service"]
-    LIFE["plugin lifecycle client<br/>prepare, traffic, drain, cleanup"]
+    PLUGREC["inceptor reconciler<br/>ConfigMap, Deployment, Service"]
+    LIFE["manager/inceptor lifecycle client<br/>prepare, traffic, drain, cleanup"]
     AUTH["operator auth Secret<br/>JWT signing key"]
     API["operator HTTP API<br/>testcases, verdicts, counts"]
     STORE["state store<br/>memory or postgres"]
     SDK["plugin SDK<br/>v1alpha1 HTTP models"]
-    PLUG["plugin pods<br/>HTTP, RabbitMQ,<br/>Azure Service Bus"]
+    MGR["plugin managers<br/>operator namespace"]
+    PLUG["plugin inceptors<br/>HTTP, RabbitMQ,<br/>Azure Service Bus"]
     TEST["verifier pods"]
     APP["green and blue app deployments"]
 
@@ -42,9 +44,11 @@ flowchart LR
     CTRL --> AUTH
     CTRL --> API
     API --> STORE
+    CTRL -->|"manager prepare/cleanup"| MGR
     PLUGREC --> PLUG
     PLUGREC --> APP
     PLUGREC --> TEST
+    LIFE -->|"Bearer per-inception JWT"| MGR
     LIFE -->|"Bearer per-inception JWT"| PLUG
     SDK --> PLUG
     PLUG -->|"Bearer per-inception JWT"| API
@@ -84,7 +88,9 @@ flowchart TD
 |---|---|
 | `BlueGreenDeployment` | Names the green deployment, candidate blue template, inception points, verifier containers, and promotion strategy. |
 | `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
-| `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
+| `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
+| Plugin manager | Long-running privileged control-plane component in the operator namespace. It creates and deletes derived infrastructure after verifying the per-inception JWT. |
+| Plugin inceptor | Per-inception traffic component in the application namespace. It moves, observes, writes, mocks, or combines traffic but should not hold infrastructure-admin credentials when a manager is configured. |
 | Plugin role | The behavior activated for an inception point: `duplicator`, `splitter`, `combiner`, `observer`, `mock`, `writer`, or `consumer`. |
 | Verifier test container | User-owned HTTP service that stores domain observations and returns `passed: true`, `passed: false`, or `passed: null` for a `testId`. |
 | State store | Operator persistence for registered test cases and counts. Implemented backends are `memory` and `postgres`. |
@@ -94,15 +100,19 @@ flowchart TD
 ## Authentication Boundary
 
 FluidBG uses one user-selected signing Secret per operator instance and one
-signed JWT per inception point. The operator signs the token from the configured
-Secret and injects it into the plugin as `FLUIDBG_PLUGIN_AUTH_TOKEN`.
+signed JWT per inception point. The signing Secret must live in the operator
+namespace. The operator signs the token from the configured Secret and injects
+only the token into the inceptor as `FLUIDBG_PLUGIN_AUTH_TOKEN`.
 
 The token is the shared credential for that inception point:
 
-- Operator to plugin lifecycle, drain, cleanup, and traffic-shift calls use
+- Operator to manager and inceptor lifecycle, drain, cleanup, and traffic-shift calls use
   `Authorization: Bearer <token>`.
-- Built-in plugins require the bearer token to exactly match their injected
-  `FLUIDBG_PLUGIN_AUTH_TOKEN` on operator-owned endpoints.
+- Built-in inceptors require the bearer token to exactly match their injected
+  `FLUIDBG_PLUGIN_AUTH_TOKEN` on operator-owned endpoints. They do not receive
+  the signing key and do not verify JWT signatures locally.
+- Built-in managers receive the signing key from the operator namespace and
+  verify JWT signatures before creating or deleting privileged infrastructure.
 - Plugin to operator `/testcases` calls use the same bearer token.
 - The operator verifies the JWT signature and trusts the token claims, not the
   message payload, for caller identity. Registration is rejected if the request
@@ -146,7 +156,7 @@ spec:
   fieldNamespaces: [http]
   configSchema:
     type: object
-  container:
+  inceptor:
     ports:
       - name: http
         containerPort: 9090
@@ -160,6 +170,8 @@ Important fields:
 | `topology` | `standalone`, `sidecar-blue`, or `sidecar-test`. Built-in plugins currently run as `standalone`. |
 | `fieldNamespaces` | Filter/selector namespaces supported by the plugin, for example `http` or `queue`. |
 | `configSchema` | JSON Schema used by the operator to validate the inception point config. |
+| `inceptor` | Pod ports, volume mounts, labels, annotations, and service account for the per-inception traffic component. |
+| `manager` | Optional Service endpoint for the privileged manager in the operator namespace. |
 | `lifecycle` | HTTP endpoints called by the operator for prepare, drain, cleanup, and traffic shifting. |
 | `injects` | Env vars the operator patches into green, blue, or test containers from plugin config/template values. |
 | `features.supportsProgressiveShifting` | Required for progressive strategies that use standalone splitter plugins. |
@@ -239,16 +251,16 @@ For one `BlueGreenDeployment`, reconciliation does the following:
 1. Validate tests, promotion settings, plugin references, supported roles,
    supported field namespaces, plugin config schemas, and progressive capability.
 2. Render verifier test deployments/services.
-3. Render plugin ConfigMaps, Deployments, and Services from `InceptionPlugin`.
-4. Inject runtime env vars into plugin containers.
-5. Call plugin `preparePath` and patch returned assignments into green, blue,
+3. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
+4. Inject inceptor env vars into plugin inceptor containers.
+5. Call manager and inceptor `preparePath` endpoints and patch returned assignments into green, blue,
    and test deployments.
 6. Register and poll test cases through the operator HTTP API and verifier
    `verifyPath`.
-7. Apply progressive traffic updates by calling plugin `trafficShiftPath`.
-8. On promotion or rollback, enter draining, call plugin `drainPath`, poll
-   `drainStatusPath`, then call `cleanupPath`.
-9. Remove temporary test/plugin resources and restore direct assignment values
+7. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
+8. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
+   `drainStatusPath`, then call inceptor and manager `cleanupPath`.
+9. Remove temporary test/inceptor resources and restore direct assignment values
    where plugins declared restore templates.
 
 The operator also prevents two rollouts of the same `BlueGreenDeployment` from
@@ -256,9 +268,9 @@ colliding while the previous rollout's temporary inception resources still
 exist. Different `BlueGreenDeployment` names can run concurrently because
 generated resource names include the BGD name and inception point.
 
-## Plugin Runtime Contract
+## Plugin Inceptor Contract
 
-Standalone plugin containers receive these operator-managed env vars:
+Standalone inceptor containers receive these operator-managed env vars:
 
 | Env Var | Meaning |
 |---|---|
@@ -270,6 +282,8 @@ Standalone plugin containers receive these operator-managed env vars:
 | `FLUIDBG_BLUE_GREEN_REF` | Owning `BlueGreenDeployment` name. |
 | `FLUIDBG_ACTIVE_ROLES` | Comma-separated roles activated for this plugin instance. |
 | `FLUIDBG_CONFIG_PATH` | Mounted plugin config file path, currently `/etc/fluidbg/config.yaml`. |
+| `FLUIDBG_PLUGIN_AUTH_TOKEN` | Per-inception JWT used for operator, manager, and inceptor calls. |
+| `FLUIDBG_INCEPTOR_INFRA_DISABLED` | `true` when a manager owns privileged resource setup and cleanup. |
 
 Plugins should import shared Rust types from `sdk/rust` or generate clients from
 `sdk/spec/plugin-api-v1alpha1.openapi.yaml`. The SDK defines lifecycle payloads,

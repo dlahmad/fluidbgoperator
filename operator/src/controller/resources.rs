@@ -21,8 +21,8 @@ use crate::plugins::reconciler::{
 };
 
 use super::{
-    ReconcileError, apply_family_labels_to_deployment, candidate_ref, deployment_namespace_spec,
-    set_green_label,
+    AuthConfig, ReconcileError, apply_family_labels_to_deployment, candidate_ref,
+    deployment_namespace_spec, set_green_label,
 };
 
 pub(super) async fn ensure_test_resources(
@@ -282,15 +282,18 @@ pub(super) async fn read_operator_signing_key(
 pub(super) async fn sign_inception_auth_token(
     client: &kube::Client,
     namespace: &str,
-    signing_secret_name: &str,
-    signing_secret_key: &str,
+    auth: &AuthConfig,
     blue_green_ref: &str,
     inception_point: &str,
     plugin: &InceptionPlugin,
 ) -> std::result::Result<String, ReconcileError> {
-    let signing_key =
-        read_operator_signing_key(client, namespace, signing_secret_name, signing_secret_key)
-            .await?;
+    let signing_key = read_operator_signing_key(
+        client,
+        &auth.signing_secret_namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+    )
+    .await?;
     let claims = fluidbg_plugin_sdk::PluginAuthClaims::new(
         namespace,
         blue_green_ref,
@@ -304,16 +307,19 @@ pub(super) async fn sign_inception_auth_token(
 pub(super) async fn validate_inception_auth_token(
     client: &kube::Client,
     namespace: &str,
-    signing_secret_name: &str,
-    signing_secret_key: &str,
+    auth: &AuthConfig,
     header_value: Option<&str>,
 ) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, ReconcileError> {
     let Some(token) = header_value.and_then(fluidbg_plugin_sdk::bearer_token) else {
         return Ok(None);
     };
-    let signing_key =
-        read_operator_signing_key(client, namespace, signing_secret_name, signing_secret_key)
-            .await?;
+    let signing_key = read_operator_signing_key(
+        client,
+        &auth.signing_secret_namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+    )
+    .await?;
     match fluidbg_plugin_sdk::verify_plugin_auth_token(token, &signing_key) {
         Ok(claims) if claims.namespace == namespace => Ok(Some(claims)),
         Ok(_) => Ok(None),

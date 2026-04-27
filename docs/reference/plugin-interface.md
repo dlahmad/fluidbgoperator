@@ -4,10 +4,11 @@ title: Plugin Interface
 
 # Plugin Interface
 
-This document describes the runtime contract between:
+This document describes the plugin contract between:
 
 - the operator
-- standalone or sidecar plugins
+- plugin managers
+- standalone or sidecar plugin inceptors
 - the test container
 - the application deployments
 
@@ -19,16 +20,16 @@ The operator does not hardcode transport behavior. A plugin is registered as an 
 
 At runtime the operator is responsible for:
 
-1. creating the plugin deployment or sidecar
-2. calling plugin lifecycle endpoints
+1. creating the per-inception inceptor deployment or sidecar
+2. calling manager and inceptor lifecycle endpoints
 3. patching green, blue, and test deployments with plugin-provided assignments
-4. injecting runtime URLs and identity into the plugin container
-5. cleaning up plugin and test resources after promotion or rollback
+4. injecting runtime URLs and identity into the inceptor container
+5. cleaning up inceptor and test resources after promotion or rollback
 
 The plugin is responsible for:
 
-1. transport-specific setup during `prepare`
-2. transport-specific cleanup during `cleanup`
+1. privileged transport setup/cleanup in the manager when one is configured
+2. traffic movement, observation, and test notification in the inceptor
 3. observing, duplicating, splitting, combining, writing, or consuming traffic according to its active roles
 4. registering `testCase`s with the operator when observation says a test-relevant event happened
 5. notifying the test container when configured to do so
@@ -56,6 +57,8 @@ An `InceptionPlugin` declares:
 
 - `supportedRoles`
 - `topology`
+- `inceptor`
+- optional `manager`
 - `lifecycle.preparePath`
 - `lifecycle.cleanupPath`
 - `configSchema`
@@ -102,13 +105,13 @@ inceptionPoints:
         notifyPath: /observe/{testId}/incoming-orders
 ```
 
-## Runtime Discovery
+## Inceptor Discovery
 
-The plugin does not guess where the operator or test container are. The operator injects those values.
+The inceptor does not guess where the operator or test container are. The operator injects those values.
 
-### Injected Plugin Environment
+### Injected Inceptor Environment
 
-For standalone plugins the operator injects:
+For standalone inceptors the operator injects:
 
 - `FLUIDBG_OPERATOR_URL`
   - example: `http://fluidbg-operator.fluidbg-system:8090`
@@ -128,6 +131,8 @@ For standalone plugins the operator injects:
   - example: `/etc/fluidbg/config.yaml`
 - `FLUIDBG_PLUGIN_AUTH_TOKEN`
   - per-inception JWT signed by the operator
+- `FLUIDBG_INCEPTOR_INFRA_DISABLED`
+  - `true` when a manager owns privileged resource setup/cleanup for this inception point
 
 Standalone env injection templates can also reference operator-provided template
 context values such as `{{pluginServiceName}}`, `{{pluginDeploymentName}}`,
@@ -135,15 +140,21 @@ context values such as `{{pluginServiceName}}`, `{{pluginDeploymentName}}`,
 uses `{{pluginServiceName}}` so both blue and test containers can call the same
 combined HTTP plugin service.
 
-The plugin gets the full operator and test-container base URLs from env injection, not from hardcoded names inside the plugin itself.
+The inceptor gets the full operator and test-container base URLs from env injection, not from hardcoded names inside the plugin itself.
 
 ## Operator and Plugin Authentication
 
 The operator uses a user-selected Kubernetes Secret as its JWT signing key. The
 Secret name and key are configured with:
 
+- `FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE`
 - `FLUIDBG_AUTH_SIGNING_SECRET_NAME`
 - `FLUIDBG_AUTH_SIGNING_SECRET_KEY`
+
+The signing Secret belongs in the operator namespace, not in application
+namespaces. Inceptors never receive this key. They receive only
+`FLUIDBG_PLUGIN_AUTH_TOKEN` and validate incoming operator calls by requiring the
+same bearer token value.
 
 For each inception point the operator signs one JWT and injects it as
 `FLUIDBG_PLUGIN_AUTH_TOKEN`. The token claims identify the caller:
@@ -159,17 +170,21 @@ For each inception point the operator signs one JWT and injects it as
 
 The same token is used in both directions:
 
-- Operator to plugin lifecycle calls set `Authorization: Bearer <token>`.
-- Plugin lifecycle endpoints reject requests whose bearer token does not match
+- Operator to inceptor lifecycle calls set `Authorization: Bearer <token>`.
+- Inceptor lifecycle endpoints do not verify signatures and do not know the
+  signing key; they reject requests whose bearer token does not exactly match
   `FLUIDBG_PLUGIN_AUTH_TOKEN`.
-- Plugin to operator `/testcases` calls set `Authorization: Bearer <token>`.
+- Operator to manager lifecycle calls set `Authorization: Bearer <token>`.
+- Managers verify the JWT signature with the operator signing key and derive
+  namespace, BGD, inception point, and plugin identity from token claims.
+- Inceptor to operator `/testcases` calls set `Authorization: Bearer <token>`.
 - The operator verifies the JWT signature and then derives the caller identity
   from claims. It rejects `/testcases` if the body `blue_green_ref` or
   `inception_point` differs from the verified token claims.
 
 Only the signing Secret is long-lived. Per-inception JWTs are generated by the
-operator and injected into plugin pods; they are not written to the state store.
-Temporary plugin Deployments, Services, ConfigMaps, Pods, and legacy
+operator and injected into inceptor pods; they are not written to the state store.
+Temporary inceptor Deployments, Services, ConfigMaps, Pods, and legacy
 per-inception auth Secrets are deleted after promotion, rollback, or rollout
 restart cleanup. The selected operator signing Secret is user-owned and is not
 deleted by rollout cleanup.
@@ -344,12 +359,12 @@ blue verification cases.
 
 ## Communication Diagrams
 
-### 1. Runtime Discovery
+### 1. Inceptor Discovery
 
 ```mermaid
 flowchart LR
     OP["Operator Pod"]
-    POD["Plugin Pod"]
+    POD["Plugin Inceptor Pod"]
     TEST["Test Container Pod"]
 
     OP -->|"injects env vars"| POD
@@ -429,7 +444,8 @@ flowchart TD
     BGD["BlueGreenDeployment"]
     PLUGINCR["InceptionPlugin CR"]
     OP["Operator"]
-    PPOD["Plugin Pod"]
+    MGR["Plugin Manager Pod"]
+    IPOD["Plugin Inceptor Pod"]
     APP["Green/Blue App Pods"]
     TEST["Test Container Pod"]
 
@@ -437,13 +453,31 @@ flowchart TD
     PLUGINCR -->|"supportedRoles, lifecycle, topology"| OP
     OP -->|"prepare assignments"| APP
     OP -->|"test env + service"| TEST
-    OP -->|"runtime env injection"| PPOD
+    OP -->|"manager prepare/cleanup"| MGR
+    OP -->|"inceptor env injection"| IPOD
     TEST -->|"verify response"| OP
-    PPOD -->|"register testCase + notify test"| OP
-    PPOD -->|"notifyPath call"| TEST
+    IPOD -->|"register testCase + notify test"| OP
+    IPOD -->|"notifyPath call"| TEST
 ```
 
 ## Current Built-In RabbitMQ Plugin Behavior
+
+RabbitMQ uses a split plugin security model when `InceptionPlugin.spec.manager`
+is configured:
+
+- The manager process runs in the operator namespace and owns RabbitMQ queue
+  creation/deletion authority.
+- Per-inception inceptor pods run in the application namespace and do not
+  create or delete temporary queues.
+- The operator calls manager `/manager/prepare` and `/manager/cleanup` with the
+  per-inception JWT.
+- The manager verifies the JWT signature and derives `namespace`,
+  `blueGreenRef`, `inceptionPoint`, and `plugin` from token claims.
+- Temporary queue names are recomputed from those claims and active role names;
+  user-supplied temporary queue names in the BGD are not trusted for
+  infrastructure creation or deletion.
+- Inceptor pods receive only the secured, operator-rewritten queue names needed
+  for message movement.
 
 ```mermaid
 flowchart TD
@@ -456,11 +490,14 @@ flowchart TD
     BLUE["blue app"]
     GOUT["green output queue"]
     BOUT["blue output queue"]
+    MGR["manager in operator namespace"]
     COMB["combiner role"]
     OUT["base output queue"]
     TEST["test container"]
     OP["operator"]
 
+    MGR -->|"create/delete derived temp queues"| GREENQ
+    MGR -->|"create/delete derived temp queues"| BLUEQ
     SRC --> DUP
     SRC --> SPLIT
     DUP -->|"route both"| GREENQ
@@ -519,6 +556,9 @@ flowchart TD
 RabbitMQ loss prevention is handled by the plugin state machine plus the
 operator drain phase:
 
+- Queue creation/deletion is done by the manager after token verification and
+  derived-name recomputation, so an attacker controlling the application
+  namespace cannot request arbitrary queue deletion by editing BGD config.
 - Duplicator and splitter queue consumers acknowledge the source message only after the plugin has successfully published the required downstream copy or route.
 - During drain, the plugin stops accepting new temporary work and reports `drained: true` only when temporary paths are empty or no longer have active work that must be moved.
 - For rollback, blue-only temporary messages are either consumed by blue during the drain window or left/moved so the base queue can continue safely after cleanup.
@@ -562,32 +602,39 @@ flowchart TD
 
 ### Authentication to Azure
 
-The plugin supports two Azure authentication modes:
+Azure Service Bus also uses the split manager/inceptor model when
+`InceptionPlugin.spec.manager` is configured. Azure credentials and workload
+identity bindings belong to the manager pod in the operator namespace. Inceptor
+pods in application namespaces should not receive Service Bus management
+permissions.
+
+The manager supports two Azure authentication modes:
 
 | Mode | Config | Use |
 |---|---|---|
-| `connectionString` | `connectionString` with `Endpoint`, `SharedAccessKeyName`, and `SharedAccessKey` | Uses Service Bus SAS tokens for runtime send, receive, complete, unlock, and data-plane queue management. |
-| `workloadIdentity` | `fullyQualifiedNamespace` plus AKS workload identity env vars or explicit `auth.tenantId`, `auth.clientId`, `auth.federatedTokenFile` | Exchanges the projected Kubernetes service account token for Microsoft Entra tokens and uses Bearer auth for Service Bus runtime access. |
+| `connectionString` | Manager config with `Endpoint`, `SharedAccessKeyName`, and `SharedAccessKey` | Uses Service Bus SAS tokens for queue management. |
+| `workloadIdentity` | Manager config with `fullyQualifiedNamespace` plus AKS workload identity env vars or explicit `auth.tenantId`, `auth.clientId`, `auth.federatedTokenFile` | Exchanges the projected Kubernetes service account token for Microsoft Entra tokens and uses Bearer auth for Service Bus management. |
 
-For AKS workload identity, the plugin expects the standard projected values
+For AKS workload identity, the manager expects the standard projected values
 `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE` unless
-they are set explicitly in plugin config. The plugin requests Service Bus data
+they are set explicitly in manager config. The manager requests Service Bus data
 plane tokens for `https://servicebus.azure.net/.default`. If
 `management.subscriptionId` and `management.resourceGroup` are also set, queue
 create/delete/status calls use Azure Resource Manager with
 `https://management.azure.com/.default`.
 
-The Kubernetes service account used by the plugin pod must be configured for
+The Kubernetes service account used by the manager pod must be configured for
 Azure Workload Identity by the cluster owner, including the
 `azure.workload.identity/use: "true"` pod label or equivalent chart overlay, and
 the managed identity must have Service Bus data-plane permissions. Automatic
 queue create/delete additionally requires permission to manage
 `Microsoft.ServiceBus/namespaces/queues/*` in the target namespace resource.
 
-`InceptionPlugin.spec.container` supports pod-level metadata needed for this:
-`podLabels`, `podAnnotations`, and `serviceAccountName`. The Helm chart exposes
-these for the built-in Azure Service Bus plugin under
-`builtinPlugins.azureServiceBus.workloadIdentity`.
+`InceptionPlugin.spec.inceptor` supports pod-level metadata for inceptor
+pods, but privileged Azure identity should be bound to the manager deployment,
+not the per-inception inceptor pod. The Helm chart exposes manager workload
+identity settings for the built-in Azure Service Bus plugin under
+`builtinPlugins.azureServiceBus.manager.workloadIdentity`.
 
 ### Service Bus Semantics
 

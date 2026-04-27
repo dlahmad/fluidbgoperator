@@ -24,6 +24,14 @@ spec:
     trafficShiftPath: /traffic
   features:
     supportsProgressiveShifting: true
+  {{- if $root.Values.builtinPlugins.rabbitmq.manager.enabled }}
+  manager:
+    serviceName: fluidbg-rabbitmq-manager
+    namespace: {{ $root.Release.Namespace }}
+    port: 9090
+    preparePath: /manager/prepare
+    cleanupPath: /manager/cleanup
+  {{- end }}
   fieldNamespaces: [queue]
   configSchema:
     type: object
@@ -67,7 +75,7 @@ spec:
           testId: { type: object }
           match: { type: array }
           notifyPath: { type: string }
-  container:
+  inceptor:
     ports:
       - name: health
         containerPort: 9090
@@ -113,7 +121,7 @@ spec:
       filters: { type: array }
       ingress: { type: object }
       egress: { type: object }
-  container:
+  inceptor:
     ports:
       - name: http
         containerPort: 9090
@@ -154,6 +162,14 @@ spec:
     trafficShiftPath: /traffic
   features:
     supportsProgressiveShifting: true
+  {{- if $root.Values.builtinPlugins.azureServiceBus.manager.enabled }}
+  manager:
+    serviceName: fluidbg-azure-servicebus-manager
+    namespace: {{ $root.Release.Namespace }}
+    port: 9090
+    preparePath: /manager/prepare
+    cleanupPath: /manager/cleanup
+  {{- end }}
   fieldNamespaces: [queue, servicebus]
   configSchema:
     type: object
@@ -218,15 +234,18 @@ spec:
           testId: { type: object }
           match: { type: array }
           notifyPath: { type: string }
-  container:
-    {{- if $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.enabled }}
+  inceptor:
+    {{- if $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.enabled }}
     podLabels:
       azure.workload.identity/use: "true"
-    {{- with $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.podAnnotations }}
+      {{- with $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.podLabels }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+    {{- with $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.podAnnotations }}
     podAnnotations:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    {{- with $root.Values.builtinPlugins.azureServiceBus.workloadIdentity.serviceAccountName }}
+    {{- with $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.serviceAccountName }}
     serviceAccountName: {{ . | quote }}
     {{- end }}
     {{- end }}

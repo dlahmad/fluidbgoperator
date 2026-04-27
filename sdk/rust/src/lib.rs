@@ -4,6 +4,7 @@ mod fields;
 mod http;
 mod models;
 mod notify;
+mod resources;
 mod routing;
 mod runtime;
 mod version;
@@ -19,12 +20,14 @@ pub use http::{extract_http_test_id, resolve_http_field};
 pub use models::{
     AssignmentKind, AssignmentTarget, FilterCondition, HttpWriteRequest, NotificationFilter,
     ObservationNotification, ObserverConfig, PayloadSelection, PluginDrainStatusResponse,
-    PluginLifecycleResponse, PluginRole, PropertyAssignment, RegisterTestCaseRequest,
-    TestIdSelector, TrafficRoute, TrafficShiftRequest, TrafficShiftResponse,
+    PluginLifecycleResponse, PluginManagerLifecycleRequest, PluginRole, PropertyAssignment,
+    RegisterTestCaseRequest, TestIdSelector, TrafficRoute, TrafficShiftRequest,
+    TrafficShiftResponse,
 };
 pub use notify::{RegisterTestCaseArgs, notify_observer, register_test_case, render_path};
+pub use resources::derived_temp_queue_name;
 pub use routing::routes_to_blue;
-pub use runtime::PluginRuntime;
+pub use runtime::{PluginInceptorRuntime, PluginRuntime};
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};
 
 #[cfg(test)]

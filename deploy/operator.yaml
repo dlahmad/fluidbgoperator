@@ -29,6 +29,8 @@ spec:
               value: fluidbg-operator-auth
             - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
               value: signing-key
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
+              value: fluidbg-system
           livenessProbe:
             httpGet:
               path: /health

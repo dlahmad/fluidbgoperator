@@ -7,6 +7,36 @@ info:
     and test containers. The plugin API version is fluidbg.plugin/v1alpha1.
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 paths:
+  /manager/prepare:
+    post:
+      operationId: managerPrepare
+      description: Privileged manager setup for one signed inception point.
+      security:
+        - pluginAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginManagerLifecycleRequest"
+      responses:
+        "200":
+          description: Manager setup completed.
+  /manager/cleanup:
+    post:
+      operationId: managerCleanup
+      description: Privileged manager cleanup for one signed inception point.
+      security:
+        - pluginAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginManagerLifecycleRequest"
+      responses:
+        "200":
+          description: Manager cleanup completed.
   /prepare:
     post:
       operationId: prepare
@@ -234,6 +264,16 @@ components:
           items:
             $ref: "#/components/schemas/PropertyAssignment"
           default: []
+    PluginManagerLifecycleRequest:
+      type: object
+      required: [roles, config]
+      additionalProperties: false
+      properties:
+        roles:
+          type: array
+          items:
+            type: string
+        config: {}
     PluginDrainStatusResponse:
       type: object
       required: [drained]

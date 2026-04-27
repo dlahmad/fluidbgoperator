@@ -8,7 +8,7 @@ use super::super::deployments::{
 };
 use super::super::plugin_lifecycle::{
     AssignmentKind, AssignmentTarget, PluginLifecycleStage, PropertyAssignment,
-    invoke_plugin_lifecycle,
+    invoke_inceptor_lifecycle, invoke_plugin_manager_lifecycle,
 };
 use super::super::resources::{
     apply_resource, ensure_inception_point_owned_resources, sign_inception_auth_token,
@@ -51,8 +51,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
         let auth_token = sign_inception_auth_token(
             client,
             namespace,
-            &auth.signing_secret_name,
-            &auth.signing_secret_key,
+            auth,
             bgd.metadata.name.as_deref().unwrap_or(""),
             &ip.name,
             &plugin,
@@ -121,7 +120,18 @@ pub(in crate::controller) async fn ensure_inception_resources(
             wait_for_deployments_ready(client, &plugin_deployments).await?;
         }
 
-        if let Some(mut lifecycle_assignments) = invoke_plugin_lifecycle(
+        invoke_plugin_manager_lifecycle(
+            client,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip,
+            &plugin,
+            auth,
+            PluginLifecycleStage::Prepare,
+        )
+        .await?;
+
+        if let Some(mut lifecycle_assignments) = invoke_inceptor_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,

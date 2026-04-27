@@ -28,6 +28,10 @@ operator:
   image:
     repository: ghcr.io/dlahmad/fbg-operator
     tag: 0.1.0
+  auth:
+    signingSecretNamespace: fluidbg-system
+    signingSecretName: fluidbg-operator-auth
+    signingSecretKey: signing-key
 
 builtinPlugins:
   http:
@@ -39,26 +43,67 @@ builtinPlugins:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
   azureServiceBus:
-    workloadIdentity:
+    inceptorWorkloadIdentity:
       enabled: false
       serviceAccountName: ""
+    manager:
+      enabled: false
+      workloadIdentity:
+        enabled: false
+        serviceAccountName: ""
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
       tag: 0.1.0
 ```
 
-For Azure Service Bus workload identity, create a Kubernetes ServiceAccount in
-each application namespace and annotate it for Microsoft Entra Workload ID. Then
-enable the pod label and ServiceAccount reference in the built-in plugin CR:
+## Plugin Managers
+
+RabbitMQ and Azure Service Bus can use split plugin mode:
+
+- The manager runs once in the operator namespace and owns privileged resource
+  create/delete credentials.
+- The inceptor is spawned per inception point in the application namespace and
+  receives only the secured per-inception config and JWT.
+
+The signing Secret is mounted/read only by the operator and enabled managers.
+Inceptors do not receive the signing key; they receive only
+`FLUIDBG_PLUGIN_AUTH_TOKEN` and require the same token on their own lifecycle
+endpoints.
+
+Enable a manager only after providing the required privileged credential source.
+The built-in `InceptionPlugin` manager reference is rendered only when the
+matching manager is enabled, so the chart does not create dangling manager
+endpoints by default.
+
+RabbitMQ manager example:
+
+```yaml
+builtinPlugins:
+  rabbitmq:
+    manager:
+      enabled: true
+      amqpUrlSecretName: rabbitmq-admin
+      amqpUrlSecretKey: amqp-url
+```
+
+For Azure Service Bus workload identity, create a manager ServiceAccount in the
+operator namespace and annotate it for Microsoft Entra Workload ID. Privileged
+Azure/RabbitMQ infrastructure credentials should be mounted only into manager
+deployments in the operator namespace, not into per-inception inceptor pods in
+application namespaces. Then enable the manager pod label and ServiceAccount
+reference:
 
 ```yaml
 builtinPlugins:
   azureServiceBus:
-    workloadIdentity:
+    manager:
       enabled: true
-      serviceAccountName: fluidbg-azure-servicebus
-      podAnnotations:
-        azure.workload.identity/service-account-token-expiration: "3600"
+      fullyQualifiedNamespace: my-namespace.servicebus.windows.net
+      workloadIdentity:
+        enabled: true
+        serviceAccountName: fluidbg-azure-servicebus
+        podAnnotations:
+          azure.workload.identity/service-account-token-expiration: "3600"
 ```
 
 ## Plugin Namespaces

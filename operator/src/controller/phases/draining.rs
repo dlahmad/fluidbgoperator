@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use kube::api::Api;
 
 use super::super::plugin_lifecycle::{
-    PluginLifecycleStage, invoke_plugin_drain_status, invoke_plugin_lifecycle,
+    PluginLifecycleStage, invoke_inceptor_drain_status, invoke_inceptor_lifecycle,
+    invoke_plugin_manager_lifecycle,
 };
 use super::super::resources::{cleanup_inception_resources, cleanup_test_resources};
 use super::super::status::{update_inception_point_drain_statuses, update_status_phase};
@@ -69,7 +70,7 @@ pub(in crate::controller) async fn reconcile_draining(
         }
 
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
-        let status = match invoke_plugin_drain_status(
+        let status = match invoke_inceptor_drain_status(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
@@ -126,11 +127,21 @@ async fn finalize_draining(
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
-        let _ = invoke_plugin_lifecycle(
+        let _ = invoke_inceptor_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
             ip.name.as_str(),
+            &plugin,
+            auth,
+            PluginLifecycleStage::Cleanup,
+        )
+        .await?;
+        invoke_plugin_manager_lifecycle(
+            client,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip,
             &plugin,
             auth,
             PluginLifecycleStage::Cleanup,

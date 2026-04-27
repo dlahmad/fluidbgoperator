@@ -3,7 +3,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use fluidbg_plugin_sdk::{PluginRole, PluginRuntime};
+use fluidbg_plugin_sdk::{PluginInceptorRuntime, PluginRole};
 use tracing::info;
 
 mod assignments;
@@ -12,6 +12,7 @@ mod config;
 mod filtering;
 mod input;
 mod lifecycle;
+mod manager;
 mod servicebus;
 mod writer;
 
@@ -34,8 +35,12 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if std::env::var("FLUIDBG_PLUGIN_MANAGER").as_deref() == Ok("true") {
+        return run_manager().await;
+    }
+
     let config = load_config()?;
-    let runtime = PluginRuntime::from_env();
+    let runtime = PluginInceptorRuntime::from_env();
     let roles = runtime.roles().to_vec();
     if roles.is_empty() {
         bail!("no active roles configured via FLUIDBG_ACTIVE_ROLES");
@@ -79,6 +84,18 @@ async fn main() -> Result<()> {
 
     let (_, worker_result) = tokio::join!(server, worker);
     worker_result??;
+    Ok(())
+}
+
+async fn run_manager() -> Result<()> {
+    let state = manager::manager_state_from_env()?;
+    let app = Router::new()
+        .route("/health", get(manager::health))
+        .route("/manager/prepare", post(manager::prepare_handler))
+        .route("/manager/cleanup", post(manager::cleanup_handler))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
 

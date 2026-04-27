@@ -34,7 +34,7 @@ spec:
       filters: { type: array }
       ingress: { type: object }
       egress: { type: object }
-  container:
+  inceptor:
     ports:
       - name: http
         containerPort: 9090

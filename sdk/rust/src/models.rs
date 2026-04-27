@@ -160,6 +160,13 @@ pub struct TrafficShiftResponse {
     pub traffic_percent: u8,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManagerLifecycleRequest {
+    pub roles: Vec<String>,
+    pub config: Value,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObservationNotification<'a> {

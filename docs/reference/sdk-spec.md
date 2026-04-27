@@ -36,8 +36,8 @@ openapi-generator-cli generate -i sdk/spec/plugin-api-v1alpha1.openapi.yaml -g j
 
 The stable wire contract is JSON over HTTP. Plugin-specific transport details
 such as RabbitMQ queue names or HTTP upstream URLs remain plugin configuration,
-but lifecycle, observation, and test registration payloads should stay aligned
-with this spec.
+but manager lifecycle, inceptor lifecycle, observation, and test registration
+payloads should stay aligned with this spec.
 
 Reference tooling:
 

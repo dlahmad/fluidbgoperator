@@ -116,6 +116,29 @@ pub struct ReconcileInceptionContext<'a> {
     pub auth_token: &'a str,
 }
 
+pub fn secured_inception_config(
+    plugin: &InceptionPlugin,
+    ip: &InceptionPoint,
+    context: &ReconcileInceptionContext<'_>,
+) -> serde_json::Value {
+    let mut config = ip.config.clone();
+    if plugin.spec.field_namespaces.iter().any(|ns| ns == "queue")
+        || plugin
+            .spec
+            .field_namespaces
+            .iter()
+            .any(|ns| ns == "servicebus")
+    {
+        rewrite_queue_temp_names(
+            &mut config,
+            context.namespace,
+            context.blue_green_ref,
+            &ip.name,
+        );
+    }
+    config
+}
+
 pub fn reconcile_inception_point(
     plugin: &InceptionPlugin,
     ip: &InceptionPoint,
@@ -134,20 +157,23 @@ pub fn reconcile_inception_point(
         .collect::<Vec<_>>()
         .join(",");
 
+    let secured_config = secured_inception_config(plugin, ip, &context);
+
     let config_data = if let Some(template) = &plugin.spec.config_template {
         if !template.is_empty() {
-            let rendered = crate::plugins::template::render_config_template(template, &ip.config)?;
+            let rendered =
+                crate::plugins::template::render_config_template(template, &secured_config)?;
             BTreeMap::from([("config.yaml".to_string(), rendered)])
         } else {
             BTreeMap::from([(
                 "config.yaml".to_string(),
-                serde_yaml::to_string(&ip.config).unwrap_or_default(),
+                serde_yaml::to_string(&secured_config).unwrap_or_default(),
             )])
         }
     } else {
         BTreeMap::from([(
             "config.yaml".to_string(),
-            serde_yaml::to_string(&ip.config).unwrap_or_default(),
+            serde_yaml::to_string(&secured_config).unwrap_or_default(),
         )])
     };
 
@@ -217,11 +243,16 @@ pub fn reconcile_inception_point(
             value: Some(context.auth_token.to_string()),
             ..Default::default()
         },
+        EnvVar {
+            name: "FLUIDBG_INCEPTOR_INFRA_DISABLED".to_string(),
+            value: Some(plugin.spec.manager.is_some().to_string()),
+            ..Default::default()
+        },
     ];
 
     let volume_mounts = plugin
         .spec
-        .container
+        .inceptor
         .volume_mounts
         .iter()
         .map(|vm| VolumeMount {
@@ -234,7 +265,7 @@ pub fn reconcile_inception_point(
 
     let container_ports = plugin
         .spec
-        .container
+        .inceptor
         .ports
         .iter()
         .map(|p| ContainerPort {
@@ -299,11 +330,11 @@ pub fn reconcile_inception_point(
                 ),
             ]);
             let mut pod_labels = labels.clone();
-            pod_labels.extend(plugin.spec.container.pod_labels.clone());
-            let pod_annotations = if plugin.spec.container.pod_annotations.is_empty() {
+            pod_labels.extend(plugin.spec.inceptor.pod_labels.clone());
+            let pod_annotations = if plugin.spec.inceptor.pod_annotations.is_empty() {
                 None
             } else {
-                Some(plugin.spec.container.pod_annotations.clone())
+                Some(plugin.spec.inceptor.pod_annotations.clone())
             };
 
             let pod_spec = PodSpec {
@@ -314,7 +345,7 @@ pub fn reconcile_inception_point(
                 }],
                 volumes: Some(volumes),
                 termination_grace_period_seconds: Some(1),
-                service_account_name: plugin.spec.container.service_account_name.clone(),
+                service_account_name: plugin.spec.inceptor.service_account_name.clone(),
                 ..Default::default()
             };
 
@@ -355,7 +386,7 @@ pub fn reconcile_inception_point(
                     ports: Some(
                         plugin
                             .spec
-                            .container
+                            .inceptor
                             .ports
                             .iter()
                             .map(|p| k8s_openapi::api::core::v1::ServicePort {
@@ -401,6 +432,95 @@ pub fn reconcile_inception_point(
     }
 }
 
+fn rewrite_queue_temp_names(
+    config: &mut serde_json::Value,
+    namespace: &str,
+    blue_green_ref: &str,
+    inception_point: &str,
+) {
+    set_nested_string(
+        config,
+        &["duplicator", "greenInputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "duplicator",
+            "green-input",
+        ),
+    );
+    set_nested_string(
+        config,
+        &["duplicator", "blueInputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "duplicator",
+            "blue-input",
+        ),
+    );
+    set_nested_string(
+        config,
+        &["splitter", "greenInputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "splitter",
+            "green-input",
+        ),
+    );
+    set_nested_string(
+        config,
+        &["splitter", "blueInputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "splitter",
+            "blue-input",
+        ),
+    );
+    set_nested_string(
+        config,
+        &["combiner", "greenOutputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "combiner",
+            "green-output",
+        ),
+    );
+    set_nested_string(
+        config,
+        &["combiner", "blueOutputQueue"],
+        fluidbg_plugin_sdk::derived_temp_queue_name(
+            namespace,
+            blue_green_ref,
+            inception_point,
+            "combiner",
+            "blue-output",
+        ),
+    );
+}
+
+fn set_nested_string(config: &mut serde_json::Value, path: &[&str], value: String) {
+    let mut current = config;
+    for segment in &path[..path.len().saturating_sub(1)] {
+        let Some(next) = current.get_mut(*segment) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(last) = path.last()
+        && let Some(obj) = current.as_object_mut()
+    {
+        obj.insert((*last).to_string(), serde_json::Value::String(value));
+    }
+}
+
 fn ensure_config_mount(container: &mut Container) {
     let mounts = container.volume_mounts.get_or_insert_with(Vec::new);
     if mounts
@@ -417,7 +537,7 @@ fn ensure_config_mount(container: &mut Container) {
     });
 }
 
-fn plugin_role_name(role: &PluginRole) -> &'static str {
+pub fn plugin_role_name(role: &PluginRole) -> &'static str {
     match role {
         PluginRole::Duplicator => "duplicator",
         PluginRole::Splitter => "splitter",
@@ -539,8 +659,8 @@ fn render_env_injection_set(
 #[cfg(test)]
 mod tests {
     use crate::crd::inception_plugin::{
-        ContainerPort, InceptionPlugin, InceptionPluginSpec, Injects, PluginFeatures, PluginRole,
-        Topology, VolumeMount,
+        ContainerPort, InceptionPlugin, InceptionPluginSpec, Injects, PluginFeatures,
+        PluginManager, PluginRole, Topology, VolumeMount,
     };
 
     use super::*;
@@ -569,7 +689,7 @@ mod tests {
                     }
                 }),
                 config_template: None,
-                container: crate::crd::inception_plugin::PluginContainer {
+                inceptor: crate::crd::inception_plugin::PluginInceptor {
                     ports: vec![ContainerPort {
                         name: "http".to_string(),
                         container_port: 9090,
@@ -582,6 +702,7 @@ mod tests {
                     ..Default::default()
                 },
                 lifecycle: None,
+                manager: None,
                 injects: Some(Injects {
                     green_container: None,
                     blue_container: Some(crate::crd::inception_plugin::ContainerInjection {
@@ -646,7 +767,7 @@ mod tests {
                     }
                 }),
                 config_template: None,
-                container: crate::crd::inception_plugin::PluginContainer {
+                inceptor: crate::crd::inception_plugin::PluginInceptor {
                     ports: vec![ContainerPort {
                         name: "health".to_string(),
                         container_port: 9090,
@@ -655,6 +776,7 @@ mod tests {
                     ..Default::default()
                 },
                 lifecycle: None,
+                manager: None,
                 injects: None,
                 features: Some(PluginFeatures {
                     supports_progressive_shifting: true,
@@ -680,7 +802,7 @@ mod tests {
                     }
                 }),
                 config_template: None,
-                container: crate::crd::inception_plugin::PluginContainer {
+                inceptor: crate::crd::inception_plugin::PluginInceptor {
                     ports: vec![ContainerPort {
                         name: "http".to_string(),
                         container_port: 8080,
@@ -693,6 +815,7 @@ mod tests {
                     ..Default::default()
                 },
                 lifecycle: None,
+                manager: None,
                 injects: None,
                 features: None,
             },
@@ -920,6 +1043,129 @@ mod tests {
     }
 
     #[test]
+    fn queue_temp_names_are_derived_for_inceptors_and_manager_owned_infra() {
+        let mut plugin = make_rabbitmq_plugin();
+        plugin.spec.manager = Some(PluginManager {
+            service_name: "fluidbg-rabbitmq-manager".to_string(),
+            namespace: Some("fluidbg-system".to_string()),
+            port: Some(9090),
+            prepare_path: Some("/manager/prepare".to_string()),
+            cleanup_path: Some("/manager/cleanup".to_string()),
+        });
+        let ip = make_inception_point(
+            "incoming-orders",
+            vec![PluginRole::Duplicator],
+            serde_json::json!({
+                "duplicator": {
+                    "inputQueue": "orders",
+                    "greenInputQueue": "attacker-chosen-green",
+                    "blueInputQueue": "attacker-chosen-blue"
+                }
+            }),
+        );
+
+        let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
+        let config_yaml = resources.config_maps[0]
+            .data
+            .as_ref()
+            .unwrap()
+            .get("config.yaml")
+            .unwrap();
+        let config: serde_json::Value = serde_yaml::from_str(config_yaml).unwrap();
+        let duplicator = config.get("duplicator").unwrap();
+
+        assert_ne!(
+            duplicator.get("greenInputQueue").unwrap().as_str(),
+            Some("attacker-chosen-green")
+        );
+        assert_eq!(
+            duplicator.get("greenInputQueue").unwrap().as_str(),
+            Some(
+                fluidbg_plugin_sdk::derived_temp_queue_name(
+                    "production",
+                    "order-processor-bg",
+                    "incoming-orders",
+                    "duplicator",
+                    "green-input"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            resources.deployments[0]
+                .spec
+                .as_ref()
+                .unwrap()
+                .template
+                .spec
+                .as_ref()
+                .unwrap()
+                .containers[0]
+                .env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|env| env.name == "FLUIDBG_INCEPTOR_INFRA_DISABLED")
+                .and_then(|env| env.value.as_deref()),
+            Some("true")
+        );
+        let inceptor_env = resources.deployments[0]
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .env
+            .as_ref()
+            .unwrap();
+        assert!(
+            inceptor_env
+                .iter()
+                .any(|env| env.name == fluidbg_plugin_sdk::PLUGIN_AUTH_TOKEN_ENV)
+        );
+        assert!(
+            !inceptor_env
+                .iter()
+                .any(|env| env.name == "FLUIDBG_MANAGER_AUTH_SIGNING_KEY")
+        );
+        assert!(
+            !inceptor_env
+                .iter()
+                .any(|env| env.name == "FLUIDBG_AUTH_SIGNING_KEY")
+        );
+    }
+
+    #[test]
+    fn queue_temp_names_are_inserted_when_user_omits_them() {
+        let plugin = make_rabbitmq_plugin();
+        let ip = make_inception_point(
+            "incoming-orders",
+            vec![PluginRole::Splitter],
+            serde_json::json!({
+                "splitter": {
+                    "inputQueue": "orders"
+                }
+            }),
+        );
+
+        let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
+        let config_yaml = resources.config_maps[0]
+            .data
+            .as_ref()
+            .unwrap()
+            .get("config.yaml")
+            .unwrap();
+        let config: serde_json::Value = serde_yaml::from_str(config_yaml).unwrap();
+        let splitter = config.get("splitter").unwrap();
+
+        assert!(splitter.get("greenInputQueue").is_some());
+        assert!(splitter.get("blueInputQueue").is_some());
+    }
+
+    #[test]
     fn adding_plugin_requires_no_code_changes() {
         let plugin = make_fake_plugin();
         let ip = make_inception_point(
@@ -970,16 +1216,16 @@ mod tests {
     #[test]
     fn standalone_plugin_can_request_pod_identity_metadata() {
         let mut plugin = make_fake_plugin();
-        plugin.spec.container.pod_labels.insert(
+        plugin.spec.inceptor.pod_labels.insert(
             "azure.workload.identity/use".to_string(),
             "true".to_string(),
         );
         plugin
             .spec
-            .container
+            .inceptor
             .pod_annotations
             .insert("example.com/token".to_string(), "enabled".to_string());
-        plugin.spec.container.service_account_name = Some("fluidbg-azure".to_string());
+        plugin.spec.inceptor.service_account_name = Some("fluidbg-azure".to_string());
         let ip = make_inception_point(
             "custom-point",
             vec![PluginRole::Observer],
@@ -1082,12 +1328,13 @@ mod tests {
                 field_namespaces: vec!["queue".to_string()],
                 config_schema: serde_json::json!({"type": "object"}),
                 config_template: None,
-                container: crate::crd::inception_plugin::PluginContainer {
+                inceptor: crate::crd::inception_plugin::PluginInceptor {
                     ports: vec![],
                     volume_mounts: vec![],
                     ..Default::default()
                 },
                 lifecycle: None,
+                manager: None,
                 injects: None,
                 features: None,
             },

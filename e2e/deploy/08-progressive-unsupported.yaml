@@ -15,6 +15,12 @@ spec:
     cleanupPath: /cleanup
   features:
     supportsProgressiveShifting: false
+  manager:
+    serviceName: fluidbg-rabbitmq-manager
+    namespace: fluidbg-system
+    port: 9090
+    preparePath: /manager/prepare
+    cleanupPath: /manager/cleanup
   fieldNamespaces: [queue]
   configSchema:
     type: object
@@ -34,7 +40,7 @@ spec:
           testId: { type: object }
           match: { type: array }
           notifyPath: { type: string }
-  container:
+  inceptor:
     ports:
       - name: health
         containerPort: 9090

@@ -60,6 +60,7 @@ struct Ctx {
 
 #[derive(Clone)]
 pub struct AuthConfig {
+    pub signing_secret_namespace: String,
     pub signing_secret_name: String,
     pub signing_secret_key: String,
 }
@@ -108,15 +109,9 @@ pub(crate) async fn validate_plugin_auth(
     auth: &AuthConfig,
     header_value: Option<&str>,
 ) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, String> {
-    resources::validate_inception_auth_token(
-        client,
-        namespace,
-        &auth.signing_secret_name,
-        &auth.signing_secret_key,
-        header_value,
-    )
-    .await
-    .map_err(|err| err.to_string())
+    resources::validate_inception_auth_token(client, namespace, auth, header_value)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 fn error_policy(_bgd: Arc<BlueGreenDeployment>, _err: &ReconcileError, _ctx: Arc<Ctx>) -> Action {

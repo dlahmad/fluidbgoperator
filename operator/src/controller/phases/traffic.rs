@@ -1,6 +1,6 @@
 use kube::api::Api;
 
-use super::super::plugin_lifecycle::invoke_plugin_traffic_shift;
+use super::super::plugin_lifecycle::invoke_inceptor_traffic_shift;
 use super::super::promotion::initial_splitter_traffic_percent;
 use super::super::status::update_status_progress;
 use super::super::{AuthConfig, ReconcileError};
@@ -104,7 +104,7 @@ pub(in crate::controller) async fn apply_splitter_traffic_percent(
         if !matches!(plugin.spec.topology, Topology::Standalone) {
             continue;
         }
-        invoke_plugin_traffic_shift(
+        invoke_inceptor_traffic_shift(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,

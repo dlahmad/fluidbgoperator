@@ -10,8 +10,8 @@ use fluidbg_plugin_sdk::{
 
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
 use crate::config::{
-    AppState, RuntimeMode, combiner_config, duplicator_config, has_role, required, splitter_config,
-    writer_config,
+    AppState, RuntimeMode, combiner_config, duplicator_config, has_role, inceptor_infra_disabled,
+    required, splitter_config, writer_config,
 };
 
 pub(crate) async fn compute_drain_status(
@@ -98,6 +98,11 @@ pub(crate) async fn prepare_handler(
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Active);
+    if inceptor_infra_disabled() {
+        return Ok(Json(PluginLifecycleResponse {
+            assignments: build_prepare_assignments(&state.config, &state.roles),
+        }));
+    }
 
     if has_role(&state.roles, PluginRole::Duplicator) {
         let duplicator = duplicator_config(&state.config).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -149,6 +154,11 @@ pub(crate) async fn cleanup_handler(
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Idle);
+    if inceptor_infra_disabled() {
+        return Ok(Json(PluginLifecycleResponse {
+            assignments: Vec::new(),
+        }));
+    }
 
     if has_role(&state.roles, PluginRole::Duplicator) {
         let duplicator = duplicator_config(&state.config).map_err(|_| StatusCode::BAD_REQUEST)?;

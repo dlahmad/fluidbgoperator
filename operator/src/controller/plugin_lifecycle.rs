@@ -4,7 +4,8 @@ use tracing::warn;
 use crate::crd::blue_green::BlueGreenDeployment;
 use crate::crd::inception_plugin::InceptionPlugin;
 use crate::plugins::reconciler::{
-    inception_service_name, plugin_template_context, render_container_env_injections,
+    ReconcileInceptionContext, inception_service_name, plugin_template_context,
+    render_container_env_injections, secured_inception_config,
 };
 
 use super::resources::sign_inception_auth_token;
@@ -12,7 +13,7 @@ use super::{AuthConfig, ReconcileError, apply_assignments, wait_for_deployments_
 
 pub(super) use fluidbg_plugin_sdk::{
     AUTHORIZATION_HEADER, AssignmentKind, AssignmentTarget, PluginDrainStatusResponse,
-    PluginLifecycleResponse, PropertyAssignment, bearer_value,
+    PluginLifecycleResponse, PluginManagerLifecycleRequest, PropertyAssignment, bearer_value,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -22,7 +23,7 @@ pub(super) enum PluginLifecycleStage {
     Cleanup,
 }
 
-pub(super) async fn invoke_plugin_lifecycle(
+pub(super) async fn invoke_inceptor_lifecycle(
     client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
@@ -45,7 +46,7 @@ pub(super) async fn invoke_plugin_lifecycle(
     let service_name = inception_service_name(blue_green_ref, inception_point);
     let port = plugin
         .spec
-        .container
+        .inceptor
         .ports
         .first()
         .map(|port| port.container_port)
@@ -55,8 +56,7 @@ pub(super) async fn invoke_plugin_lifecycle(
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
-        &auth.signing_secret_name,
-        &auth.signing_secret_key,
+        auth,
         blue_green_ref,
         inception_point,
         plugin,
@@ -72,28 +72,30 @@ pub(super) async fn invoke_plugin_lifecycle(
         {
             Ok(response) => {
                 let response = response.error_for_status().map_err(|e| {
-                    ReconcileError::Store(format!("plugin lifecycle call failed for {url}: {e}"))
+                    ReconcileError::Store(format!(
+                        "plugin inceptor lifecycle call failed for {url}: {e}"
+                    ))
                 })?;
                 let payload = response
                     .json::<PluginLifecycleResponse>()
                     .await
                     .map_err(|e| {
                         ReconcileError::Store(format!(
-                            "plugin lifecycle response deserialization failed for {url}: {e}"
+                            "plugin inceptor lifecycle response deserialization failed for {url}: {e}"
                         ))
                     })?;
                 return Ok(Some(payload));
             }
             Err(err) if attempt < 10 => {
                 warn!(
-                    "plugin lifecycle endpoint {} not ready yet (attempt {}/10): {}",
+                    "plugin inceptor lifecycle endpoint {} not ready yet (attempt {}/10): {}",
                     url, attempt, err
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
                 return Err(ReconcileError::Store(format!(
-                    "plugin lifecycle call failed for {url}: {err}"
+                    "plugin inceptor lifecycle call failed for {url}: {err}"
                 )));
             }
         }
@@ -102,7 +104,95 @@ pub(super) async fn invoke_plugin_lifecycle(
     Ok(None)
 }
 
-pub(super) async fn invoke_plugin_drain_status(
+pub(super) async fn invoke_plugin_manager_lifecycle(
+    client: &kube::Client,
+    blue_green_ref: &str,
+    namespace: &str,
+    inception_point: &crate::crd::blue_green::InceptionPoint,
+    plugin: &InceptionPlugin,
+    auth: &AuthConfig,
+    stage: PluginLifecycleStage,
+) -> std::result::Result<(), ReconcileError> {
+    let Some(manager) = &plugin.spec.manager else {
+        return Ok(());
+    };
+    let path = match stage {
+        PluginLifecycleStage::Prepare => manager
+            .prepare_path
+            .as_deref()
+            .unwrap_or("/manager/prepare"),
+        PluginLifecycleStage::Cleanup => manager
+            .cleanup_path
+            .as_deref()
+            .unwrap_or("/manager/cleanup"),
+        PluginLifecycleStage::Drain => return Ok(()),
+    };
+    let manager_namespace = manager.namespace.as_deref().unwrap_or("fluidbg-system");
+    let port = manager.port.unwrap_or(9090);
+    let url = format!(
+        "http://{}.{}:{port}{path}",
+        manager.service_name, manager_namespace
+    );
+    let auth_token = sign_inception_auth_token(
+        client,
+        namespace,
+        auth,
+        blue_green_ref,
+        &inception_point.name,
+        plugin,
+    )
+    .await?;
+    let context = ReconcileInceptionContext {
+        namespace,
+        operator_url: "",
+        test_container_url: "",
+        test_data_verify_path: None,
+        blue_deployment_name: "",
+        blue_green_ref,
+        auth_token: &auth_token,
+    };
+    let payload = PluginManagerLifecycleRequest {
+        roles: inception_point
+            .roles
+            .iter()
+            .map(crate::plugins::reconciler::plugin_role_name)
+            .map(str::to_string)
+            .collect(),
+        config: secured_inception_config(plugin, inception_point, &context),
+    };
+    let http = reqwest::Client::new();
+    for attempt in 1..=10 {
+        match http
+            .post(&url)
+            .header(AUTHORIZATION_HEADER, bearer_value(&auth_token))
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(response) => {
+                response.error_for_status().map_err(|e| {
+                    ReconcileError::Store(format!("plugin manager call failed for {url}: {e}"))
+                })?;
+                return Ok(());
+            }
+            Err(err) if attempt < 10 => {
+                warn!(
+                    "plugin manager endpoint {} not ready yet (attempt {}/10): {}",
+                    url, attempt, err
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(err) => {
+                return Err(ReconcileError::Store(format!(
+                    "plugin manager call failed for {url}: {err}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn invoke_inceptor_drain_status(
     client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
@@ -119,7 +209,7 @@ pub(super) async fn invoke_plugin_drain_status(
     let service_name = inception_service_name(blue_green_ref, inception_point);
     let port = plugin
         .spec
-        .container
+        .inceptor
         .ports
         .first()
         .map(|port| port.container_port)
@@ -128,8 +218,7 @@ pub(super) async fn invoke_plugin_drain_status(
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
-        &auth.signing_secret_name,
-        &auth.signing_secret_key,
+        auth,
         blue_green_ref,
         inception_point,
         plugin,
@@ -141,24 +230,28 @@ pub(super) async fn invoke_plugin_drain_status(
         .send()
         .await
         .map_err(|err| {
-            ReconcileError::Store(format!("plugin drain status call failed for {url}: {err}"))
+            ReconcileError::Store(format!(
+                "plugin inceptor drain status call failed for {url}: {err}"
+            ))
         })?
         .error_for_status()
         .map_err(|err| {
-            ReconcileError::Store(format!("plugin drain status call failed for {url}: {err}"))
+            ReconcileError::Store(format!(
+                "plugin inceptor drain status call failed for {url}: {err}"
+            ))
         })?;
     let payload = response
         .json::<PluginDrainStatusResponse>()
         .await
         .map_err(|err| {
             ReconcileError::Store(format!(
-                "plugin drain status response deserialization failed for {url}: {err}"
+                "plugin inceptor drain status response deserialization failed for {url}: {err}"
             ))
         })?;
     Ok(Some(payload))
 }
 
-pub(super) async fn invoke_plugin_traffic_shift(
+pub(super) async fn invoke_inceptor_traffic_shift(
     client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
@@ -176,7 +269,7 @@ pub(super) async fn invoke_plugin_traffic_shift(
     let service_name = inception_service_name(blue_green_ref, inception_point);
     let port = plugin
         .spec
-        .container
+        .inceptor
         .ports
         .first()
         .map(|port| port.container_port)
@@ -186,8 +279,7 @@ pub(super) async fn invoke_plugin_traffic_shift(
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
-        &auth.signing_secret_name,
-        &auth.signing_secret_key,
+        auth,
         blue_green_ref,
         inception_point,
         plugin,
@@ -204,21 +296,21 @@ pub(super) async fn invoke_plugin_traffic_shift(
             Ok(response) => {
                 response.error_for_status().map_err(|err| {
                     ReconcileError::Store(format!(
-                        "plugin traffic shift call failed for {url}: {err}"
+                        "plugin inceptor traffic shift call failed for {url}: {err}"
                     ))
                 })?;
                 return Ok(());
             }
             Err(err) if attempt < 10 => {
                 warn!(
-                    "plugin traffic shift endpoint {} not ready yet (attempt {}/10): {}",
+                    "plugin inceptor traffic shift endpoint {} not ready yet (attempt {}/10): {}",
                     url, attempt, err
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
                 return Err(ReconcileError::Store(format!(
-                    "plugin traffic shift call failed for {url}: {err}"
+                    "plugin inceptor traffic shift call failed for {url}: {err}"
                 )));
             }
         }
@@ -277,7 +369,7 @@ pub(super) async fn start_plugin_draining(
                     container_name: None,
                 }),
         );
-        if let Some(lifecycle_response) = invoke_plugin_lifecycle(
+        if let Some(lifecycle_response) = invoke_inceptor_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,

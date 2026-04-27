@@ -360,6 +360,7 @@ kubectl delete bluegreendeployment order-processor-progressive-unsupported -n "$
 kubectl delete bluegreendeployment order-processor-progressive-upgrade -n "$NS" --ignore-not-found
 kubectl delete bluegreendeployment order-processor-http-upgrade -n "$NS" --ignore-not-found
 kubectl delete statestore memory-store -n "$NS" --ignore-not-found
+kubectl delete secret fluidbg-operator-auth -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin http -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
 kubectl delete inceptionplugin rabbitmq-no-progressive -n "$NS" --ignore-not-found
@@ -388,7 +389,9 @@ echo ""
 echo "--- Step 3: Deploy operator ---"
 kubectl apply -f "$DEPLOY_DIR/03-operator.yaml"
 reset_deployment "$NS_SYSTEM" fluidbg-operator fluidbg-operator
+reset_deployment "$NS_SYSTEM" fluidbg-rabbitmq-manager fluidbg-rabbitmq-manager
 kubectl rollout status deployment/fluidbg-operator -n "$NS_SYSTEM" --timeout=120s
+kubectl rollout status deployment/fluidbg-rabbitmq-manager -n "$NS_SYSTEM" --timeout=120s
 
 echo ""
 echo "--- Step 4: Bootstrap initial green from empty cluster ---"

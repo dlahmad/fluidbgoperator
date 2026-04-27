@@ -43,6 +43,8 @@ spec:
               value: {{ .Values.operator.auth.signingSecretName | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
               value: {{ .Values.operator.auth.signingSecretKey | quote }}
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
+              value: {{ .Values.operator.auth.signingSecretNamespace | default .Release.Namespace | quote }}
           livenessProbe:
             httpGet:
               path: /health

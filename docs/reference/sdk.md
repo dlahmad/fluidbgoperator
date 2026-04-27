@@ -24,13 +24,19 @@ The Rust SDK also provides the shared auth primitives used by built-in plugins:
 
 - `PLUGIN_AUTH_TOKEN_ENV` for `FLUIDBG_PLUGIN_AUTH_TOKEN`
 - `AUTHORIZATION_HEADER` for bearer-token transport
+- `PluginInceptorRuntime` for operator/test-container discovery inside an inceptor
+- `PluginManagerLifecycleRequest` for manager prepare/cleanup requests
 - `PluginAuthClaims` for signed per-inception identity
+- `derived_temp_queue_name` for manager/inceptor agreement on derived queue names
 - `sign_plugin_auth_token` and `verify_plugin_auth_token` for HS256 JWT handling
 - `bearer_value`, `bearer_token`, and `bearer_matches` for endpoint checks
 
 Custom plugins should use the injected `FLUIDBG_PLUGIN_AUTH_TOKEN` unchanged
 when calling the operator and should require the same bearer token on their
 operator-owned lifecycle endpoints.
+Managers should verify the bearer token signature with the operator signing key
+and derive privileged resource names from verified claims, not from untrusted BGD
+config fields.
 
 ```sh
 openapi-generator-cli generate \

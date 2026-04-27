@@ -7,7 +7,7 @@ use crate::models::{PluginRole, TrafficRoute};
 use crate::notify::{RegisterTestCaseArgs, notify_observer, register_test_case};
 
 #[derive(Clone)]
-pub struct PluginRuntime {
+pub struct PluginInceptorRuntime {
     client: reqwest::Client,
     roles: Vec<PluginRole>,
     mode: String,
@@ -19,7 +19,7 @@ pub struct PluginRuntime {
     auth_token: Option<String>,
 }
 
-impl PluginRuntime {
+impl PluginInceptorRuntime {
     pub fn from_env() -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -117,3 +117,5 @@ impl PluginRuntime {
         .await
     }
 }
+
+pub type PluginRuntime = PluginInceptorRuntime;

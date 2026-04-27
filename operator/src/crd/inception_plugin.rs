@@ -44,7 +44,7 @@ pub struct VolumeMount {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginContainer {
+pub struct PluginInceptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<ContainerPort>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -105,6 +105,20 @@ pub struct PluginLifecycle {
     pub traffic_shift_path: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManager {
+    pub service_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_path: Option<String>,
+}
+
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[kube(
@@ -126,9 +140,11 @@ pub struct InceptionPluginSpec {
     pub config_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_template: Option<String>,
-    pub container: PluginContainer,
+    pub inceptor: PluginInceptor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<PluginLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager: Option<PluginManager>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub injects: Option<Injects>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

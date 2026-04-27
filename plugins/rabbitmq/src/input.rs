@@ -10,8 +10,8 @@ use crate::amqp::{
     connect_with_retry, declare_queue, move_queue_messages, publish_confirmed, queue_state,
 };
 use crate::config::{
-    AppState, RuntimeMode, consumer_config, duplicator_config, has_role, observer_config, required,
-    routes_to_blue, splitter_config,
+    AppState, RuntimeMode, consumer_config, duplicator_config, has_role, inceptor_infra_disabled,
+    observer_config, required, routes_to_blue, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
@@ -124,7 +124,6 @@ async fn drain_input_queues(state: &AppState, channel: &Channel) -> Result<()> {
         return Ok(());
     };
 
-    declare_queue(channel, &base_queue).await?;
     let (_, green_consumers) = queue_state(channel, &green_queue).await?;
     let (_, blue_consumers) = queue_state(channel, &blue_queue).await?;
 
@@ -197,7 +196,9 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
             )?
             .to_string()
         };
-        declare_queue(&channel, &input_queue).await?;
+        if !inceptor_infra_disabled() {
+            declare_queue(&channel, &input_queue).await?;
+        }
         info!("rabbitmq input pipeline polling {}", input_queue);
 
         loop {

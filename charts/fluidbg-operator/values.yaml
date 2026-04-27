@@ -18,6 +18,7 @@ operator:
       memory: 256Mi
   rustLog: info
   auth:
+    signingSecretNamespace: ""
     signingSecretName: fluidbg-operator-auth
     signingSecretKey: signing-key
   api:
@@ -66,12 +67,36 @@ builtinPlugins:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
+    manager:
+      enabled: false
+      amqpUrl: ""
+      amqpUrlSecretName: ""
+      amqpUrlSecretKey: amqp-url
+      podAnnotations: {}
+      podLabels: {}
+      resources: {}
   azureServiceBus:
     enabled: true
-    workloadIdentity:
+    inceptorWorkloadIdentity:
       enabled: false
       serviceAccountName: ""
       podAnnotations: {}
+      podLabels: {}
+    manager:
+      enabled: false
+      configSecretName: ""
+      configSecretKey: config.yaml
+      connectionStringSecretName: ""
+      connectionStringSecretKey: connection-string
+      fullyQualifiedNamespace: ""
+      workloadIdentity:
+        enabled: false
+        serviceAccountName: ""
+        podAnnotations: {}
+        podLabels: {}
+      podAnnotations: {}
+      podLabels: {}
+      resources: {}
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
       tag: 0.1.0

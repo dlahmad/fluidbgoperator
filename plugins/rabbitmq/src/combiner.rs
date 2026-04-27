@@ -10,7 +10,10 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::amqp::{connect_with_retry, declare_queue, publish_confirmed};
-use crate::config::{AppState, RuntimeMode, combiner_config, has_role, observer_config, required};
+use crate::config::{
+    AppState, RuntimeMode, combiner_config, has_role, inceptor_infra_disabled, observer_config,
+    required,
+};
 use crate::filtering::{
     extract_test_id, matches_filter, notify_observer, route_from_output_source,
 };
@@ -23,8 +26,10 @@ async fn run_combine_loop_once(
     let conn = connect_with_retry(&state.amqp_url).await?;
     let consume_channel = conn.create_channel().await?;
     let publish_channel = conn.create_channel().await?;
-    declare_queue(&consume_channel, &source_queue).await?;
-    declare_queue(&publish_channel, &result_queue).await?;
+    if !inceptor_infra_disabled() {
+        declare_queue(&consume_channel, &source_queue).await?;
+        declare_queue(&publish_channel, &result_queue).await?;
+    }
     let combiner = combiner_config(&state.config)?;
 
     let mut consumer = consume_channel

@@ -6,8 +6,8 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::config::{
-    AppState, RuntimeMode, consumer_config, duplicator_config, has_role, observer_config, required,
-    routes_to_blue, splitter_config,
+    AppState, RuntimeMode, consumer_config, duplicator_config, has_role, inceptor_infra_disabled,
+    observer_config, required, routes_to_blue, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
 use crate::servicebus::LockedMessage;
@@ -97,7 +97,9 @@ async fn drain_input_queues(state: &AppState) -> Result<()> {
         return Ok(());
     };
 
-    state.service_bus.create_queue(&base_queue).await?;
+    if !inceptor_infra_disabled() {
+        state.service_bus.create_queue(&base_queue).await?;
+    }
     for source in [green_queue, blue_queue] {
         let moved = state
             .service_bus

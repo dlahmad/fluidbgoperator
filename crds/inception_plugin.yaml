@@ -26,7 +26,22 @@ spec:
               configTemplate:
                 nullable: true
                 type: string
-              container:
+              description:
+                type: string
+              features:
+                nullable: true
+                properties:
+                  supportsProgressiveShifting:
+                    default: false
+                    type: boolean
+                type: object
+              fieldNamespaces:
+                items:
+                  type: string
+                type: array
+              image:
+                type: string
+              inceptor:
                 properties:
                   podAnnotations:
                     additionalProperties:
@@ -68,21 +83,6 @@ spec:
                       type: object
                     type: array
                 type: object
-              description:
-                type: string
-              features:
-                nullable: true
-                properties:
-                  supportsProgressiveShifting:
-                    default: false
-                    type: boolean
-                type: object
-              fieldNamespaces:
-                items:
-                  type: string
-                type: array
-              image:
-                type: string
               injects:
                 nullable: true
                 properties:
@@ -163,6 +163,27 @@ spec:
                     nullable: true
                     type: string
                 type: object
+              manager:
+                nullable: true
+                properties:
+                  cleanupPath:
+                    nullable: true
+                    type: string
+                  namespace:
+                    nullable: true
+                    type: string
+                  port:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  preparePath:
+                    nullable: true
+                    type: string
+                  serviceName:
+                    type: string
+                required:
+                - serviceName
+                type: object
               supportedRoles:
                 items:
                   enum:
@@ -183,9 +204,9 @@ spec:
                 type: string
             required:
             - configSchema
-            - container
             - description
             - image
+            - inceptor
             - topology
             type: object
           status:
