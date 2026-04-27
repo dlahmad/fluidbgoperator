@@ -15,6 +15,8 @@ pub struct PluginAuthClaims {
     pub aud: String,
     pub namespace: String,
     pub blue_green_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blue_green_uid: Option<String>,
     pub inception_point: String,
     pub plugin: String,
 }
@@ -26,8 +28,22 @@ impl PluginAuthClaims {
             aud: PLUGIN_AUTH_AUDIENCE.to_string(),
             namespace: namespace.to_string(),
             blue_green_ref: blue_green_ref.to_string(),
+            blue_green_uid: None,
             inception_point: inception_point.to_string(),
             plugin: plugin.to_string(),
+        }
+    }
+
+    pub fn new_with_uid(
+        namespace: &str,
+        blue_green_ref: &str,
+        blue_green_uid: &str,
+        inception_point: &str,
+        plugin: &str,
+    ) -> Self {
+        Self {
+            blue_green_uid: Some(blue_green_uid.to_string()),
+            ..Self::new(namespace, blue_green_ref, inception_point, plugin)
         }
     }
 }

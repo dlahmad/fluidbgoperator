@@ -6,12 +6,20 @@ use std::sync::{
 use anyhow::{Context, Result};
 use fluidbg_plugin_sdk::{ObserverConfig, PluginInceptorRuntime, PluginRole};
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Config {
     #[serde(default)]
     pub(crate) amqp_url: Option<String>,
+    #[serde(default)]
+    pub(crate) management: Option<ManagementConfig>,
+    #[serde(default)]
+    pub(crate) queue_declaration: QueueDeclarationConfig,
+    #[serde(default)]
+    pub(crate) shadow_queue: Option<ShadowQueueConfig>,
     #[serde(default)]
     pub(crate) duplicator: Option<DuplicatorConfig>,
     #[serde(default)]
@@ -24,6 +32,40 @@ pub(crate) struct Config {
     pub(crate) consumer: Option<ConsumerConfig>,
     #[serde(default)]
     pub(crate) observer: Option<ObserverConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueueDeclarationConfig {
+    #[serde(default)]
+    pub(crate) durable: Option<bool>,
+    #[serde(default)]
+    pub(crate) exclusive: Option<bool>,
+    #[serde(default)]
+    pub(crate) auto_delete: Option<bool>,
+    #[serde(default)]
+    pub(crate) arguments: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShadowQueueConfig {
+    pub(crate) suffix: String,
+    #[serde(default)]
+    pub(crate) queue_declaration: QueueDeclarationConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagementConfig {
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+    #[serde(default)]
+    pub(crate) username: Option<String>,
+    #[serde(default)]
+    pub(crate) password: Option<String>,
+    #[serde(default)]
+    pub(crate) vhost: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -115,7 +157,7 @@ impl AppState {
             roles,
             amqp_url,
             runtime,
-            mode: Arc::new(AtomicU8::new(RuntimeMode::Active as u8)),
+            mode: Arc::new(AtomicU8::new(RuntimeMode::Idle as u8)),
             traffic_percent: Arc::new(AtomicU8::new(blue_traffic_percent())),
         }
     }
@@ -201,4 +243,11 @@ pub(crate) fn routes_to_blue(payload: &[u8], traffic_percent: u8) -> bool {
 
 pub(crate) fn inceptor_infra_disabled() -> bool {
     std::env::var("FLUIDBG_INCEPTOR_INFRA_DISABLED").as_deref() == Ok("true")
+}
+
+pub(crate) fn shadow_queue_name(config: &Config, queue: &str) -> Option<String> {
+    config
+        .shadow_queue
+        .as_ref()
+        .map(|shadow| fluidbg_plugin_sdk::derived_shadow_queue_name(queue, &shadow.suffix))
 }

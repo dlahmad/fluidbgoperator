@@ -9,7 +9,7 @@ use fluidbg_plugin_sdk::{
 };
 use serde_json::Value;
 
-use crate::config::{Config, has_role};
+use crate::config::{Config, has_role, shadow_queue_name};
 use crate::servicebus::ServiceBusClient;
 
 #[derive(Clone)]
@@ -127,11 +127,64 @@ async fn reconcile_queues(
             combiner.blue_output_queue.as_deref(),
         ]);
     }
+    if create && let Some(shadow) = &config.shadow_queue {
+        let shadow_declaration = &shadow.queue_declaration;
+        let mut target_shadow_queues = Vec::new();
+        if has_role(&roles, PluginRole::Duplicator)
+            && let Some(duplicator) = &config.duplicator
+            && let Some(input_queue) = duplicator.input_queue.as_deref()
+        {
+            target_shadow_queues.push(input_queue);
+        }
+        if has_role(&roles, PluginRole::Splitter)
+            && let Some(splitter) = &config.splitter
+            && let Some(input_queue) = splitter.input_queue.as_deref()
+        {
+            target_shadow_queues.push(input_queue);
+        }
+        if has_role(&roles, PluginRole::Combiner)
+            && let Some(combiner) = &config.combiner
+            && let Some(output_queue) = combiner.output_queue.as_deref()
+        {
+            target_shadow_queues.push(output_queue);
+        }
+        for queue in target_shadow_queues {
+            if let Some(shadow_queue) = shadow_queue_name(config, queue) {
+                client
+                    .create_queue(&shadow_queue, shadow_declaration)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+        }
+    }
     for queue in queues.into_iter().flatten() {
         let result = if create {
-            client.create_queue(queue).await
+            if let Some(shadow_queue) = shadow_queue_name(config, queue) {
+                let shadow_declaration = config
+                    .shadow_queue
+                    .as_ref()
+                    .map(|shadow| &shadow.queue_declaration)
+                    .unwrap_or(&config.queue_declaration);
+                client
+                    .create_queue(&shadow_queue, shadow_declaration)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                client.create_queue(queue, &config.queue_declaration).await
+            } else {
+                client.create_queue(queue, &config.queue_declaration).await
+            }
         } else {
-            client.delete_queue(queue).await
+            client
+                .delete_queue(queue)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if let Some(shadow_queue) = shadow_queue_name(config, queue) {
+                client
+                    .delete_queue(&shadow_queue)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            Ok(())
         };
         result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }

@@ -260,11 +260,14 @@ impl StateStore for CosmosStore {
         }
     }
 
-    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>> {
+    async fn get(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<TestCaseRecord>> {
         let rows = self
             .query::<CosmosTestCase>(
-                "SELECT * FROM c WHERE c.test_id = @test_id",
-                json!([{ "name": "@test_id", "value": test_id }]),
+                "SELECT * FROM c WHERE c.blue_green_ref = @bg AND c.test_id = @test_id",
+                json!([
+                    { "name": "@bg", "value": blue_green_ref },
+                    { "name": "@test_id", "value": test_id }
+                ]),
             )
             .await?;
         Ok(rows.into_iter().next().map(TestCaseRecord::from))
@@ -272,11 +275,12 @@ impl StateStore for CosmosStore {
 
     async fn set_verdict(
         &self,
+        blue_green_ref: &str,
         test_id: &str,
         passed: bool,
         failure_message: Option<String>,
     ) -> Result<()> {
-        let Some(mut doc) = self.get_doc(test_id).await? else {
+        let Some(mut doc) = self.get_doc(blue_green_ref, test_id).await? else {
             return Err(StoreError::NotFound(test_id.to_string()));
         };
         if !is_pending_status(&doc.status) {
@@ -288,8 +292,8 @@ impl StateStore for CosmosStore {
         self.replace_doc(&doc).await
     }
 
-    async fn mark_timed_out(&self, test_id: &str) -> Result<()> {
-        let Some(mut doc) = self.get_doc(test_id).await? else {
+    async fn mark_timed_out(&self, blue_green_ref: &str, test_id: &str) -> Result<()> {
+        let Some(mut doc) = self.get_doc(blue_green_ref, test_id).await? else {
             return Err(StoreError::NotFound(test_id.to_string()));
         };
         if !is_pending_status(&doc.status) {
@@ -300,11 +304,11 @@ impl StateStore for CosmosStore {
         self.replace_doc(&doc).await
     }
 
-    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>> {
-        let Some(mut doc) = self.get_doc(test_id).await? else {
+    async fn decrement_retries(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<i32>> {
+        let Some(mut doc) = self.get_doc(blue_green_ref, test_id).await? else {
             return Err(StoreError::NotFound(test_id.to_string()));
         };
-        if doc.retries_remaining <= 0 {
+        if !is_pending_status(&doc.status) || doc.retries_remaining <= 0 {
             return Ok(None);
         }
         doc.retries_remaining -= 1;
@@ -391,11 +395,14 @@ impl CosmosStore {
         Ok(deleted)
     }
 
-    async fn get_doc(&self, test_id: &str) -> Result<Option<CosmosTestCase>> {
+    async fn get_doc(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<CosmosTestCase>> {
         let rows = self
             .query::<CosmosTestCase>(
-                "SELECT * FROM c WHERE c.test_id = @test_id",
-                json!([{ "name": "@test_id", "value": test_id }]),
+                "SELECT * FROM c WHERE c.blue_green_ref = @bg AND c.test_id = @test_id",
+                json!([
+                    { "name": "@bg", "value": blue_green_ref },
+                    { "name": "@test_id", "value": test_id }
+                ]),
             )
             .await?;
         Ok(rows.into_iter().next())
@@ -492,8 +499,9 @@ impl From<TestCaseRecord> for CosmosTestCase {
             VerificationMode::Custom => "Custom",
         }
         .to_string();
+        let id = cosmos_document_id(&run.blue_green_ref, &run.test_id);
         Self {
-            id: run.test_id.clone(),
+            id,
             etag: None,
             test_id: run.test_id,
             blue_green_ref: run.blue_green_ref,
@@ -509,6 +517,16 @@ impl From<TestCaseRecord> for CosmosTestCase {
             expires_at,
         }
     }
+}
+
+fn cosmos_document_id(blue_green_ref: &str, test_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(blue_green_ref.len().to_le_bytes());
+    hasher.update(blue_green_ref.as_bytes());
+    hasher.update(test_id.len().to_le_bytes());
+    hasher.update(test_id.as_bytes());
+    let hash = hasher.finalize();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
 }
 
 impl From<CosmosTestCase> for TestCaseRecord {

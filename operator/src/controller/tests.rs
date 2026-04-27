@@ -26,6 +26,7 @@ fn sample_bgd(generation: i64) -> BlueGreenDeployment {
                 namespace: Some("fluidbg-test".to_string()),
                 spec: Default::default(),
             },
+            test_deployment_patch: None,
             selector: DeploymentSelector {
                 namespace: None,
                 match_labels: BTreeMap::new(),

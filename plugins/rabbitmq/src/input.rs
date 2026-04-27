@@ -1,17 +1,15 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use lapin::Channel;
 use lapin::options::{BasicAckOptions, BasicGetOptions};
-use lapin::{BasicProperties, Channel};
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::amqp::{
-    connect_with_retry, declare_queue, move_queue_messages, publish_confirmed, queue_state,
-};
+use crate::amqp::{connect_with_retry, declare_queue, move_queue_messages, publish_confirmed};
 use crate::config::{
     AppState, RuntimeMode, consumer_config, duplicator_config, has_role, inceptor_infra_disabled,
-    observer_config, required, routes_to_blue, splitter_config,
+    observer_config, required, routes_to_blue, shadow_queue_name, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
@@ -42,18 +40,12 @@ async fn process_input_delivery(
                 channel,
                 green_queue,
                 &body_data,
-                BasicProperties::default().with_headers(headers.clone()),
+                delivery.properties.clone(),
             )
             .await?;
         }
         if let Some(blue_queue) = &duplicator.blue_input_queue {
-            publish_confirmed(
-                channel,
-                blue_queue,
-                &body_data,
-                BasicProperties::default().with_headers(headers.clone()),
-            )
-            .await?;
+            publish_confirmed(channel, blue_queue, &body_data, delivery.properties.clone()).await?;
         }
         route = TrafficRoute::Both;
     } else if has_role(&state.roles, PluginRole::Splitter) {
@@ -61,13 +53,8 @@ async fn process_input_delivery(
         let send_to_blue = routes_to_blue(&body_data, state.traffic_percent());
         if send_to_blue {
             if let Some(blue_queue) = &splitter.blue_input_queue {
-                publish_confirmed(
-                    channel,
-                    blue_queue,
-                    &body_data,
-                    BasicProperties::default().with_headers(headers.clone()),
-                )
-                .await?;
+                publish_confirmed(channel, blue_queue, &body_data, delivery.properties.clone())
+                    .await?;
             }
             route = TrafficRoute::Blue;
         } else if let Some(green_queue) = &splitter.green_input_queue {
@@ -75,7 +62,7 @@ async fn process_input_delivery(
                 channel,
                 green_queue,
                 &body_data,
-                BasicProperties::default().with_headers(headers.clone()),
+                delivery.properties.clone(),
             )
             .await?;
             route = TrafficRoute::Green;
@@ -124,25 +111,36 @@ async fn drain_input_queues(state: &AppState, channel: &Channel) -> Result<()> {
         return Ok(());
     };
 
-    let (_, green_consumers) = queue_state(channel, &green_queue).await?;
-    let (_, blue_consumers) = queue_state(channel, &blue_queue).await?;
+    if !inceptor_infra_disabled()
+        && let Some(base_shadow_queue) = shadow_queue_name(&state.config, &base_queue)
+    {
+        let shadow_declaration = state
+            .config
+            .shadow_queue
+            .as_ref()
+            .map(|shadow| &shadow.queue_declaration)
+            .unwrap_or(&state.config.queue_declaration);
+        declare_queue(channel, &base_shadow_queue, shadow_declaration).await?;
+    }
 
-    if green_consumers == 0 {
-        let moved = move_queue_messages(channel, &green_queue, &base_queue).await?;
+    for source in [&green_queue, &blue_queue] {
+        let moved = move_queue_messages(channel, source, &base_queue).await?;
         if moved > 0 {
             info!(
                 "moved {} message(s) from {} back to {} during drain",
-                moved, green_queue, base_queue
+                moved, source, base_queue
             );
         }
-    }
-    if blue_consumers == 0 {
-        let moved = move_queue_messages(channel, &blue_queue, &base_queue).await?;
-        if moved > 0 {
-            info!(
-                "moved {} message(s) from {} back to {} during drain",
-                moved, blue_queue, base_queue
-            );
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, source) {
+            let target_shadow_queue =
+                shadow_queue_name(&state.config, &base_queue).unwrap_or_else(|| base_queue.clone());
+            let moved = move_queue_messages(channel, &shadow_queue, &target_shadow_queue).await?;
+            if moved > 0 {
+                info!(
+                    "moved {} shadow message(s) from {} back to {} during drain",
+                    moved, shadow_queue, target_shadow_queue
+                );
+            }
         }
     }
 
@@ -197,7 +195,7 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
             .to_string()
         };
         if !inceptor_infra_disabled() {
-            declare_queue(&channel, &input_queue).await?;
+            declare_queue(&channel, &input_queue, &state.config.queue_declaration).await?;
         }
         info!("rabbitmq input pipeline polling {}", input_queue);
 

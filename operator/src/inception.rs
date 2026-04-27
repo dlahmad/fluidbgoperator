@@ -54,7 +54,12 @@ impl InceptionTracker {
                         if let Some(passed) = body.passed {
                             if let Err(e) = self
                                 .store
-                                .set_verdict(&run.test_id, passed, body.error_message.clone())
+                                .set_verdict(
+                                    &run.blue_green_ref,
+                                    &run.test_id,
+                                    passed,
+                                    body.error_message.clone(),
+                                )
                                 .await
                             {
                                 warn!("failed to set verdict for {}: {}", run.test_id, e);
@@ -69,7 +74,11 @@ impl InceptionTracker {
                             debug!("test {} still pending (null verdict)", run.test_id);
                         }
                     } else if run.verification_mode == VerificationMode::Custom {
-                        match self.store.decrement_retries(&run.test_id).await {
+                        match self
+                            .store
+                            .decrement_retries(&run.blue_green_ref, &run.test_id)
+                            .await
+                        {
                             Ok(Some(remaining)) => {
                                 warn!(
                                     "custom test {} verification request returned unparsable response, retrying ({} left)",
@@ -80,6 +89,7 @@ impl InceptionTracker {
                                 let _ = self
                                     .store
                                     .set_verdict(
+                                        &run.blue_green_ref,
                                         &run.test_id,
                                         false,
                                         Some("custom verification retries exhausted".to_string()),
@@ -104,7 +114,11 @@ impl InceptionTracker {
         for run in &pending {
             if run.expires_at() < now {
                 info!("test {} timed out", run.test_id);
-                if let Err(e) = self.store.mark_timed_out(&run.test_id).await {
+                if let Err(e) = self
+                    .store
+                    .mark_timed_out(&run.blue_green_ref, &run.test_id)
+                    .await
+                {
                     warn!("failed to mark {} as timed out: {}", run.test_id, e);
                 }
             }

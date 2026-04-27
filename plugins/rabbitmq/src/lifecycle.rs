@@ -15,8 +15,9 @@ use crate::amqp::{connect_with_retry, declare_queue, delete_queue, queue_state};
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
 use crate::config::{
     AppState, RuntimeMode, combiner_config, duplicator_config, has_role, inceptor_infra_disabled,
-    required, splitter_config, writer_config,
+    required, shadow_queue_name, splitter_config, writer_config,
 };
+use crate::management::{ManagementClient, QueueDepth};
 
 pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusResponse> {
     let conn = connect_with_retry(&state.amqp_url).await?;
@@ -25,6 +26,7 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
     if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         return input_drain_status(
+            state,
             &channel,
             required(&config.green_input_queue, "duplicator.greenInputQueue")?,
             required(&config.blue_input_queue, "duplicator.blueInputQueue")?,
@@ -35,6 +37,7 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
     if has_role(&state.roles, PluginRole::Splitter) {
         let config = splitter_config(&state.config)?;
         return input_drain_status(
+            state,
             &channel,
             required(&config.green_input_queue, "splitter.greenInputQueue")?,
             required(&config.blue_input_queue, "splitter.blueInputQueue")?,
@@ -46,18 +49,14 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
         let config = combiner_config(&state.config)?;
         let green_queue = required(&config.green_output_queue, "combiner.greenOutputQueue")?;
         let blue_queue = required(&config.blue_output_queue, "combiner.blueOutputQueue")?;
-        let (green_messages, _) = queue_state(&channel, green_queue).await?;
-        let (blue_messages, _) = queue_state(&channel, blue_queue).await?;
-        let drained = green_messages == 0 && blue_messages == 0;
-        let message = if drained {
-            Some("temporary output queues are empty".to_string())
-        } else {
-            Some(format!(
-                "temporary output queues still contain messages (green={}, blue={})",
-                green_messages, blue_messages
-            ))
-        };
-        return Ok(PluginDrainStatusResponse { drained, message });
+        return queue_pair_drain_status(
+            state,
+            &channel,
+            green_queue,
+            blue_queue,
+            "temporary output queues",
+        )
+        .await;
     }
 
     Ok(PluginDrainStatusResponse {
@@ -67,27 +66,104 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
 }
 
 async fn input_drain_status(
+    state: &AppState,
     channel: &lapin::Channel,
     green_queue: &str,
     blue_queue: &str,
 ) -> Result<PluginDrainStatusResponse> {
-    let (green_messages, green_consumers) = queue_state(channel, green_queue).await?;
-    let (blue_messages, blue_consumers) = queue_state(channel, blue_queue).await?;
-    let drained =
-        green_messages == 0 && blue_messages == 0 && green_consumers == 0 && blue_consumers == 0;
+    queue_pair_drain_status(
+        state,
+        channel,
+        green_queue,
+        blue_queue,
+        "temporary input queues",
+    )
+    .await
+}
+
+async fn queue_pair_drain_status(
+    state: &AppState,
+    channel: &lapin::Channel,
+    green_queue: &str,
+    blue_queue: &str,
+    label: &str,
+) -> Result<PluginDrainStatusResponse> {
+    if let Some(management) = ManagementClient::from_config(&state.config) {
+        let green = management_queue_depth_with_shadow(&management, state, green_queue).await?;
+        let blue = management_queue_depth_with_shadow(&management, state, blue_queue).await?;
+        return Ok(management_drain_status(label, &green, &blue));
+    }
+
+    let (green_ready, green_consumers) =
+        queue_state_with_shadow(channel, state, green_queue).await?;
+    let (blue_ready, blue_consumers) = queue_state_with_shadow(channel, state, blue_queue).await?;
+    let drained = green_ready == 0 && blue_ready == 0;
     let message = if drained {
-        Some("temporary input queues are empty and no consumers remain attached".to_string())
-    } else if green_consumers > 0 || blue_consumers > 0 {
-        Some(
-            "temporary input queues still have active consumers; locks may still exist".to_string(),
-        )
+        Some(format!(
+            "{label} have no ready messages; RabbitMQ management API is not configured, so unacknowledged counts are not directly observable (consumers: green={green_consumers}, blue={blue_consumers})"
+        ))
     } else {
         Some(format!(
-            "temporary input queues still contain messages (green={}, blue={})",
-            green_messages, blue_messages
+            "{label} still contain ready messages (green={green_ready}, blue={blue_ready})"
         ))
     };
     Ok(PluginDrainStatusResponse { drained, message })
+}
+
+async fn management_queue_depth_with_shadow(
+    management: &ManagementClient,
+    state: &AppState,
+    queue: &str,
+) -> Result<QueueDepth> {
+    let mut depth = management.queue_depth(queue).await?;
+    if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+        let shadow = management.queue_depth(&shadow_queue).await?;
+        depth.ready += shadow.ready;
+        depth.unacknowledged += shadow.unacknowledged;
+        depth.consumers += shadow.consumers;
+    }
+    Ok(depth)
+}
+
+async fn queue_state_with_shadow(
+    channel: &lapin::Channel,
+    state: &AppState,
+    queue: &str,
+) -> Result<(u32, u32)> {
+    let (mut ready, mut consumers) = queue_state(channel, queue).await?;
+    if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+        let (shadow_ready, shadow_consumers) = queue_state(channel, &shadow_queue).await?;
+        ready += shadow_ready;
+        consumers += shadow_consumers;
+    }
+    Ok((ready, consumers))
+}
+
+fn management_drain_status(
+    label: &str,
+    green: &QueueDepth,
+    blue: &QueueDepth,
+) -> PluginDrainStatusResponse {
+    let green_total = green.ready + green.unacknowledged;
+    let blue_total = blue.ready + blue.unacknowledged;
+    let drained = green_total == 0 && blue_total == 0;
+    let message = if drained {
+        Some(format!(
+            "{label} are empty and have no unacknowledged messages (consumers: green={}, blue={})",
+            green.consumers, blue.consumers
+        ))
+    } else {
+        Some(format!(
+            "{label} not drained (green ready={}, unacked={}, consumers={}; blue ready={}, unacked={}, consumers={})",
+            green.ready,
+            green.unacknowledged,
+            green.consumers,
+            blue.ready,
+            blue.unacknowledged,
+            blue.consumers
+        ))
+    };
+    PluginDrainStatusResponse { drained, message }
 }
 
 pub(crate) async fn prepare_handler(
@@ -113,6 +189,7 @@ pub(crate) async fn prepare_handler(
         let duplicator = duplicator_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         declare_temp_queues(
+            &state,
             &channel,
             &[
                 duplicator.green_input_queue.as_deref(),
@@ -125,6 +202,7 @@ pub(crate) async fn prepare_handler(
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         declare_temp_queues(
+            &state,
             &channel,
             &[
                 splitter.green_input_queue.as_deref(),
@@ -137,6 +215,7 @@ pub(crate) async fn prepare_handler(
         let combiner = combiner_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         declare_temp_queues(
+            &state,
             &channel,
             &[
                 combiner.green_output_queue.as_deref(),
@@ -149,7 +228,7 @@ pub(crate) async fn prepare_handler(
     if has_role(&state.roles, PluginRole::Writer) {
         let writer = writer_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        declare_temp_queues(&channel, &[writer.target_queue.as_deref()]).await?;
+        declare_temp_queues(&state, &channel, &[writer.target_queue.as_deref()]).await?;
     }
 
     Ok(Json(PluginLifecycleResponse {
@@ -181,6 +260,7 @@ pub(crate) async fn cleanup_handler(
         let duplicator = duplicator_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         delete_temp_queues(
+            &state,
             &channel,
             &[
                 duplicator.green_input_queue.as_deref(),
@@ -193,6 +273,7 @@ pub(crate) async fn cleanup_handler(
         let splitter = splitter_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         delete_temp_queues(
+            &state,
             &channel,
             &[
                 splitter.green_input_queue.as_deref(),
@@ -205,6 +286,7 @@ pub(crate) async fn cleanup_handler(
         let combiner = combiner_config(&state.config)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         delete_temp_queues(
+            &state,
             &channel,
             &[
                 combiner.green_output_queue.as_deref(),
@@ -269,18 +351,35 @@ fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), Statu
 }
 
 async fn declare_temp_queues(
+    state: &AppState,
     channel: &lapin::Channel,
     queues: &[Option<&str>],
 ) -> Result<(), axum::http::StatusCode> {
     for queue in queues.iter().flatten() {
-        declare_queue(channel, queue)
-            .await
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+            let shadow_declaration = state
+                .config
+                .shadow_queue
+                .as_ref()
+                .map(|shadow| &shadow.queue_declaration)
+                .unwrap_or(&state.config.queue_declaration);
+            declare_queue(channel, &shadow_queue, shadow_declaration)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            declare_queue(channel, queue, &state.config.queue_declaration)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        } else {
+            declare_queue(channel, queue, &state.config.queue_declaration)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(())
 }
 
 async fn delete_temp_queues(
+    state: &AppState,
     channel: &lapin::Channel,
     queues: &[Option<&str>],
 ) -> Result<(), axum::http::StatusCode> {
@@ -288,6 +387,54 @@ async fn delete_temp_queues(
         delete_queue(channel, queue)
             .await
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+            delete_queue(channel, &shadow_queue)
+                .await
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn management_drain_ignores_attached_consumers_when_no_messages_exist() {
+        let status = management_drain_status(
+            "temporary queues",
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 0,
+                consumers: 2,
+            },
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 0,
+                consumers: 1,
+            },
+        );
+
+        assert!(status.drained);
+    }
+
+    #[test]
+    fn management_drain_waits_for_unacknowledged_messages() {
+        let status = management_drain_status(
+            "temporary queues",
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 1,
+                consumers: 0,
+            },
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 0,
+                consumers: 0,
+            },
+        );
+
+        assert!(!status.drained);
+    }
 }

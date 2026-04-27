@@ -1,3 +1,4 @@
+pub mod builtin_plugins;
 pub mod controller;
 pub mod crd;
 pub mod evaluator;

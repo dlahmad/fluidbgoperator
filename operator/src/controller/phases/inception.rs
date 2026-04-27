@@ -45,6 +45,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
         .first()
         .and_then(|test| test.data_verification.as_ref())
         .map(|verification| verification.verify_path.as_str());
+    let mut all_assignments = Vec::new();
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
@@ -73,11 +74,11 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .map_err(ReconcileError::Store)?;
         let mut plugin_deployments = Vec::new();
-        let mut assignments = template_assignments(
+        all_assignments.extend(template_assignments(
             resources.green_env_injections,
             resources.blue_env_injections,
             resources.test_env_injections,
-        );
+        ));
 
         for cm in resources.config_maps {
             let name =
@@ -142,13 +143,13 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .await?
         {
-            assignments.append(&mut lifecycle_assignments.assignments);
+            all_assignments.append(&mut lifecycle_assignments.assignments);
         }
+    }
 
-        if !assignments.is_empty() {
-            let touched = apply_assignments(bgd, client, namespace, &assignments, false).await?;
-            wait_for_deployments_ready(client, &touched).await?;
-        }
+    if !all_assignments.is_empty() {
+        let touched = apply_assignments(bgd, client, namespace, &all_assignments, false).await?;
+        wait_for_deployments_ready(client, &touched).await?;
     }
 
     Ok(())

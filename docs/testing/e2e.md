@@ -36,9 +36,11 @@ flowchart TD
 - Rejection of progressive strategy when the splitter plugin does not advertise `supportsProgressiveShifting`.
 - Combined HTTP plugin proxy, observer, mock, and writer behavior.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.
+- Test-time deployment patching, including a lower candidate replica count during observation and canonical replica count after promotion.
 - Same-`BlueGreenDeployment` rollout serialization so a new rollout cannot start while previous inception resources still exist.
 - Different `BlueGreenDeployment` names running without generated-name collisions.
 - Forced-delete recovery for missing BGD CRs with finalizers removed.
+- GitOps-friendly `Ready`, `Progressing`, and `Degraded` status conditions.
 - Optional HA state-store run with two operator replicas and Postgres.
 
 ## State Store Modes
@@ -59,7 +61,9 @@ That mode deploys a local `postgres:18-alpine` instance, stores the connection
 URL in `secret/fluidbg-postgres`, installs the operator through Helm with
 `stateStore.type=postgres`, and waits for both operator replicas to become
 ready. The chart intentionally rejects `OPERATOR_REPLICAS=2` with
-`stateStore.type=memory`.
+`stateStore.type=memory`. The same run exercises per-BGD Kubernetes lease
+coordination, so only one operator replica can perform side-effecting work for a
+specific BGD at a time.
 
 ## Runtime Topology
 
@@ -114,16 +118,17 @@ sequenceDiagram
     E->>H: helm install chart
     H->>O: Helm creates CRDs, operator, auth Secret
     H->>M: Helm creates manager
-    H->>I: Helm registers built-in InceptionPlugins
-    O->>I: create per-inception Deployments with token only
+    H->>I: Helm hook applies built-in InceptionPlugins after CRD establishment
+    O->>I: create idle per-inception Deployments with token only
     O->>M: POST /manager/prepare with signed JWT
-    M->>R: create derived temp queues
+    M->>R: create derived temp queues and optional shadow queues
     O->>I: POST /prepare with same JWT
+    O->>O: batch all app/test env assignments
     I->>R: duplicate/split/combine messages
     I->>T: notify observations
     I->>O: register test cases
     O->>T: poll verifyPath
-    O->>I: drain and cleanup
+    O->>I: drain regular queues and shadow queues
     O->>M: POST /manager/cleanup with signed JWT
     M->>R: delete derived temp queues
 ```
@@ -137,6 +142,9 @@ for a test case has been seen. For combined queue/HTTP cases this means:
 - The expected output message was emitted.
 - The expected REST call was observed by the HTTP plugin.
 - The observed events use plugin-supplied route metadata, not application-owned payload fields.
+- The rollback path publishes messages into RabbitMQ temporary shadow queues and
+  verifies they are moved back to matching base shadow queues such as
+  `orders_dlq` and `results_dlq`.
 
 ## Cleanup Checks
 
@@ -154,6 +162,7 @@ rows remain for the force-deleted BGD.
 The suite also uninstalls the Helm release and asserts that chart-owned
 operator resources are removed: operator Deployment/Service/ServiceAccount,
 manager Deployment/Service, built-in `InceptionPlugin` resources, RBAC, and the
-chart-created signing Secret. CRDs are installed from the chart but are deleted
-explicitly at the beginning of the next e2e run because Helm intentionally does
-not remove CRDs on uninstall.
+chart-created signing Secret. Built-in plugin CRs are applied by Helm hook after
+the CRD is established and deleted by a pre-delete hook on uninstall. CRDs are
+installed from the chart but are deleted explicitly at the beginning of the next
+e2e run because Helm intentionally does not remove CRDs on uninstall.

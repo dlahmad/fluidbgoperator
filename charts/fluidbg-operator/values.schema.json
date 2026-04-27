@@ -34,6 +34,13 @@
           "properties": {
             "intervalSeconds": { "type": "integer", "minimum": 1 }
           }
+        },
+        "reconcileLease": {
+          "type": "object",
+          "properties": {
+            "durationSeconds": { "type": "integer", "minimum": 1 },
+            "renewIntervalSeconds": { "type": "integer", "minimum": 1 }
+          }
         }
       }
     },

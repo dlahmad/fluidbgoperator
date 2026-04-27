@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::config::{AuthMode, Config, ManagementConfig};
+use crate::config::{AuthMode, Config, ManagementConfig, QueueDeclarationConfig};
 
 const SERVICE_BUS_SCOPE: &str = "https://servicebus.azure.net/.default";
 const ARM_SCOPE: &str = "https://management.azure.com/.default";
@@ -150,7 +150,11 @@ impl ServiceBusClient {
         })
     }
 
-    pub(crate) async fn create_queue(&self, queue: &str) -> Result<()> {
+    pub(crate) async fn create_queue(
+        &self,
+        queue: &str,
+        declaration: &QueueDeclarationConfig,
+    ) -> Result<()> {
         if self.uses_workload_identity()
             && let Some(management) = &self.management
             && has_arm_management_config(management)
@@ -158,11 +162,11 @@ impl ServiceBusClient {
             if !management.create_queues {
                 return Ok(());
             }
-            return self.create_queue_arm(queue, management).await;
+            return self.create_queue_arm(queue, management, declaration).await;
         }
 
         let url = self.queue_url(queue);
-        let body = queue_description_xml();
+        let body = queue_description_xml(declaration);
         let response = self
             .authorized(
                 self.http
@@ -334,9 +338,27 @@ impl ServiceBusClient {
         source_queue: &str,
         target_queue: &str,
     ) -> Result<u32> {
+        self.move_available_messages_from_path(source_queue, target_queue)
+            .await
+    }
+
+    pub(crate) async fn move_available_dead_letter_messages(
+        &self,
+        source_queue: &str,
+        target_queue: &str,
+    ) -> Result<u32> {
+        self.move_available_messages_from_path(&dead_letter_path(source_queue), target_queue)
+            .await
+    }
+
+    async fn move_available_messages_from_path(
+        &self,
+        source_path: &str,
+        target_queue: &str,
+    ) -> Result<u32> {
         let mut moved = 0;
         loop {
-            let Some(message) = self.receive_peek_lock(source_queue, 1).await? else {
+            let Some(message) = self.receive_peek_lock(source_path, 1).await? else {
                 break;
             };
             match self
@@ -354,6 +376,19 @@ impl ServiceBusClient {
             }
         }
         Ok(moved)
+    }
+
+    pub(crate) async fn queue_drain_message_count(&self, queue: &str) -> Result<u64> {
+        if self.uses_workload_identity()
+            && let Some(management) = &self.management
+            && has_arm_management_config(management)
+        {
+            return self.queue_drain_message_count_arm(queue, management).await;
+        }
+
+        let active = self.queue_message_count(queue).await?;
+        let dead_letter = self.queue_message_count(&dead_letter_path(queue)).await?;
+        Ok(active + dead_letter)
     }
 
     pub(crate) async fn queue_message_count(&self, queue: &str) -> Result<u64> {
@@ -387,14 +422,15 @@ impl ServiceBusClient {
         }
     }
 
-    async fn create_queue_arm(&self, queue: &str, management: &ManagementConfig) -> Result<()> {
+    async fn create_queue_arm(
+        &self,
+        queue: &str,
+        management: &ManagementConfig,
+        declaration: &QueueDeclarationConfig,
+    ) -> Result<()> {
         let url = self.arm_queue_url(queue, management)?;
-        let body = serde_json::json!({
-            "properties": {
-                "lockDuration": "PT1M",
-                "enableBatchedOperations": true
-            }
-        });
+        let body =
+            serde_json::json!({ "properties": queue_description_arm_properties(declaration) });
         let response = self
             .authorized(self.http.put(&url).json(&body), &url, ARM_SCOPE)
             .await?
@@ -447,6 +483,44 @@ impl ServiceBusClient {
                     .pointer("/properties/messageCount")
                     .and_then(Value::as_u64)
                     .unwrap_or(0))
+            }
+            404 => Ok(0),
+            status => bail!(
+                "ARM get Service Bus queue '{}' failed: {} {}",
+                queue,
+                status,
+                response.text().await.unwrap_or_default()
+            ),
+        }
+    }
+
+    async fn queue_drain_message_count_arm(
+        &self,
+        queue: &str,
+        management: &ManagementConfig,
+    ) -> Result<u64> {
+        let url = self.arm_queue_url(queue, management)?;
+        let response = self
+            .authorized(self.http.get(&url), &url, ARM_SCOPE)
+            .await?
+            .send()
+            .await?;
+        match response.status().as_u16() {
+            200 => {
+                let body = response.json::<Value>().await?;
+                let active = body
+                    .pointer("/properties/messageCountDetails/activeMessageCount")
+                    .and_then(Value::as_u64);
+                let dead_letter = body
+                    .pointer("/properties/messageCountDetails/deadLetterMessageCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let detailed_total = active.map(|active| active + dead_letter).unwrap_or(0);
+                let total = body
+                    .pointer("/properties/messageCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                Ok(total.max(detailed_total))
             }
             404 => Ok(0),
             status => bail!(
@@ -644,16 +718,215 @@ async fn request_workload_identity_token(
     })
 }
 
-fn queue_description_xml() -> &'static str {
-    r#"<?xml version="1.0" encoding="utf-8"?>
+fn queue_description_xml(declaration: &QueueDeclarationConfig) -> String {
+    let properties = queue_description_fields(declaration)
+        .into_iter()
+        .map(|(name, value)| format!("      <{name}>{}</{name}>", xml_escape(&value)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <entry xmlns="http://www.w3.org/2005/Atom">
   <content type="application/xml">
     <QueueDescription xmlns="http://schemas.microsoft.com/netservices/2010/10/servicebus/connect">
-      <LockDuration>PT1M</LockDuration>
-      <EnableBatchedOperations>true</EnableBatchedOperations>
+{properties}
     </QueueDescription>
   </content>
 </entry>"#
+    )
+}
+
+fn queue_description_arm_properties(declaration: &QueueDeclarationConfig) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "lockDuration".to_string(),
+        serde_json::Value::String(
+            declaration
+                .lock_duration
+                .clone()
+                .unwrap_or_else(|| "PT1M".to_string()),
+        ),
+    );
+    properties.insert(
+        "enableBatchedOperations".to_string(),
+        serde_json::Value::Bool(declaration.enable_batched_operations.unwrap_or(true)),
+    );
+    insert_json_property(
+        &mut properties,
+        "maxSizeInMegabytes",
+        declaration.max_size_in_megabytes,
+    );
+    insert_json_property(
+        &mut properties,
+        "maxMessageSizeInKilobytes",
+        declaration.max_message_size_in_kilobytes,
+    );
+    insert_json_property(
+        &mut properties,
+        "requiresDuplicateDetection",
+        declaration.requires_duplicate_detection,
+    );
+    insert_json_property(
+        &mut properties,
+        "requiresSession",
+        declaration.requires_session,
+    );
+    insert_json_property(
+        &mut properties,
+        "defaultMessageTimeToLive",
+        declaration.default_message_time_to_live.as_deref(),
+    );
+    insert_json_property(
+        &mut properties,
+        "deadLetteringOnMessageExpiration",
+        declaration.dead_lettering_on_message_expiration,
+    );
+    insert_json_property(
+        &mut properties,
+        "duplicateDetectionHistoryTimeWindow",
+        declaration
+            .duplicate_detection_history_time_window
+            .as_deref(),
+    );
+    insert_json_property(
+        &mut properties,
+        "maxDeliveryCount",
+        declaration.max_delivery_count,
+    );
+    insert_json_property(
+        &mut properties,
+        "autoDeleteOnIdle",
+        declaration.auto_delete_on_idle.as_deref(),
+    );
+    insert_json_property(
+        &mut properties,
+        "enablePartitioning",
+        declaration.enable_partitioning,
+    );
+    insert_json_property(&mut properties, "enableExpress", declaration.enable_express);
+    insert_json_property(
+        &mut properties,
+        "forwardTo",
+        declaration.forward_to.as_deref(),
+    );
+    insert_json_property(
+        &mut properties,
+        "forwardDeadLetteredMessagesTo",
+        declaration.forward_dead_lettered_messages_to.as_deref(),
+    );
+    insert_json_property(&mut properties, "status", declaration.status.as_deref());
+    serde_json::Value::Object(properties)
+}
+
+fn queue_description_fields(declaration: &QueueDeclarationConfig) -> Vec<(&'static str, String)> {
+    let mut fields = vec![
+        (
+            "LockDuration",
+            declaration
+                .lock_duration
+                .clone()
+                .unwrap_or_else(|| "PT1M".to_string()),
+        ),
+        (
+            "EnableBatchedOperations",
+            declaration
+                .enable_batched_operations
+                .unwrap_or(true)
+                .to_string(),
+        ),
+    ];
+    push_xml_field(
+        &mut fields,
+        "MaxSizeInMegabytes",
+        declaration.max_size_in_megabytes,
+    );
+    push_xml_field(
+        &mut fields,
+        "MaxMessageSizeInKilobytes",
+        declaration.max_message_size_in_kilobytes,
+    );
+    push_xml_field(
+        &mut fields,
+        "RequiresDuplicateDetection",
+        declaration.requires_duplicate_detection,
+    );
+    push_xml_field(&mut fields, "RequiresSession", declaration.requires_session);
+    push_xml_field(
+        &mut fields,
+        "DefaultMessageTimeToLive",
+        declaration.default_message_time_to_live.as_deref(),
+    );
+    push_xml_field(
+        &mut fields,
+        "DeadLetteringOnMessageExpiration",
+        declaration.dead_lettering_on_message_expiration,
+    );
+    push_xml_field(
+        &mut fields,
+        "DuplicateDetectionHistoryTimeWindow",
+        declaration
+            .duplicate_detection_history_time_window
+            .as_deref(),
+    );
+    push_xml_field(
+        &mut fields,
+        "MaxDeliveryCount",
+        declaration.max_delivery_count,
+    );
+    push_xml_field(
+        &mut fields,
+        "AutoDeleteOnIdle",
+        declaration.auto_delete_on_idle.as_deref(),
+    );
+    push_xml_field(
+        &mut fields,
+        "EnablePartitioning",
+        declaration.enable_partitioning,
+    );
+    push_xml_field(&mut fields, "EnableExpress", declaration.enable_express);
+    push_xml_field(&mut fields, "ForwardTo", declaration.forward_to.as_deref());
+    push_xml_field(
+        &mut fields,
+        "ForwardDeadLetteredMessagesTo",
+        declaration.forward_dead_lettered_messages_to.as_deref(),
+    );
+    push_xml_field(&mut fields, "Status", declaration.status.as_deref());
+    fields
+}
+
+fn insert_json_property<T: serde::Serialize>(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    value: Option<T>,
+) {
+    if let Some(value) = value
+        && let Ok(value) = serde_json::to_value(value)
+    {
+        target.insert(name.to_string(), value);
+    }
+}
+
+fn push_xml_field<T: ToString>(
+    target: &mut Vec<(&'static str, String)>,
+    name: &'static str,
+    value: Option<T>,
+) {
+    if let Some(value) = value {
+        target.push((name, value.to_string()));
+    }
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn dead_letter_path(queue: &str) -> String {
+    format!("{}/$deadletterqueue", queue.trim_end_matches('/'))
 }
 
 fn custom_properties(headers: &HeaderMap) -> BTreeMap<String, String> {
@@ -828,6 +1101,22 @@ mod tests {
     }
 
     #[test]
+    fn dead_letter_path_uses_service_bus_subqueue_suffix() {
+        assert_eq!(
+            dead_letter_path("orders-blue"),
+            "orders-blue/$deadletterqueue"
+        );
+        assert_eq!(
+            dead_letter_path("orders-blue/"),
+            "orders-blue/$deadletterqueue"
+        );
+        assert_eq!(
+            percent_encode_path(&dead_letter_path("orders-blue")),
+            "orders-blue/%24deadletterqueue"
+        );
+    }
+
+    #[test]
     fn extracts_queue_message_count_from_atom_xml() {
         assert_eq!(
             extract_xml_u64(
@@ -836,5 +1125,44 @@ mod tests {
             ),
             Some(17)
         );
+    }
+
+    #[test]
+    fn queue_description_xml_contains_configured_properties() {
+        let declaration = QueueDeclarationConfig {
+            lock_duration: Some("PT30S".to_string()),
+            max_delivery_count: Some(20),
+            dead_lettering_on_message_expiration: Some(true),
+            forward_dead_lettered_messages_to: Some("orders-blue_dlq".to_string()),
+            ..Default::default()
+        };
+
+        let xml = queue_description_xml(&declaration);
+
+        assert!(xml.contains("<LockDuration>PT30S</LockDuration>"));
+        assert!(xml.contains("<MaxDeliveryCount>20</MaxDeliveryCount>"));
+        assert!(
+            xml.contains(
+                "<DeadLetteringOnMessageExpiration>true</DeadLetteringOnMessageExpiration>"
+            )
+        );
+        assert!(xml.contains(
+            "<ForwardDeadLetteredMessagesTo>orders-blue_dlq</ForwardDeadLetteredMessagesTo>"
+        ));
+    }
+
+    #[test]
+    fn queue_description_arm_contains_configured_properties() {
+        let properties = queue_description_arm_properties(&QueueDeclarationConfig {
+            lock_duration: Some("PT45S".to_string()),
+            max_delivery_count: Some(12),
+            enable_partitioning: Some(true),
+            ..Default::default()
+        });
+
+        assert_eq!(properties["lockDuration"], "PT45S");
+        assert_eq!(properties["maxDeliveryCount"], 12);
+        assert_eq!(properties["enablePartitioning"], true);
+        assert_eq!(properties["enableBatchedOperations"], true);
     }
 }

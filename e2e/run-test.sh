@@ -118,6 +118,132 @@ sys.exit(1)
 PY
 }
 
+queue_contains_json_field() {
+    local queue="$1"
+    local field="$2"
+    local expected="$3"
+    local payload
+    payload="$(curl -sf -u fluidbg:fluidbg \
+        -H "Content-Type: application/json" \
+        -X POST "http://localhost:15672/api/queues/%2F/$queue/get" \
+        -d '{"count":100,"ackmode":"ack_requeue_true","encoding":"auto","truncate":50000}' || true)"
+    if [ -z "$payload" ]; then
+        return 1
+    fi
+    PAYLOAD_JSON="$payload" python3 - "$field" "$expected" <<'PY'
+import json
+import os
+import sys
+
+field = sys.argv[1]
+expected = sys.argv[2]
+messages = json.loads(os.environ.get("PAYLOAD_JSON", "[]"))
+for message in messages:
+    payload = message.get("payload")
+    if not isinstance(payload, str):
+        continue
+    try:
+        decoded = json.loads(payload)
+    except Exception:
+        continue
+    if str(decoded.get(field)) == expected:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+assert_rabbitmq_management_queue_drained() {
+    local queue="$1"
+    local response status payload
+    response="$(curl -s -u fluidbg:fluidbg -w $'\n%{http_code}' "http://localhost:15672/api/queues/%2F/$queue" || true)"
+    status="${response##*$'\n'}"
+    payload="${response%$'\n'*}"
+    if [ "$status" = "404" ]; then
+        echo "RabbitMQ queue '$queue' already deleted after drain"
+        return 0
+    fi
+    if [ "$status" != "200" ] || [ -z "$payload" ]; then
+        echo "RabbitMQ management API did not return queue '$queue' (status=$status)" >&2
+        return 1
+    fi
+    PAYLOAD_JSON="$payload" python3 - "$queue" <<'PY'
+import json
+import os
+import sys
+
+queue = sys.argv[1]
+payload = json.loads(os.environ["PAYLOAD_JSON"])
+ready = int(payload.get("messages_ready", 0))
+unacked = int(payload.get("messages_unacknowledged", 0))
+consumers = int(payload.get("consumers", 0))
+if ready == 0 and unacked == 0:
+    sys.exit(0)
+print(
+    f"queue {queue} not drained via management API: ready={ready} unacked={unacked} consumers={consumers}",
+    file=sys.stderr,
+)
+sys.exit(1)
+PY
+}
+
+assert_bgd_has_no_drain_timeouts() {
+    local bgd="$1"
+    local namespace="$2"
+    local status_json
+    status_json="$(kubectl get bluegreendeployment "$bgd" -n "$namespace" -o json)"
+    STATUS_JSON="$status_json" python3 - "$bgd" <<'PY'
+import json
+import os
+import sys
+
+bgd = sys.argv[1]
+payload = json.loads(os.environ["STATUS_JSON"])
+timeouts = [
+    status
+    for status in payload.get("status", {}).get("inceptionPointDrains", [])
+    if status.get("phase") == "timedOutMaybeSuccessful"
+]
+if timeouts:
+    print(f"{bgd} has drain timeout statuses: {timeouts}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+get_inception_config_value() {
+    local bgd="$1"
+    local inception_point="$2"
+    local namespace="$3"
+    local path="$4"
+    local config
+    config="$(kubectl get configmap -n "$namespace" -l "fluidbg.io/blue-green-ref=$bgd,fluidbg.io/inception-point=$inception_point" -o jsonpath='{.items[0].data.config\.yaml}' 2>/dev/null || true)"
+    if [ -z "$config" ]; then
+        echo "config map for bgd=$bgd inception=$inception_point not found" >&2
+        return 1
+    fi
+    CONFIG_YAML="$config" python3 - "$path" <<'PY'
+import os
+import sys
+
+target = sys.argv[1].split(".")
+stack = []
+for raw in os.environ["CONFIG_YAML"].splitlines():
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    indent = len(raw) - len(raw.lstrip(" "))
+    line = raw.strip()
+    if ":" not in line or line.startswith("-"):
+        continue
+    key, value = line.split(":", 1)
+    level = indent // 2
+    stack = stack[:level] + [key.strip()]
+    if stack == target:
+        value = value.strip().strip('"').strip("'")
+        print(value)
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 wait_deleted() {
     local resource="$1"
     local name="$2"
@@ -189,6 +315,25 @@ wait_no_blue_green_ref_resources() {
     return 1
 }
 
+cleanup_stale_blue_green_deployments() {
+    if ! kubectl get crd bluegreendeployments.fluidbg.io >/dev/null 2>&1; then
+        return 0
+    fi
+
+    kubectl get bluegreendeployments.fluidbg.io -A -o json 2>/dev/null | python3 -c 'import json,sys
+data = json.load(sys.stdin)
+for item in data.get("items", []):
+    metadata = item.get("metadata", {})
+    namespace = metadata.get("namespace")
+    name = metadata.get("name")
+    if namespace and name:
+        print(namespace, name)
+' | while read -r namespace name; do
+        kubectl patch bluegreendeployment "$name" -n "$namespace" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+        kubectl delete bluegreendeployment "$name" -n "$namespace" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    done
+}
+
 wait_deployment_label() {
     local deployment="$1"
     local namespace="$2"
@@ -204,6 +349,26 @@ wait_deployment_label() {
         sleep 1
     done
     echo "deployment/$deployment did not reach label $jsonpath=$expected in namespace $namespace" >&2
+    kubectl get deployment "$deployment" -n "$namespace" -o yaml >&2 || true
+    return 1
+}
+
+wait_deployment_replicas() {
+    local deployment="$1"
+    local namespace="$2"
+    local expected="$3"
+    for i in $(seq 1 60); do
+        local desired available
+        desired="$(kubectl get deployment "$deployment" -n "$namespace" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+        available="$(kubectl get deployment "$deployment" -n "$namespace" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+        available="${available:-0}"
+        if [ "$desired" = "$expected" ] && [ "$available" = "$expected" ]; then
+            return 0
+        fi
+        echo "Waiting for deployment/$deployment replicas desired=$expected available=$expected, current desired=${desired:-<none>} available=$available ($i/60)"
+        sleep 2
+    done
+    echo "deployment/$deployment did not reach replicas=$expected in namespace $namespace" >&2
     kubectl get deployment "$deployment" -n "$namespace" -o yaml >&2 || true
     return 1
 }
@@ -243,6 +408,35 @@ wait_bgd_phase() {
     echo "bluegreendeployment/$bgd did not reach phase $expected in namespace $namespace" >&2
     kubectl get bluegreendeployment "$bgd" -n "$namespace" -o yaml >&2 || true
     return 1
+}
+
+assert_bgd_condition_status() {
+    local bgd="$1"
+    local namespace="$2"
+    local condition_type="$3"
+    local expected="$4"
+    local actual
+    local status_json
+    status_json="$(kubectl get bluegreendeployment "$bgd" -n "$namespace" -o json)"
+    actual="$(STATUS_JSON="$status_json" python3 - "$condition_type" <<'PY'
+import json
+import os
+import sys
+
+condition_type = sys.argv[1]
+data = json.loads(os.environ["STATUS_JSON"])
+for condition in data.get("status", {}).get("conditions", []):
+    if condition.get("type") == condition_type:
+        print(condition.get("status", ""))
+        sys.exit(0)
+print("")
+PY
+)"
+    if [ "$actual" != "$expected" ]; then
+        echo "Expected bluegreendeployment/$bgd condition $condition_type=$expected, got ${actual:-<none>}" >&2
+        kubectl get bluegreendeployment "$bgd" -n "$namespace" -o yaml >&2 || true
+        return 1
+    fi
 }
 
 wait_inception_deployment_name() {
@@ -385,6 +579,7 @@ sleep 15
 
 echo ""
 echo "--- Step 2: Reset previous chart release and test resources ---"
+cleanup_stale_blue_green_deployments
 helm uninstall fluidbg-e2e -n "$NS_SYSTEM" --ignore-not-found --wait >/dev/null 2>&1 || true
 kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
@@ -421,35 +616,40 @@ elif [ "$E2E_STATE_STORE" != "memory" ]; then
     echo "Unsupported E2E_STATE_STORE=$E2E_STATE_STORE" >&2
     exit 1
 fi
-helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
-    --namespace "$NS_SYSTEM" \
-    --create-namespace \
-    --set fullnameOverride=fluidbg-operator \
-    --set serviceAccount.name=fluidbg-operator \
-    --set operator.replicaCount="$OPERATOR_REPLICAS" \
-    --set operator.image.repository=fluidbg/fbg-operator \
-    --set operator.image.tag=dev \
-    --set operator.image.pullPolicy=Never \
-    --set operator.watchNamespace="$NS" \
-    --set operator.orphanCleanup.intervalSeconds=5 \
-    --set operator.auth.createSigningSecret=true \
-    --set operator.auth.signingSecretNamespace="$NS_SYSTEM" \
-    --set operator.auth.signingSecretName=fluidbg-e2e-auth \
-    --set operator.auth.signingSecretKey=signing-key \
-    --set-string operator.auth.signingSecretValue=fluidbg-e2e-signing-key \
-    --set builtinPlugins.namespaces[0]="$NS" \
-    --set builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http \
-    --set builtinPlugins.http.image.tag=dev \
-    --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
-    --set builtinPlugins.rabbitmq.image.tag=dev \
-    --set builtinPlugins.rabbitmq.manager.enabled=true \
-    --set builtinPlugins.rabbitmq.manager.amqpUrl="amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f" \
-    --set builtinPlugins.azureServiceBus.enabled=false \
-    "${HELM_STATE_STORE_ARGS[@]}"
+
+install_operator_chart() {
+    helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
+        --namespace "$NS_SYSTEM" \
+        --create-namespace \
+        --set fullnameOverride=fluidbg-operator \
+        --set serviceAccount.name=fluidbg-operator \
+        --set operator.replicaCount="$OPERATOR_REPLICAS" \
+        --set operator.image.repository=fluidbg/fbg-operator \
+        --set operator.image.tag=dev \
+        --set operator.image.pullPolicy=Never \
+        --set operator.watchNamespace="$NS" \
+        --set operator.orphanCleanup.intervalSeconds=5 \
+        --set operator.auth.createSigningSecret=true \
+        --set operator.auth.signingSecretNamespace="$NS_SYSTEM" \
+        --set operator.auth.signingSecretName=fluidbg-e2e-auth \
+        --set operator.auth.signingSecretKey=signing-key \
+        --set-string operator.auth.signingSecretValue=fluidbg-e2e-signing-key \
+        --set builtinPlugins.namespaces[0]="$NS" \
+        --set builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http \
+        --set builtinPlugins.http.image.tag=dev \
+        --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
+        --set builtinPlugins.rabbitmq.image.tag=dev \
+        --set builtinPlugins.rabbitmq.manager.enabled=true \
+        --set builtinPlugins.rabbitmq.manager.amqpUrl="amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f" \
+        --set builtinPlugins.azureServiceBus.enabled=false \
+        "${HELM_STATE_STORE_ARGS[@]}"
+}
+
+install_operator_chart
 kubectl rollout status deployment/fluidbg-operator -n "$NS_SYSTEM" --timeout=120s
 kubectl rollout status deployment/fluidbg-rabbitmq-manager -n "$NS_SYSTEM" --timeout=120s
-kubectl get inceptionplugin http -n "$NS" >/dev/null
-kubectl get inceptionplugin rabbitmq -n "$NS" >/dev/null
+wait_exists inceptionplugin http "$NS"
+wait_exists inceptionplugin rabbitmq "$NS"
 
 echo ""
 echo "--- Step 4: Bootstrap initial green from empty cluster ---"
@@ -582,6 +782,9 @@ fi
 echo ""
 echo "--- Step 11: Final successful promotion status ---"
 kubectl get bluegreendeployment order-processor-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
+assert_bgd_condition_status order-processor-upgrade "$NS" Ready True
+assert_bgd_condition_status order-processor-upgrade "$NS" Progressing False
+assert_bgd_condition_status order-processor-upgrade "$NS" Degraded False
 
 echo ""
 echo "--- Step 12: Check pods after successful promotion ---"
@@ -603,6 +806,27 @@ kubectl rollout status deployment/"$FAILING_TEST_DEPLOYMENT" -n "$NS" --timeout=
 kubectl rollout status deployment/"$FAILING_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FAILING_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 wait_bgd_phase order-processor-failing-upgrade "$NS" Observing 60
+
+FAILING_GREEN_INPUT_QUEUE="$(get_inception_config_value order-processor-failing-upgrade incoming-orders "$NS" duplicator.greenInputQueue)"
+FAILING_GREEN_OUTPUT_QUEUE="$(get_inception_config_value order-processor-failing-upgrade outgoing-results "$NS" combiner.greenOutputQueue)"
+SHADOW_SUFFIX="_dlq"
+FAILING_GREEN_INPUT_SHADOW_QUEUE="${FAILING_GREEN_INPUT_QUEUE}${SHADOW_SUFFIX}"
+FAILING_GREEN_OUTPUT_SHADOW_QUEUE="${FAILING_GREEN_OUTPUT_QUEUE}${SHADOW_SUFFIX}"
+BASE_INPUT_SHADOW_QUEUE="orders${SHADOW_SUFFIX}"
+BASE_OUTPUT_SHADOW_QUEUE="results${SHADOW_SUFFIX}"
+SHADOW_INPUT_TOKEN="input-shadow-rollback-$(date +%s)"
+SHADOW_OUTPUT_TOKEN="output-shadow-rollback-$(date +%s)"
+
+echo "Publishing shadow input recovery message to $FAILING_GREEN_INPUT_SHADOW_QUEUE..."
+curl -sf -u fluidbg:fluidbg \
+    -H "Content-Type: application/json" \
+    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+    -d "{\"properties\":{},\"routing_key\":\"$FAILING_GREEN_INPUT_SHADOW_QUEUE\",\"payload\":\"{\\\"shadowToken\\\":\\\"$SHADOW_INPUT_TOKEN\\\",\\\"type\\\":\\\"order\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
+echo "Publishing shadow output recovery message to $FAILING_GREEN_OUTPUT_SHADOW_QUEUE..."
+curl -sf -u fluidbg:fluidbg \
+    -H "Content-Type: application/json" \
+    -X POST http://localhost:15672/api/exchanges/%2F/amq.default/publish \
+    -d "{\"properties\":{},\"routing_key\":\"$FAILING_GREEN_OUTPUT_SHADOW_QUEUE\",\"payload\":\"{\\\"shadowToken\\\":\\\"$SHADOW_OUTPUT_TOKEN\\\",\\\"type\\\":\\\"result\\\"}\",\"payload_encoding\":\"string\"}" >/dev/null
 
 echo ""
 echo "--- Step 14: Publish failing input messages ---"
@@ -642,10 +866,17 @@ if [ "$PHASE" != "RolledBack" ]; then
     exit 1
 fi
 
+assert_bgd_has_no_drain_timeouts order-processor-failing-upgrade "$NS"
 wait_deleted deployment "$FAILING_DEPLOYMENT" "$NS"
 wait_deployment_label "$UPGRADE_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
 wait_deleted deployment "$FAILING_TEST_DEPLOYMENT" "$NS"
 wait_deleted service "$FAILING_TEST_DEPLOYMENT" "$NS"
+assert_rabbitmq_management_queue_drained "orders-green"
+assert_rabbitmq_management_queue_drained "orders-blue"
+assert_rabbitmq_management_queue_drained "results-green"
+assert_rabbitmq_management_queue_drained "results-blue"
+assert_rabbitmq_management_queue_drained "$FAILING_GREEN_INPUT_SHADOW_QUEUE"
+assert_rabbitmq_management_queue_drained "$FAILING_GREEN_OUTPUT_SHADOW_QUEUE"
 wait_no_inception_resources "$NS"
 
 echo ""
@@ -669,8 +900,32 @@ if ! queue_contains_processed_message "results" "$RECOVERY_TOKEN" "$UPGRADE_DEPL
 fi
 
 echo ""
+echo "--- Step 16b: Verify shadow queue recovery ---"
+for i in $(seq 1 30); do
+    if queue_contains_json_field "$BASE_INPUT_SHADOW_QUEUE" shadowToken "$SHADOW_INPUT_TOKEN" \
+        && queue_contains_json_field "$BASE_OUTPUT_SHADOW_QUEUE" shadowToken "$SHADOW_OUTPUT_TOKEN"; then
+        echo "Shadow queue messages were moved back to base shadow queues"
+        break
+    fi
+    echo "  Waiting for shadow queue recovery... ($i/30)"
+    sleep 2
+done
+
+if ! queue_contains_json_field "$BASE_INPUT_SHADOW_QUEUE" shadowToken "$SHADOW_INPUT_TOKEN"; then
+    echo "Expected input shadow message to be moved to $BASE_INPUT_SHADOW_QUEUE" >&2
+    exit 1
+fi
+if ! queue_contains_json_field "$BASE_OUTPUT_SHADOW_QUEUE" shadowToken "$SHADOW_OUTPUT_TOKEN"; then
+    echo "Expected output shadow message to be moved to $BASE_OUTPUT_SHADOW_QUEUE" >&2
+    exit 1
+fi
+
+echo ""
 echo "--- Step 17: Final failed promotion status ---"
 kubectl get bluegreendeployment order-processor-failing-upgrade -n "$NS" -o jsonpath='{.status}' | python3 -m json.tool
+assert_bgd_condition_status order-processor-failing-upgrade "$NS" Ready False
+assert_bgd_condition_status order-processor-failing-upgrade "$NS" Progressing False
+assert_bgd_condition_status order-processor-failing-upgrade "$NS" Degraded True
 
 echo ""
 echo "--- Step 18: Verify unsupported progressive plugin is rejected ---"
@@ -803,6 +1058,7 @@ kubectl rollout status deployment/"$HTTP_INPUT_PLUGIN_DEPLOYMENT" -n "$NS" --tim
 kubectl rollout status deployment/"$HTTP_PROXY_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$HTTP_OUTPUT_PLUGIN_DEPLOYMENT" -n "$NS" --timeout=120s
 wait_bgd_phase order-processor-http-upgrade "$NS" Observing 60
+wait_deployment_replicas "$HTTP_DEPLOYMENT" "$NS" 1
 
 echo "Publishing HTTP proxy verification message..."
 curl -sf -u fluidbg:fluidbg \
@@ -858,6 +1114,7 @@ wait_deleted deployment "$HTTP_TEST_DEPLOYMENT" "$NS"
 wait_deleted service "$HTTP_TEST_DEPLOYMENT" "$NS"
 wait_no_inception_resources "$NS"
 wait_deployment_label "$HTTP_DEPLOYMENT" "$NS" '{.metadata.labels.fluidbg\.io/green}' true
+wait_deployment_replicas "$HTTP_DEPLOYMENT" "$NS" 2
 
 echo ""
 echo "--- Step 23: Force-delete BGD and verify orphan cleanup ---"

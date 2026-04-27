@@ -18,7 +18,14 @@ pub(crate) async fn proxy_handler(
     State(state): State<AppState>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
-    let _guard = ActiveRequestGuard::new(state.active_requests.clone());
+    let Some(_guard) =
+        ActiveRequestGuard::try_new(state.draining.clone(), state.active_requests.clone())
+    else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "fluidbg http plugin is draining".to_string(),
+        );
+    };
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path().to_string();
@@ -121,7 +128,14 @@ pub(crate) async fn write_handler(
     State(state): State<AppState>,
     axum::Json(req): axum::Json<HttpWriteRequest>,
 ) -> impl IntoResponse {
-    let _guard = ActiveRequestGuard::new(state.active_requests.clone());
+    let Some(_guard) =
+        ActiveRequestGuard::try_new(state.draining.clone(), state.active_requests.clone())
+    else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "fluidbg http plugin is draining".to_string(),
+        );
+    };
     let Some(target_url) = state.config.write_target() else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
@@ -205,9 +219,11 @@ pub(crate) async fn drain_status(
 ) -> Result<axum::Json<PluginDrainStatusResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     let active = state.active_requests.load(Ordering::SeqCst);
-    let drained = active == 0;
+    let drained = state.draining.load(Ordering::SeqCst) && active == 0;
     let message = if drained {
-        "http plugin has no active proxy/write requests".to_string()
+        "http plugin is draining and has no admitted proxy/write requests".to_string()
+    } else if !state.draining.load(Ordering::SeqCst) {
+        "http plugin has not entered drain mode".to_string()
     } else {
         format!("http plugin still has {active} active proxy/write request(s)")
     };

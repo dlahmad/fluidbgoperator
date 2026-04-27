@@ -11,6 +11,21 @@ pub fn derived_temp_queue_name(
     format!("fluidbg-{}-{suffix}", sanitize(logical))
 }
 
+pub fn derived_shadow_queue_name(temp_queue_name: &str, shadow_suffix: &str) -> String {
+    let shadow_suffix = sanitize_shadow_suffix(shadow_suffix);
+    if shadow_suffix
+        .chars()
+        .all(|ch| ch == '-' || ch == '_' || ch == '.')
+    {
+        temp_queue_name.to_string()
+    } else {
+        format!("{temp_queue_name}{shadow_suffix}")
+            .chars()
+            .take(63)
+            .collect()
+    }
+}
+
 fn stable_suffix(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -54,9 +69,17 @@ fn sanitize(value: &str) -> String {
     }
 }
 
+fn sanitize_shadow_suffix(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .take(24)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::derived_temp_queue_name;
+    use super::{derived_shadow_queue_name, derived_temp_queue_name};
 
     #[test]
     fn derived_temp_names_are_scoped_by_namespace_and_bgd() {
@@ -68,5 +91,12 @@ mod tests {
         assert_ne!(a, c);
         assert!(a.starts_with("fluidbg-blue-input-"));
         assert!(a.len() <= 63);
+    }
+
+    #[test]
+    fn derived_shadow_names_are_suffixes_of_real_queue_names() {
+        let shadow = derived_shadow_queue_name("fluidbg-blue-input-1234567890abcdef", "_dlq");
+
+        assert_eq!(shadow, "fluidbg-blue-input-1234567890abcdef_dlq");
     }
 }

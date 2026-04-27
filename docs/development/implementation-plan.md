@@ -41,7 +41,7 @@ controller/status.rs           BlueGreenDeployment status patches
 | State stores | In-memory, PostgreSQL, and Azure Cosmos DB backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |
 | Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
-| Operator API | `/health`, `/testcases`, `/testcase-verdicts`, `/counts/{bg_ref}` |
+| Operator API | `/health`, `/testcases`, `/testcase-verdicts` keyed by `blue_green_ref` plus `test_id`, `/counts/{bg_ref}` |
 | Test harness | Unit tests plus kind-based e2e assets |
 | Packaging | Helm chart, GitHub Actions CI/docs/e2e/release workflows, GHCR release targets |
 

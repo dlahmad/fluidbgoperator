@@ -8,7 +8,8 @@ The chart at `charts/fluidbg-operator` installs:
 
 - `fluidbg.io/v1alpha1` CRDs.
 - Operator Deployment, Service, ServiceAccount, ClusterRole, and ClusterRoleBinding.
-- Optional built-in `InceptionPlugin` resources for HTTP, RabbitMQ, and Azure Service Bus.
+- Optional built-in `InceptionPlugin` registrations for HTTP, RabbitMQ, and
+  Azure Service Bus.
 
 ## Basic Install
 
@@ -71,7 +72,26 @@ stateStore:
 different in-process store. The chart blocks `operator.replicaCount > 1` when
 `stateStore.type=memory`.
 
-For HA, use Postgres or Azure Cosmos DB.
+For HA, use Postgres or Azure Cosmos DB. The operator also uses a per-BGD
+Kubernetes `Lease` in the watched namespace before it performs any
+side-effecting reconcile work. That lease serializes database reads/writes,
+plugin manager calls, inceptor lifecycle calls, Deployment updates, and cleanup
+for a single `BlueGreenDeployment`. Different BGD names get different leases and
+can still progress concurrently.
+
+Lease timing is configurable:
+
+```yaml
+operator:
+  reconcileLease:
+    durationSeconds: 30
+    renewIntervalSeconds: 10
+```
+
+If an operator pod dies, it stops renewing its leases. Another replica can take
+over after `durationSeconds`. Status phase writes additionally use Kubernetes
+`resourceVersion` via the status subresource, so a stale status writer conflicts
+instead of overwriting a newer phase.
 
 Postgres with a password/connection string:
 
@@ -153,6 +173,8 @@ Store cleanup is automatic. Pending cases are kept while a rollout CR still
 exists and can need them. When a `BlueGreenDeployment` reaches a terminal state
 or is deleted through the normal Kubernetes finalizer path, the operator removes
 temporary resources and deletes all store records for that BGD.
+Store rows are keyed by both `blueGreenRef` and `testId`; two concurrent BGDs
+may use the same application test id without colliding in the shared backend.
 
 The operator also runs orphan cleanup for forced-delete recovery. If a user
 removes the finalizer or deletes the CR while the operator is down, the next
@@ -235,6 +257,18 @@ builtinPlugins:
     - checkout
     - payments
 ```
+
+The chart does not render those plugin CRs as normal release resources. Helm
+installs CRDs before templates, but fresh CRD discovery can still race custom
+resources from the same release. To avoid that class of install failure, the
+chart renders the built-in plugin definitions into a hook ConfigMap and runs a
+post-install/post-upgrade hook Job using the operator image. The hook waits for
+`inceptionplugins.fluidbg.io` to be established and then server-side-applies the
+registrations.
+
+On uninstall, a pre-delete hook Job deletes the built-in registrations for the
+configured namespaces. CRDs remain installed because Helm intentionally does not
+delete CRDs from a chart's `crds/` directory.
 
 ## CRD Upgrades
 

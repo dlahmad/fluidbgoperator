@@ -1,13 +1,11 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicUsize, Ordering},
 };
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use fluidbg_plugin_sdk::{ObserverConfig, PluginInceptorRuntime, PluginRole};
 use serde::Deserialize;
-use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,8 +18,10 @@ pub(crate) struct Config {
     pub(crate) auth: Option<AuthConfig>,
     #[serde(default)]
     pub(crate) management: Option<ManagementConfig>,
-    #[serde(default = "default_drain_stability_seconds")]
-    pub(crate) drain_stability_seconds: u64,
+    #[serde(default)]
+    pub(crate) queue_declaration: QueueDeclarationConfig,
+    #[serde(default)]
+    pub(crate) shadow_queue: Option<ShadowQueueConfig>,
     #[serde(default)]
     pub(crate) duplicator: Option<DuplicatorConfig>,
     #[serde(default)]
@@ -34,6 +34,51 @@ pub(crate) struct Config {
     pub(crate) consumer: Option<ConsumerConfig>,
     #[serde(default)]
     pub(crate) observer: Option<ObserverConfig>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueueDeclarationConfig {
+    #[serde(default)]
+    pub(crate) lock_duration: Option<String>,
+    #[serde(default)]
+    pub(crate) max_size_in_megabytes: Option<i64>,
+    #[serde(default)]
+    pub(crate) max_message_size_in_kilobytes: Option<i64>,
+    #[serde(default)]
+    pub(crate) requires_duplicate_detection: Option<bool>,
+    #[serde(default)]
+    pub(crate) requires_session: Option<bool>,
+    #[serde(default)]
+    pub(crate) default_message_time_to_live: Option<String>,
+    #[serde(default)]
+    pub(crate) dead_lettering_on_message_expiration: Option<bool>,
+    #[serde(default)]
+    pub(crate) duplicate_detection_history_time_window: Option<String>,
+    #[serde(default)]
+    pub(crate) max_delivery_count: Option<i32>,
+    #[serde(default)]
+    pub(crate) enable_batched_operations: Option<bool>,
+    #[serde(default)]
+    pub(crate) auto_delete_on_idle: Option<String>,
+    #[serde(default)]
+    pub(crate) enable_partitioning: Option<bool>,
+    #[serde(default)]
+    pub(crate) enable_express: Option<bool>,
+    #[serde(default)]
+    pub(crate) forward_to: Option<String>,
+    #[serde(default)]
+    pub(crate) forward_dead_lettered_messages_to: Option<String>,
+    #[serde(default)]
+    pub(crate) status: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShadowQueueConfig {
+    pub(crate) suffix: String,
+    #[serde(default)]
+    pub(crate) queue_declaration: QueueDeclarationConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -133,7 +178,7 @@ pub(crate) struct AppState {
     pub(crate) service_bus: crate::servicebus::ServiceBusClient,
     mode: Arc<AtomicU8>,
     traffic_percent: Arc<AtomicU8>,
-    drain_empty_since: Arc<Mutex<Option<Instant>>>,
+    in_flight_messages: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,9 +210,9 @@ impl AppState {
             roles,
             runtime,
             service_bus,
-            mode: Arc::new(AtomicU8::new(RuntimeMode::Active as u8)),
+            mode: Arc::new(AtomicU8::new(RuntimeMode::Idle as u8)),
             traffic_percent: Arc::new(AtomicU8::new(blue_traffic_percent())),
-            drain_empty_since: Arc::new(Mutex::new(None)),
+            in_flight_messages: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -188,20 +233,25 @@ impl AppState {
             .store(percent.min(100), Ordering::Relaxed);
     }
 
-    pub(crate) async fn stable_drained(&self, empty: bool) -> bool {
-        if !empty {
-            *self.drain_empty_since.lock().await = None;
-            return false;
+    pub(crate) fn track_message(&self) -> InFlightMessageGuard {
+        self.in_flight_messages.fetch_add(1, Ordering::SeqCst);
+        InFlightMessageGuard {
+            in_flight_messages: self.in_flight_messages.clone(),
         }
+    }
 
-        let required = std::time::Duration::from_secs(self.config.drain_stability_seconds);
-        if required.is_zero() {
-            return true;
-        }
+    pub(crate) fn in_flight_messages(&self) -> usize {
+        self.in_flight_messages.load(Ordering::SeqCst)
+    }
+}
 
-        let mut since = self.drain_empty_since.lock().await;
-        let started = since.get_or_insert_with(Instant::now);
-        started.elapsed() >= required
+pub(crate) struct InFlightMessageGuard {
+    in_flight_messages: Arc<AtomicUsize>,
+}
+
+impl Drop for InFlightMessageGuard {
+    fn drop(&mut self) {
+        self.in_flight_messages.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -270,14 +320,17 @@ pub(crate) fn inceptor_infra_disabled() -> bool {
     std::env::var("FLUIDBG_INCEPTOR_INFRA_DISABLED").as_deref() == Ok("true")
 }
 
+pub(crate) fn shadow_queue_name(config: &Config, queue: &str) -> Option<String> {
+    config
+        .shadow_queue
+        .as_ref()
+        .map(|shadow| fluidbg_plugin_sdk::derived_shadow_queue_name(queue, &shadow.suffix))
+}
+
 fn default_create_queues() -> bool {
     true
 }
 
 fn default_delete_queues() -> bool {
     true
-}
-
-fn default_drain_stability_seconds() -> u64 {
-    65
 }

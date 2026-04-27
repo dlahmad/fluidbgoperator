@@ -11,7 +11,7 @@ use fluidbg_plugin_sdk::{
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
 use crate::config::{
     AppState, RuntimeMode, combiner_config, duplicator_config, has_role, inceptor_infra_disabled,
-    required, splitter_config, writer_config,
+    required, shadow_queue_name, splitter_config, writer_config,
 };
 
 pub(crate) async fn compute_drain_status(
@@ -41,16 +41,18 @@ pub(crate) async fn compute_drain_status(
         let config = combiner_config(&state.config)?;
         let green_queue = required(&config.green_output_queue, "combiner.greenOutputQueue")?;
         let blue_queue = required(&config.blue_output_queue, "combiner.blueOutputQueue")?;
-        let green_messages = state.service_bus.queue_message_count(green_queue).await?;
-        let blue_messages = state.service_bus.queue_message_count(blue_queue).await?;
-        let empty = green_messages == 0 && blue_messages == 0;
-        let drained = state.stable_drained(empty).await;
+        let green_messages = queue_drain_message_count_with_shadow(state, green_queue).await?;
+        let blue_messages = queue_drain_message_count_with_shadow(state, blue_queue).await?;
+        let in_flight = state.in_flight_messages();
+        let drained = green_messages == 0 && blue_messages == 0 && in_flight == 0;
         let message = if drained {
-            Some("temporary output queues are empty and stable".to_string())
-        } else if empty {
+            Some(
+                "temporary output queues report zero total messages and no plugin-owned locked messages remain"
+                    .to_string(),
+            )
+        } else if in_flight > 0 {
             Some(format!(
-                "temporary output queues are empty; waiting {}s stability window for possible locked messages",
-                state.config.drain_stability_seconds
+                "temporary output queues still have {in_flight} plugin-owned locked message(s)"
             ))
         } else {
             Some(format!(
@@ -72,16 +74,18 @@ async fn input_drain_status(
     green_queue: &str,
     blue_queue: &str,
 ) -> anyhow::Result<PluginDrainStatusResponse> {
-    let green_messages = state.service_bus.queue_message_count(green_queue).await?;
-    let blue_messages = state.service_bus.queue_message_count(blue_queue).await?;
-    let empty = green_messages == 0 && blue_messages == 0;
-    let drained = state.stable_drained(empty).await;
+    let green_messages = queue_drain_message_count_with_shadow(state, green_queue).await?;
+    let blue_messages = queue_drain_message_count_with_shadow(state, blue_queue).await?;
+    let in_flight = state.in_flight_messages();
+    let drained = green_messages == 0 && blue_messages == 0 && in_flight == 0;
     let message = if drained {
-        Some("temporary input queues are empty and stable".to_string())
-    } else if empty {
+        Some(
+                "temporary input queues report zero total messages and no plugin-owned locked messages remain"
+                    .to_string(),
+            )
+    } else if in_flight > 0 {
         Some(format!(
-            "temporary input queues are empty; waiting {}s stability window for possible locked messages",
-            state.config.drain_stability_seconds
+            "temporary input queues still have {in_flight} plugin-owned locked message(s)"
         ))
     } else {
         Some(format!(
@@ -239,11 +243,30 @@ pub(crate) async fn health() -> &'static str {
 
 async fn create_temp_queues(state: &AppState, queues: &[Option<&str>]) -> Result<(), StatusCode> {
     for queue in queues.iter().flatten() {
-        state
-            .service_bus
-            .create_queue(queue)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+            let shadow_declaration = state
+                .config
+                .shadow_queue
+                .as_ref()
+                .map(|shadow| &shadow.queue_declaration)
+                .unwrap_or(&state.config.queue_declaration);
+            state
+                .service_bus
+                .create_queue(&shadow_queue, shadow_declaration)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            state
+                .service_bus
+                .create_queue(queue, &state.config.queue_declaration)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        } else {
+            state
+                .service_bus
+                .create_queue(queue, &state.config.queue_declaration)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(())
 }
@@ -255,8 +278,29 @@ async fn delete_temp_queues(state: &AppState, queues: &[Option<&str>]) -> Result
             .delete_queue(queue)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+            state
+                .service_bus
+                .delete_queue(&shadow_queue)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(())
+}
+
+async fn queue_drain_message_count_with_shadow(
+    state: &AppState,
+    queue: &str,
+) -> anyhow::Result<u64> {
+    let mut total = state.service_bus.queue_drain_message_count(queue).await?;
+    if let Some(shadow_queue) = shadow_queue_name(&state.config, queue) {
+        total += state
+            .service_bus
+            .queue_drain_message_count(&shadow_queue)
+            .await?;
+    }
+    Ok(total)
 }
 
 fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {

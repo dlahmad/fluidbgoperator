@@ -28,6 +28,9 @@ operator:
     port: 8090
   orphanCleanup:
     intervalSeconds: 60
+  reconcileLease:
+    durationSeconds: 30
+    renewIntervalSeconds: 10
   nodeSelector: {}
   tolerations: []
   affinity: {}

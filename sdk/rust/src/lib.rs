@@ -25,7 +25,7 @@ pub use models::{
     TrafficShiftResponse,
 };
 pub use notify::{RegisterTestCaseArgs, notify_observer, register_test_case, render_path};
-pub use resources::derived_temp_queue_name;
+pub use resources::{derived_shadow_queue_name, derived_temp_queue_name};
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};

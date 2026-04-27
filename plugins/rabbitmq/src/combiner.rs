@@ -3,16 +3,15 @@ use std::time::Duration;
 use anyhow::Result;
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
 use futures_lite::StreamExt;
-use lapin::BasicProperties;
-use lapin::options::{BasicAckOptions, BasicConsumeOptions};
+use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions};
 use lapin::types::FieldTable;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::amqp::{connect_with_retry, declare_queue, publish_confirmed};
+use crate::amqp::{connect_with_retry, declare_queue, move_queue_messages, publish_confirmed};
 use crate::config::{
     AppState, RuntimeMode, combiner_config, has_role, inceptor_infra_disabled, observer_config,
-    required,
+    required, shadow_queue_name,
 };
 use crate::filtering::{
     extract_test_id, matches_filter, notify_observer, route_from_output_source,
@@ -27,8 +26,18 @@ async fn run_combine_loop_once(
     let consume_channel = conn.create_channel().await?;
     let publish_channel = conn.create_channel().await?;
     if !inceptor_infra_disabled() {
-        declare_queue(&consume_channel, &source_queue).await?;
-        declare_queue(&publish_channel, &result_queue).await?;
+        declare_queue(
+            &consume_channel,
+            &source_queue,
+            &state.config.queue_declaration,
+        )
+        .await?;
+        declare_queue(
+            &publish_channel,
+            &result_queue,
+            &state.config.queue_declaration,
+        )
+        .await?;
     }
     let combiner = combiner_config(&state.config)?;
 
@@ -42,18 +51,19 @@ async fn run_combine_loop_once(
         .await?;
 
     while let Some(delivery) = consumer.next().await {
+        let delivery = delivery?;
         match state.runtime_mode() {
-            RuntimeMode::Idle => {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                continue;
-            }
-            RuntimeMode::Draining => {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                continue;
+            RuntimeMode::Idle | RuntimeMode::Draining => {
+                delivery
+                    .nack(BasicNackOptions {
+                        multiple: false,
+                        requeue: true,
+                    })
+                    .await?;
+                return Ok(());
             }
             RuntimeMode::Active => {}
         }
-        let delivery = delivery?;
         let headers = delivery.properties.headers().clone().unwrap_or_default();
         let body_json: Value = serde_json::from_slice(&delivery.data).unwrap_or(Value::Null);
         let route = route_from_output_source(combiner, &source_queue);
@@ -61,7 +71,7 @@ async fn run_combine_loop_once(
             &publish_channel,
             &result_queue,
             &delivery.data,
-            BasicProperties::default().with_headers(headers.clone()),
+            delivery.properties.clone(),
         )
         .await?;
 
@@ -100,6 +110,16 @@ async fn run_combine_loop(
             tokio::time::sleep(Duration::from_millis(300)).await;
             continue;
         }
+        if matches!(state.runtime_mode(), RuntimeMode::Draining) {
+            if let Err(err) = drain_output_queue(&state, &source_queue, &result_queue).await {
+                warn!(
+                    "rabbitmq combiner drain from '{}' failed, reconnecting: {}",
+                    source_queue, err
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
         match run_combine_loop_once(source_queue.clone(), result_queue.clone(), state.clone()).await
         {
             Ok(()) => {
@@ -117,6 +137,46 @@ async fn run_combine_loop(
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn drain_output_queue(
+    state: &AppState,
+    source_queue: &str,
+    result_queue: &str,
+) -> Result<()> {
+    let conn = connect_with_retry(&state.amqp_url).await?;
+    let channel = conn.create_channel().await?;
+    if !inceptor_infra_disabled() {
+        declare_queue(&channel, result_queue, &state.config.queue_declaration).await?;
+        if let Some(result_shadow_queue) = shadow_queue_name(&state.config, result_queue) {
+            let shadow_declaration = state
+                .config
+                .shadow_queue
+                .as_ref()
+                .map(|shadow| &shadow.queue_declaration)
+                .unwrap_or(&state.config.queue_declaration);
+            declare_queue(&channel, &result_shadow_queue, shadow_declaration).await?;
+        }
+    }
+    let moved = move_queue_messages(&channel, source_queue, result_queue).await?;
+    if moved > 0 {
+        info!(
+            "moved {} RabbitMQ output message(s) from {} back to {} during drain",
+            moved, source_queue, result_queue
+        );
+    }
+    if let Some(shadow_queue) = shadow_queue_name(&state.config, source_queue) {
+        let target_shadow_queue = shadow_queue_name(&state.config, result_queue)
+            .unwrap_or_else(|| result_queue.to_string());
+        let moved = move_queue_messages(&channel, &shadow_queue, &target_shadow_queue).await?;
+        if moved > 0 {
+            info!(
+                "moved {} RabbitMQ output shadow message(s) from {} back to {} during drain",
+                moved, shadow_queue, target_shadow_queue
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn run_combiner(state: AppState) -> Result<()> {

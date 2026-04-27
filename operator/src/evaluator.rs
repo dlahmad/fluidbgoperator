@@ -85,7 +85,7 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStore::new());
         let run = make_test("t1", "bg", TestStatus::Triggered);
         store.register(run).await.unwrap();
-        store.set_verdict("t1", true, None).await.unwrap();
+        store.set_verdict("bg", "t1", true, None).await.unwrap();
 
         let result = evaluate(&store, "bg", 100, 0.98).await;
         assert_eq!(result, EvaluationResult::InsufficientData);
@@ -100,7 +100,7 @@ mod tests {
                 .register(make_test(&id, "bg", TestStatus::Triggered))
                 .await
                 .unwrap();
-            store.set_verdict(&id, true, None).await.unwrap();
+            store.set_verdict("bg", &id, true, None).await.unwrap();
         }
 
         let result = evaluate(&store, "bg", 100, 0.98).await;
@@ -127,9 +127,9 @@ mod tests {
                 .await
                 .unwrap();
             if i < 95 {
-                store.set_verdict(&id, true, None).await.unwrap();
+                store.set_verdict("bg", &id, true, None).await.unwrap();
             } else {
-                store.set_verdict(&id, false, None).await.unwrap();
+                store.set_verdict("bg", &id, false, None).await.unwrap();
             }
         }
 
@@ -157,9 +157,9 @@ mod tests {
                 .await
                 .unwrap();
             if i < 96 {
-                store.set_verdict(&id, true, None).await.unwrap();
+                store.set_verdict("bg", &id, true, None).await.unwrap();
             } else {
-                store.mark_timed_out(&id).await.unwrap();
+                store.mark_timed_out("bg", &id).await.unwrap();
             }
         }
 

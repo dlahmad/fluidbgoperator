@@ -13,6 +13,7 @@ mod config;
 mod filtering;
 mod input;
 mod lifecycle;
+mod management;
 mod manager;
 mod writer;
 

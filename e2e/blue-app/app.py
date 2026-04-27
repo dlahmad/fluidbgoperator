@@ -11,14 +11,22 @@ OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://httpbin.org/post")
 PORT = int(os.environ.get("PORT", "8081"))
 INSTANCE_NAME = os.environ.get("HOSTNAME", "unknown")
+TEMP_QUEUE_DURABLE = os.environ.get("AMQP_TEMP_QUEUE_DURABLE", "false").lower() == "true"
+TEMP_QUEUE_ARGUMENTS = json.loads(os.environ.get("AMQP_TEMP_QUEUE_ARGUMENTS_JSON", "{}"))
+
+
+def queue_declaration(queue):
+    if queue.startswith("fluidbg-"):
+        return {"durable": TEMP_QUEUE_DURABLE, "arguments": TEMP_QUEUE_ARGUMENTS}
+    return {"durable": False, "arguments": None}
 
 
 def get_channel():
     params = pika.URLParameters(AMQP_URL)
     connection = pika.BlockingConnection(params)
     channel = connection.channel()
-    channel.queue_declare(queue=INPUT_QUEUE, durable=False)
-    channel.queue_declare(queue=OUTPUT_QUEUE, durable=False)
+    channel.queue_declare(queue=INPUT_QUEUE, **queue_declaration(INPUT_QUEUE))
+    channel.queue_declare(queue=OUTPUT_QUEUE, **queue_declaration(OUTPUT_QUEUE))
     return connection, channel
 
 

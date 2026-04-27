@@ -24,11 +24,16 @@ impl MemoryStore {
     }
 }
 
+fn record_key(blue_green_ref: &str, test_id: &str) -> String {
+    format!("{blue_green_ref}\u{1f}{test_id}")
+}
+
 #[async_trait]
 impl StateStore for MemoryStore {
     async fn register(&self, run: TestCaseRecord) -> Result<()> {
         let mut data = self.data.write().await;
-        match data.get_mut(&run.test_id) {
+        let key = record_key(&run.blue_green_ref, &run.test_id);
+        match data.get_mut(&key) {
             Some(existing) if existing.is_finalized() => {}
             Some(existing) => {
                 if existing.verify_url.is_empty() && !run.verify_url.is_empty() {
@@ -45,25 +50,29 @@ impl StateStore for MemoryStore {
                 }
             }
             None => {
-                data.insert(run.test_id.clone(), run);
+                data.insert(key, run);
             }
         }
         Ok(())
     }
 
-    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>> {
+    async fn get(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<TestCaseRecord>> {
         let data = self.data.read().await;
-        Ok(data.get(test_id).cloned())
+        Ok(data.get(&record_key(blue_green_ref, test_id)).cloned())
     }
 
     async fn set_verdict(
         &self,
+        blue_green_ref: &str,
         test_id: &str,
         passed: bool,
         failure_message: Option<String>,
     ) -> Result<()> {
         let mut data = self.data.write().await;
-        if let Some(run) = data.get_mut(test_id) {
+        if let Some(run) = data.get_mut(&record_key(blue_green_ref, test_id)) {
+            if !run.is_pending() {
+                return Err(StoreError::NotFound(test_id.to_string()));
+            }
             run.verdict = Some(passed);
             run.failure_message = failure_message;
             run.status = if passed {
@@ -77,9 +86,12 @@ impl StateStore for MemoryStore {
         }
     }
 
-    async fn mark_timed_out(&self, test_id: &str) -> Result<()> {
+    async fn mark_timed_out(&self, blue_green_ref: &str, test_id: &str) -> Result<()> {
         let mut data = self.data.write().await;
-        if let Some(run) = data.get_mut(test_id) {
+        if let Some(run) = data.get_mut(&record_key(blue_green_ref, test_id)) {
+            if !run.is_pending() {
+                return Err(StoreError::NotFound(test_id.to_string()));
+            }
             run.status = TestStatus::TimedOut;
             run.verdict = None;
             Ok(())
@@ -88,9 +100,12 @@ impl StateStore for MemoryStore {
         }
     }
 
-    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>> {
+    async fn decrement_retries(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<i32>> {
         let mut data = self.data.write().await;
-        if let Some(run) = data.get_mut(test_id) {
+        if let Some(run) = data.get_mut(&record_key(blue_green_ref, test_id)) {
+            if !run.is_pending() {
+                return Ok(None);
+            }
             if run.retries_remaining > 0 {
                 run.retries_remaining -= 1;
                 return Ok(Some(run.retries_remaining));
@@ -198,9 +213,36 @@ mod tests {
         let store = MemoryStore::new();
         let run = make_test("ORD-1", "order-processor");
         store.register(run.clone()).await.unwrap();
-        let got = store.get("ORD-1").await.unwrap().unwrap();
+        let got = store
+            .get("order-processor", "ORD-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got.test_id, "ORD-1");
         assert_eq!(got.blue_green_ref, "order-processor");
+    }
+
+    #[tokio::test]
+    async fn same_test_id_is_isolated_per_blue_green_ref() {
+        let store = MemoryStore::new();
+        store
+            .register(make_test("ORD-shared", "bg-a"))
+            .await
+            .unwrap();
+        store
+            .register(make_test("ORD-shared", "bg-b"))
+            .await
+            .unwrap();
+
+        store
+            .set_verdict("bg-a", "ORD-shared", true, None)
+            .await
+            .unwrap();
+
+        let a = store.get("bg-a", "ORD-shared").await.unwrap().unwrap();
+        let b = store.get("bg-b", "ORD-shared").await.unwrap().unwrap();
+        assert_eq!(a.status, TestStatus::Passed);
+        assert_eq!(b.status, TestStatus::Triggered);
     }
 
     #[tokio::test]
@@ -208,14 +250,17 @@ mod tests {
         let store = MemoryStore::new();
         let run = make_test("ORD-final", "bg");
         store.register(run).await.unwrap();
-        store.set_verdict("ORD-final", true, None).await.unwrap();
+        store
+            .set_verdict("bg", "ORD-final", true, None)
+            .await
+            .unwrap();
 
         let mut duplicate = make_test("ORD-final", "bg");
         duplicate.verify_url = "http://new-url".to_string();
         duplicate.timeout = chrono::Duration::seconds(120);
         store.register(duplicate).await.unwrap();
 
-        let got = store.get("ORD-final").await.unwrap().unwrap();
+        let got = store.get("bg", "ORD-final").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::Passed);
         assert_eq!(got.verdict, Some(true));
         assert_eq!(got.verify_url, "http://test/result");
@@ -224,15 +269,15 @@ mod tests {
     #[tokio::test]
     async fn get_missing_returns_none() {
         let store = MemoryStore::new();
-        assert!(store.get("nonexistent").await.unwrap().is_none());
+        assert!(store.get("bg", "nonexistent").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn set_verdict_passed() {
         let store = MemoryStore::new();
         store.register(make_test("ORD-2", "bg")).await.unwrap();
-        store.set_verdict("ORD-2", true, None).await.unwrap();
-        let got = store.get("ORD-2").await.unwrap().unwrap();
+        store.set_verdict("bg", "ORD-2", true, None).await.unwrap();
+        let got = store.get("bg", "ORD-2").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::Passed);
         assert_eq!(got.verdict, Some(true));
     }
@@ -242,10 +287,10 @@ mod tests {
         let store = MemoryStore::new();
         store.register(make_test("ORD-3", "bg")).await.unwrap();
         store
-            .set_verdict("ORD-3", false, Some("boom".to_string()))
+            .set_verdict("bg", "ORD-3", false, Some("boom".to_string()))
             .await
             .unwrap();
-        let got = store.get("ORD-3").await.unwrap().unwrap();
+        let got = store.get("bg", "ORD-3").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::Failed);
         assert_eq!(got.verdict, Some(false));
     }
@@ -254,10 +299,43 @@ mod tests {
     async fn mark_timed_out() {
         let store = MemoryStore::new();
         store.register(make_test("ORD-4", "bg")).await.unwrap();
-        store.mark_timed_out("ORD-4").await.unwrap();
-        let got = store.get("ORD-4").await.unwrap().unwrap();
+        store.mark_timed_out("bg", "ORD-4").await.unwrap();
+        let got = store.get("bg", "ORD-4").await.unwrap().unwrap();
         assert_eq!(got.status, TestStatus::TimedOut);
         assert_eq!(got.verdict, None);
+    }
+
+    #[tokio::test]
+    async fn finalized_cases_cannot_be_overwritten() {
+        let store = MemoryStore::new();
+        store
+            .register(make_test("ORD-finalized", "bg"))
+            .await
+            .unwrap();
+        store
+            .set_verdict("bg", "ORD-finalized", true, None)
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .set_verdict("bg", "ORD-finalized", false, Some("late".to_string()))
+                .await
+                .is_err()
+        );
+        assert!(store.mark_timed_out("bg", "ORD-finalized").await.is_err());
+        assert_eq!(
+            store
+                .decrement_retries("bg", "ORD-finalized")
+                .await
+                .unwrap(),
+            None
+        );
+
+        let got = store.get("bg", "ORD-finalized").await.unwrap().unwrap();
+        assert_eq!(got.status, TestStatus::Passed);
+        assert_eq!(got.verdict, Some(true));
+        assert_eq!(got.failure_message, None);
     }
 
     #[tokio::test]
@@ -285,9 +363,15 @@ mod tests {
         store.register(make_test("ORD-22", "bg1")).await.unwrap();
         store.register(make_test("ORD-23", "bg2")).await.unwrap();
 
-        store.set_verdict("ORD-20", true, None).await.unwrap();
-        store.set_verdict("ORD-21", false, None).await.unwrap();
-        store.mark_timed_out("ORD-22").await.unwrap();
+        store
+            .set_verdict("bg1", "ORD-20", true, None)
+            .await
+            .unwrap();
+        store
+            .set_verdict("bg1", "ORD-21", false, None)
+            .await
+            .unwrap();
+        store.mark_timed_out("bg1", "ORD-22").await.unwrap();
 
         let counts = store.counts("bg1").await.unwrap();
         assert_eq!(counts.passed, 1);
@@ -315,25 +399,28 @@ mod tests {
 
         let removed = store.cleanup_expired().await.unwrap();
         assert_eq!(removed, 1);
-        assert!(store.get("EXP-1").await.unwrap().is_none());
-        assert!(store.get("LIVE-1").await.unwrap().is_some());
-        assert!(store.get("EXP-2").await.unwrap().is_some());
+        assert!(store.get("bg", "EXP-1").await.unwrap().is_none());
+        assert!(store.get("bg", "LIVE-1").await.unwrap().is_some());
+        assert!(store.get("bg", "EXP-2").await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn cleanup_blue_green_removes_all_cases_for_bgd() {
         let store = MemoryStore::new();
         store.register(make_test("DONE-1", "bg")).await.unwrap();
-        store.set_verdict("DONE-1", true, None).await.unwrap();
+        store.set_verdict("bg", "DONE-1", true, None).await.unwrap();
         store.register(make_test("PENDING-1", "bg")).await.unwrap();
         store.register(make_test("OTHER-1", "other")).await.unwrap();
-        store.set_verdict("OTHER-1", true, None).await.unwrap();
+        store
+            .set_verdict("other", "OTHER-1", true, None)
+            .await
+            .unwrap();
 
         let removed = store.cleanup_blue_green("bg").await.unwrap();
         assert_eq!(removed, 2);
-        assert!(store.get("DONE-1").await.unwrap().is_none());
-        assert!(store.get("PENDING-1").await.unwrap().is_none());
-        assert!(store.get("OTHER-1").await.unwrap().is_some());
+        assert!(store.get("bg", "DONE-1").await.unwrap().is_none());
+        assert!(store.get("bg", "PENDING-1").await.unwrap().is_none());
+        assert!(store.get("other", "OTHER-1").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -346,7 +433,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let id = format!("CONC-{}", i);
                 s.register(make_test(&id, "bg")).await.unwrap();
-                s.set_verdict(&id, i % 2 == 0, None).await.unwrap();
+                s.set_verdict("bg", &id, i % 2 == 0, None).await.unwrap();
             }));
         }
 

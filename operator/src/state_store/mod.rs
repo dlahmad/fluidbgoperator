@@ -80,15 +80,16 @@ pub struct Counts {
 #[async_trait]
 pub trait StateStore: Send + Sync {
     async fn register(&self, run: TestCaseRecord) -> Result<()>;
-    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>>;
+    async fn get(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<TestCaseRecord>>;
     async fn set_verdict(
         &self,
+        blue_green_ref: &str,
         test_id: &str,
         passed: bool,
         failure_message: Option<String>,
     ) -> Result<()>;
-    async fn mark_timed_out(&self, test_id: &str) -> Result<()>;
-    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>>;
+    async fn mark_timed_out(&self, blue_green_ref: &str, test_id: &str) -> Result<()>;
+    async fn decrement_retries(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<i32>>;
     async fn list_pending(&self) -> Result<Vec<TestCaseRecord>>;
     async fn list_blue_green_refs(&self) -> Result<BTreeSet<String>>;
     async fn counts(&self, bg: &str) -> Result<Counts>;

@@ -18,6 +18,12 @@ async fn main() {
         )
         .init();
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "builtin-plugins") {
+        run_builtin_plugins_hook(&args).await;
+        return;
+    }
+
     info!("fluidbg operator v0.1 starting");
 
     let store = build_state_store().await;
@@ -89,6 +95,18 @@ async fn main() {
     axum::serve(listener, app)
         .await
         .expect("operator API server error");
+}
+
+async fn run_builtin_plugins_hook(args: &[String]) {
+    let mode = args
+        .get(1)
+        .unwrap_or_else(|| panic!("builtin-plugins requires mode: apply or delete"));
+    let manifest_path = args
+        .get(2)
+        .unwrap_or_else(|| panic!("builtin-plugins requires manifest path"));
+    fluidbg_operator::builtin_plugins::run(mode, manifest_path)
+        .await
+        .expect("builtin plugin hook failed");
 }
 
 async fn build_state_store() -> Arc<dyn StateStore> {

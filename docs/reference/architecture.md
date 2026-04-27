@@ -118,6 +118,10 @@ The token is the shared credential for that inception point:
   message payload, for caller identity. Registration is rejected if the request
   body identity does not match the verified `blue_green_ref` and
   `inception_point` claims.
+- Tokens also carry the BGD UID. Any operator replica may receive a plugin
+  callback, but it must read current Kubernetes state and reject registrations
+  if the UID no longer exists, no longer matches, or the BGD is deleting or
+  terminal.
 
 The signing Secret is not rollout-owned and is not cleaned up by the operator.
 Rollout cleanup removes temporary inception resources and waits for Deployments,
@@ -226,6 +230,36 @@ promotion:
       stepTimeoutMinutes: 15
 ```
 
+`testDeploymentPatch` is an optional, typed test-time overlay for the candidate
+DeploymentSpec. It is applied only while the candidate is being tested. On
+promotion, the operator reapplies the canonical `deployment.spec` before the
+candidate is marked green.
+
+```yaml
+deployment:
+  spec:
+    replicas: 10
+    selector:
+      matchLabels: { app: orders-blue }
+    template:
+      metadata:
+        labels: { app: orders-blue, fluidbg.io/name: orders }
+      spec:
+        containers:
+          - name: orders
+            image: ghcr.io/acme/orders:2.0.0
+testDeploymentPatch:
+  replicas: 2
+```
+
+The patch supports optional DeploymentSpec fields that are safe to change for
+test time: `replicas`, `strategy`, `minReadySeconds`,
+`revisionHistoryLimit`, `paused`, `progressDeadlineSeconds`, and `template`.
+It intentionally does not expose `selector`, because changing selectors during a
+rollout can orphan ReplicaSets or make readiness and service routing ambiguous.
+Nested objects use JSON merge-patch semantics; arrays such as
+`template.spec.containers` are replaced as whole arrays if set.
+
 ### State Store
 
 The state store is operator-global, not selected per `BlueGreenDeployment`.
@@ -234,18 +268,34 @@ chart is configured with more than one operator replica. HA deployments must use
 a shared backend: Postgres or Azure Cosmos DB. Both persistent backends support
 secret-based credentials and AKS workload identity.
 
+With multiple operator replicas, one BGD is reconciled under one short-lived
+Kubernetes `Lease`. The lease is keyed by BGD identity, renewed while reconcile
+work is in progress, and blocks other replicas from touching that BGD's store
+records, plugin manager resources, inceptor pods, Deployments, or cleanup state.
+If the holder pod dies, renewal stops and another replica can take over after
+the lease duration. Different BGD names use different leases and can reconcile
+concurrently.
+
+Status phase updates use optimistic concurrency on the status subresource:
+the operator reads the latest status object and replaces it with the observed
+`resourceVersion`. If another writer changed status between read and write, the
+API server returns a conflict and the stale write is ignored.
+
 Store records are short-lived rollout state, not an audit log. The operator
 keeps pending cases while the owning BGD still exists. After a BGD reaches a
 terminal state or is deleted through the finalizer path, temporary Kubernetes
 resources are removed and all cases for that BGD are deleted from the store.
+Test-case mutations are keyed by `(blueGreenRef, testId)`, not by `testId`
+alone, so independent BGDs can observe the same application-level test id
+without sharing verdicts or retry state.
 
 Forced deletion is handled by an orphan sweeper. It periodically collects BGD
 refs from the store and from Kubernetes resources labeled
 `fluidbg.io/blue-green-ref`, compares them with existing BGD CR names, and
 cleans any ref whose CR no longer exists. Unpromoted candidate deployments are
 labeled so they can be removed after a forced delete; the label is cleared when
-the candidate is promoted to the active green deployment. The cleanup is
-idempotent and safe when multiple operator replicas race to perform it.
+the candidate is promoted to the active green deployment. Orphan cleanup uses
+the same lease mechanism before deleting resources or store rows.
 
 ## Operator Reconciliation
 
@@ -253,23 +303,47 @@ For one `BlueGreenDeployment`, reconciliation does the following:
 
 1. Validate tests, promotion settings, plugin references, supported roles,
    supported field namespaces, plugin config schemas, and progressive capability.
-2. Render verifier test deployments/services.
-3. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
-4. Inject inceptor env vars into plugin inceptor containers.
-5. Call manager and inceptor `preparePath` endpoints and patch returned assignments into green, blue,
-   and test deployments.
-6. Register and poll test cases through the operator HTTP API and verifier
+2. Render the candidate Deployment from `deployment.spec`, applying
+   `testDeploymentPatch` only for the test-time candidate when present.
+3. Render verifier test deployments/services.
+4. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
+5. Start plugin inceptors idle with only their secured config and per-inception
+   bearer token.
+6. Call manager `preparePath` endpoints so privileged infrastructure exists
+   before any inceptor moves traffic.
+7. Call inceptor `preparePath` endpoints to activate traffic work and collect
+   returned assignments.
+8. Patch all returned/template assignments into green, blue, and test
+   deployments in one batch, then wait for those rollouts.
+9. Register and poll test cases through the operator HTTP API and verifier
    `verifyPath`.
-7. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
-8. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
+10. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
+11. On promotion, reapply canonical `deployment.spec` to the candidate and wait
+   until it is ready before marking it green.
+12. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
    `drainStatusPath`, then call inceptor and manager `cleanupPath`.
-9. Remove temporary test/inceptor resources and restore direct assignment values
+13. Remove temporary test/inceptor resources and restore direct assignment values
    where plugins declared restore templates.
 
 The operator also prevents two rollouts of the same `BlueGreenDeployment` from
 colliding while the previous rollout's temporary inception resources still
 exist. Different `BlueGreenDeployment` names can run concurrently because
 generated resource names include the BGD name and inception point.
+
+## GitOps Status
+
+The CR keeps `status.phase` and also publishes conventional conditions for
+GitOps health checks:
+
+| Condition | Active rollout | Successful rollout | Failed rollout |
+| --- | --- | --- | --- |
+| `Ready` | `False` | `True` | `False` |
+| `Progressing` | `True` | `False` | `False` |
+| `Degraded` | `False` | `False` | `True` |
+
+`Pending`, `Observing`, `Promoting`, and `Draining` are progressing.
+`Completed` is ready. `RolledBack` is degraded. Each condition includes
+`reason`, `message`, `observedGeneration`, and `lastTransitionTime`.
 
 ## Plugin Inceptor Contract
 
@@ -424,7 +498,7 @@ plugins/rabbitmq/      Combined RabbitMQ duplicator/splitter/combiner/writer/obs
 sdk/                   Versioned Rust SDK and language-neutral OpenAPI specs
 crds/                  Generated CRD manifests
 builtin-plugins/       Built-in InceptionPlugin manifests
-charts/                Helm chart with CRDs and built-in plugin CR templates
+charts/                Helm chart with CRDs and hook-managed built-in plugin CRs
 deploy/                Raw operator deployment and RBAC
 e2e/                   Kind-based end-to-end suite
 testenv/               RabbitMQ, Postgres, and kind support manifests

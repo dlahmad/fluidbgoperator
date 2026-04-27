@@ -1,4 +1,4 @@
-{{- if .Values.builtinPlugins.install }}
+{{- define "fluidbg.builtinPluginManifests" -}}
 {{- $root := . -}}
 {{- $namespaces := .Values.builtinPlugins.namespaces | default (list .Release.Namespace) -}}
 {{- range $namespace := $namespaces }}
@@ -37,6 +37,31 @@ spec:
     type: object
     properties:
       amqpUrl: { type: string }
+      management:
+        type: object
+        properties:
+          url: { type: string }
+          username: { type: string }
+          password: { type: string }
+          vhost: { type: string }
+      queueDeclaration:
+        type: object
+        properties:
+          durable: { type: boolean }
+          exclusive: { type: boolean }
+          autoDelete: { type: boolean }
+          arguments: { type: object }
+      shadowQueue:
+        type: object
+        properties:
+          suffix: { type: string }
+          queueDeclaration:
+            type: object
+            properties:
+              durable: { type: boolean }
+              exclusive: { type: boolean }
+              autoDelete: { type: boolean }
+              arguments: { type: object }
       duplicator:
         type: object
         properties:
@@ -176,7 +201,6 @@ spec:
     properties:
       connectionString: { type: string }
       fullyQualifiedNamespace: { type: string }
-      drainStabilitySeconds: { type: integer }
       auth:
         type: object
         properties:
@@ -196,6 +220,48 @@ spec:
           namespaceName: { type: string }
           createQueues: { type: boolean }
           deleteQueues: { type: boolean }
+      queueDeclaration:
+        type: object
+        properties:
+          lockDuration: { type: string }
+          maxSizeInMegabytes: { type: integer }
+          maxMessageSizeInKilobytes: { type: integer }
+          requiresDuplicateDetection: { type: boolean }
+          requiresSession: { type: boolean }
+          defaultMessageTimeToLive: { type: string }
+          deadLetteringOnMessageExpiration: { type: boolean }
+          duplicateDetectionHistoryTimeWindow: { type: string }
+          maxDeliveryCount: { type: integer }
+          enableBatchedOperations: { type: boolean }
+          autoDeleteOnIdle: { type: string }
+          enablePartitioning: { type: boolean }
+          enableExpress: { type: boolean }
+          forwardTo: { type: string }
+          forwardDeadLetteredMessagesTo: { type: string }
+          status: { type: string }
+      shadowQueue:
+        type: object
+        properties:
+          suffix: { type: string }
+          queueDeclaration:
+            type: object
+            properties:
+              lockDuration: { type: string }
+              maxSizeInMegabytes: { type: integer }
+              maxMessageSizeInKilobytes: { type: integer }
+              requiresDuplicateDetection: { type: boolean }
+              requiresSession: { type: boolean }
+              defaultMessageTimeToLive: { type: string }
+              deadLetteringOnMessageExpiration: { type: boolean }
+              duplicateDetectionHistoryTimeWindow: { type: string }
+              maxDeliveryCount: { type: integer }
+              enableBatchedOperations: { type: boolean }
+              autoDeleteOnIdle: { type: string }
+              enablePartitioning: { type: boolean }
+              enableExpress: { type: boolean }
+              forwardTo: { type: string }
+              forwardDeadLetteredMessagesTo: { type: string }
+              status: { type: string }
       duplicator:
         type: object
         properties:
@@ -254,4 +320,154 @@ spec:
         containerPort: 9090
 {{- end }}
 {{- end }}
+{{- end -}}
+
+{{- if .Values.builtinPlugins.install }}
+{{- $hookName := printf "%s-builtin-plugin-hook" (include "fluidbg.fullname" .) | trunc 63 | trimSuffix "-" -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade,pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $hookName }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade,pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["fluidbg.io"]
+    resources: ["inceptionplugins"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $hookName }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade,pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $hookName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $hookName }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade,pre-delete
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  plugins.yaml: |
+    {{- include "fluidbg.builtinPluginManifests" . | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-apply" $hookName | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "fluidbg.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: builtin-plugin-hook
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $hookName }}
+      containers:
+        - name: builtin-plugin-hook
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - builtin-plugins
+            - apply
+            - /manifests/plugins.yaml
+          volumeMounts:
+            - name: builtin-plugin-manifests
+              mountPath: /manifests
+              readOnly: true
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+      volumes:
+        - name: builtin-plugin-manifests
+          configMap:
+            name: {{ $hookName }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-delete" $hookName | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "fluidbg.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: builtin-plugin-hook
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $hookName }}
+      containers:
+        - name: builtin-plugin-hook
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - builtin-plugins
+            - delete
+            - /manifests/plugins.yaml
+          volumeMounts:
+            - name: builtin-plugin-manifests
+              mountPath: /manifests
+              readOnly: true
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+      volumes:
+        - name: builtin-plugin-manifests
+          configMap:
+            name: {{ $hookName }}
 {{- end }}

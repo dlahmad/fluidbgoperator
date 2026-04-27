@@ -7,10 +7,12 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use chrono::{Duration, Utc};
 use fluidbg_plugin_sdk::{AUTHORIZATION_HEADER, RegisterTestCaseRequest};
+use kube::api::Api;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::controller::{AuthConfig, validate_plugin_auth};
+use crate::crd::blue_green::{BGDPhase, BlueGreenDeployment};
 use crate::state_store::{Counts, StateStore, TestCaseRecord, TestStatus, VerificationMode};
 
 #[derive(Clone)]
@@ -35,6 +37,8 @@ pub struct HealthResponse {
 #[derive(Debug, Deserialize)]
 pub struct VerdictRequest {
     pub test_id: String,
+    #[serde(default)]
+    pub blue_green_ref: Option<String>,
     pub passed: bool,
 }
 
@@ -127,6 +131,22 @@ pub async fn register_test_case(
             }),
         );
     }
+    match validate_registration_bgd(&state, &claims, &req).await {
+        Ok(()) => {}
+        Err((status_code, status)) => {
+            warn!(
+                "rejecting testCase registration id={} bgd={} inceptionPoint={}: {}",
+                req.test_id, req.blue_green_ref, req.inception_point, status
+            );
+            return (
+                status_code,
+                Json(RegisterTestCaseResponse {
+                    test_id: req.test_id,
+                    status,
+                }),
+            );
+        }
+    }
     let run = TestCaseRecord {
         test_id: req.test_id.clone(),
         blue_green_ref: req.blue_green_ref,
@@ -170,9 +190,18 @@ pub async fn set_verdict(
         "setting verdict for testCase id={} passed={}",
         req.test_id, req.passed
     );
+    let Some(blue_green_ref) = req.blue_green_ref.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(VerdictResponse {
+                test_id: req.test_id,
+                status: "error: blue_green_ref is required".to_string(),
+            }),
+        );
+    };
     match state
         .store
-        .set_verdict(&req.test_id, req.passed, None)
+        .set_verdict(blue_green_ref, &req.test_id, req.passed, None)
         .await
     {
         Ok(()) => (
@@ -250,6 +279,45 @@ fn claims_match_request(
     req: &RegisterTestCaseRequest,
 ) -> bool {
     claims.blue_green_ref == req.blue_green_ref && claims.inception_point == req.inception_point
+}
+
+async fn validate_registration_bgd(
+    state: &ApiState,
+    claims: &fluidbg_plugin_sdk::PluginAuthClaims,
+    req: &RegisterTestCaseRequest,
+) -> Result<(), (StatusCode, String)> {
+    let Some(claim_uid) = claims
+        .blue_green_uid
+        .as_deref()
+        .filter(|uid| !uid.is_empty())
+    else {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    };
+    let bgds: Api<BlueGreenDeployment> = Api::namespaced(state.client.clone(), &state.namespace);
+    let bgd = bgds
+        .get(&req.blue_green_ref)
+        .await
+        .map_err(|err| match err {
+            kube::Error::Api(api_error) if api_error.code == 404 => {
+                (StatusCode::GONE, "BlueGreenDeploymentGone".to_string())
+            }
+            other => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("BlueGreenDeploymentLookupFailed: {other}"),
+            ),
+        })?;
+    if bgd.metadata.uid.as_deref() != Some(claim_uid) {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    }
+    if bgd.metadata.deletion_timestamp.is_some()
+        || matches!(
+            bgd.status.as_ref().and_then(|status| status.phase.as_ref()),
+            Some(BGDPhase::Completed | BGDPhase::RolledBack)
+        )
+    {
+        return Err((StatusCode::GONE, "BlueGreenDeploymentTerminal".to_string()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

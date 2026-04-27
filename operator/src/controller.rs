@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -16,6 +16,7 @@ use crate::state_store::VerificationMode;
 use crate::strategy::PromotionAction;
 
 mod deployments;
+mod lease;
 mod phases;
 mod plugin_lifecycle;
 mod promotion;
@@ -42,6 +43,7 @@ use phases::select_previous_green_for_promotion;
 use phases::validate_progressive_splitter_plugin;
 
 use deployments::ensure_generated_candidate_name;
+use lease::{LeaseConfig, run_with_bgd_lease, run_with_orphan_lease};
 use phases::{
     apply_splitter_traffic_percent, begin_draining_after_promotion, begin_draining_after_rollback,
     bootstrap_initial_green_if_empty, ensure_declared_deployments, ensure_inception_resources,
@@ -65,6 +67,8 @@ struct Ctx {
     namespace: String,
     auth: AuthConfig,
     store: Arc<dyn StateStore>,
+    lease: LeaseConfig,
+    local_locks: Arc<Mutex<BTreeSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -95,6 +99,8 @@ pub async fn run_controller(
         namespace,
         auth,
         store,
+        lease: lease_config_from_env(),
+        local_locks: Arc::new(Mutex::new(BTreeSet::new())),
     });
 
     Controller::new(bgd_api, watcher::Config::default())
@@ -121,10 +127,40 @@ pub async fn run_orphan_cleanup(
     let mut tick = tokio::time::interval(interval);
     loop {
         tick.tick().await;
-        if let Err(err) = cleanup_orphaned_blue_green_refs(&client, &namespace, &store).await {
+        let lease = lease_config_from_env();
+        if let Err(err) =
+            cleanup_orphaned_blue_green_refs(&client, &namespace, &store, &lease).await
+        {
             error!("orphan cleanup failed: {}", err);
         }
     }
+}
+
+fn operator_identity() -> String {
+    std::env::var("FLUIDBG_OPERATOR_ID")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| format!("fluidbg-operator-{}", std::process::id()))
+}
+
+fn lease_config_from_env() -> LeaseConfig {
+    let duration_seconds = env_u64("FLUIDBG_RECONCILE_LEASE_DURATION_SECONDS", 30);
+    let mut renew_seconds = env_u64("FLUIDBG_RECONCILE_LEASE_RENEW_INTERVAL_SECONDS", 10);
+    if renew_seconds >= duration_seconds {
+        renew_seconds = (duration_seconds / 3).max(1);
+    }
+    LeaseConfig {
+        holder_identity: operator_identity(),
+        duration: Duration::from_secs(duration_seconds),
+        renew_interval: Duration::from_secs(renew_seconds),
+    }
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 pub(crate) async fn validate_plugin_auth(
@@ -143,6 +179,78 @@ fn error_policy(_bgd: Arc<BlueGreenDeployment>, _err: &ReconcileError, _ctx: Arc
 }
 
 async fn reconcile(
+    bgd: Arc<BlueGreenDeployment>,
+    ctx: Arc<Ctx>,
+) -> std::result::Result<Action, ReconcileError> {
+    let namespace = ctx.namespace.clone();
+    let reconcile_namespace = namespace.clone();
+    let client = ctx.client.clone();
+    let name = bgd.metadata.name.clone();
+    let lease = ctx.lease.clone();
+    let Some(_local_lock) = try_acquire_local_reconcile_lock(&bgd, &ctx) else {
+        return Ok(Action::requeue(std::time::Duration::from_secs(1)));
+    };
+    match run_with_bgd_lease(
+        bgd.as_ref(),
+        client.clone(),
+        &namespace,
+        &lease,
+        async move {
+            let Some(name) = name else {
+                return Ok(Action::await_change());
+            };
+            let api: Api<BlueGreenDeployment> = Api::namespaced(client, &reconcile_namespace);
+            let latest = match api.get(&name).await {
+                Ok(latest) => latest,
+                Err(kube::Error::Api(error)) if error.code == 404 => {
+                    return Ok(Action::await_change());
+                }
+                Err(error) => return Err(ReconcileError::K8s(error)),
+            };
+            reconcile_locked(Arc::new(latest), ctx).await
+        },
+    )
+    .await?
+    {
+        Some(action) => Ok(action),
+        None => Ok(Action::requeue(std::time::Duration::from_secs(2))),
+    }
+}
+
+struct LocalReconcileLock {
+    key: String,
+    locks: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Drop for LocalReconcileLock {
+    fn drop(&mut self) {
+        if let Ok(mut locks) = self.locks.lock() {
+            locks.remove(&self.key);
+        }
+    }
+}
+
+fn try_acquire_local_reconcile_lock(
+    bgd: &BlueGreenDeployment,
+    ctx: &Arc<Ctx>,
+) -> Option<LocalReconcileLock> {
+    let key = bgd
+        .metadata
+        .uid
+        .clone()
+        .or_else(|| bgd.metadata.name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut locks = ctx.local_locks.lock().ok()?;
+    if !locks.insert(key.clone()) {
+        return None;
+    }
+    Some(LocalReconcileLock {
+        key,
+        locks: ctx.local_locks.clone(),
+    })
+}
+
+async fn reconcile_locked(
     bgd: Arc<BlueGreenDeployment>,
     ctx: Arc<Ctx>,
 ) -> std::result::Result<Action, ReconcileError> {
@@ -356,6 +464,7 @@ async fn cleanup_orphaned_blue_green_refs(
     client: &kube::Client,
     namespace: &str,
     store: &Arc<dyn StateStore>,
+    lease: &LeaseConfig,
 ) -> std::result::Result<usize, ReconcileError> {
     let existing = existing_blue_green_names(client, namespace).await?;
     let mut refs = store
@@ -373,20 +482,44 @@ async fn cleanup_orphaned_blue_green_refs(
             "cleaning orphaned resources and store records for missing BGD '{}'",
             blue_green_ref
         );
-        cleanup_orphaned_blue_green_resources(client, namespace, &blue_green_ref).await?;
-        let removed = store
-            .cleanup_blue_green(&blue_green_ref)
-            .await
-            .map_err(|e| ReconcileError::Store(e.to_string()))?;
-        if removed > 0 {
-            info!(
-                "cleaned {} store records for orphaned BGD '{}'",
-                removed, blue_green_ref
-            );
+        let cleanup_result = run_with_orphan_lease(
+            &blue_green_ref,
+            client.clone(),
+            namespace,
+            lease,
+            cleanup_single_orphaned_blue_green_ref(
+                client,
+                namespace,
+                store,
+                blue_green_ref.clone(),
+            ),
+        )
+        .await?;
+        if cleanup_result.is_some() {
+            cleaned += 1;
         }
-        cleaned += 1;
     }
     Ok(cleaned)
+}
+
+async fn cleanup_single_orphaned_blue_green_ref(
+    client: &kube::Client,
+    namespace: &str,
+    store: &Arc<dyn StateStore>,
+    blue_green_ref: String,
+) -> std::result::Result<(), ReconcileError> {
+    cleanup_orphaned_blue_green_resources(client, namespace, &blue_green_ref).await?;
+    let removed = store
+        .cleanup_blue_green(&blue_green_ref)
+        .await
+        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+    if removed > 0 {
+        info!(
+            "cleaned {} store records for orphaned BGD '{}'",
+            removed, blue_green_ref
+        );
+    }
+    Ok(())
 }
 
 async fn existing_blue_green_names(

@@ -1,22 +1,72 @@
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use lapin::options::{
     BasicAckOptions, BasicGetOptions, BasicPublishOptions, QueueDeclareOptions, QueueDeleteOptions,
 };
-use lapin::types::FieldTable;
+use lapin::types::{AMQPValue, FieldTable, LongString, ShortString};
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
+use serde_json::Value;
 use tracing::warn;
 
-pub(crate) async fn declare_queue(channel: &Channel, queue: &str) -> Result<()> {
+use crate::config::QueueDeclarationConfig;
+
+pub(crate) async fn declare_queue(
+    channel: &Channel,
+    queue: &str,
+    declaration: &QueueDeclarationConfig,
+) -> Result<()> {
     channel
         .queue_declare(
             queue.into(),
-            QueueDeclareOptions::default(),
-            FieldTable::default(),
+            QueueDeclareOptions {
+                passive: false,
+                durable: declaration.durable.unwrap_or(false),
+                exclusive: declaration.exclusive.unwrap_or(false),
+                auto_delete: declaration.auto_delete.unwrap_or(false),
+                nowait: false,
+            },
+            queue_arguments(declaration)?,
         )
         .await?;
     Ok(())
+}
+
+fn queue_arguments(declaration: &QueueDeclarationConfig) -> Result<FieldTable> {
+    let mut table = FieldTable::default();
+    for (key, value) in &declaration.arguments {
+        table.insert(
+            ShortString::from(key.as_str()),
+            json_to_amqp_value(value).with_context(|| {
+                format!("unsupported RabbitMQ queue argument '{key}' value {value}")
+            })?,
+        );
+    }
+    Ok(table)
+}
+
+fn json_to_amqp_value(value: &Value) -> Option<AMQPValue> {
+    match value {
+        Value::Bool(value) => Some(AMQPValue::Boolean(*value)),
+        Value::Number(value) => value
+            .as_i64()
+            .map(|value| {
+                i32::try_from(value)
+                    .map(AMQPValue::LongInt)
+                    .unwrap_or(AMQPValue::LongLongInt(value))
+            })
+            .or_else(|| {
+                value.as_u64().map(|value| {
+                    u32::try_from(value)
+                        .map(AMQPValue::LongUInt)
+                        .unwrap_or(AMQPValue::LongLongInt(value.min(i64::MAX as u64) as i64))
+                })
+            })
+            .or_else(|| value.as_f64().map(AMQPValue::Double)),
+        Value::String(value) => Some(AMQPValue::LongString(LongString::from(value.as_str()))),
+        Value::Null => Some(AMQPValue::Void),
+        Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 pub(crate) async fn delete_queue(channel: &Channel, queue: &str) -> Result<()> {
@@ -92,12 +142,11 @@ pub(crate) async fn move_queue_messages(
         let Some(delivery) = delivery else {
             break;
         };
-        let headers = delivery.properties.headers().clone().unwrap_or_default();
         publish_confirmed(
             channel,
             target_queue,
             &delivery.data,
-            BasicProperties::default().with_headers(headers),
+            delivery.properties.clone(),
         )
         .await?;
         delivery.ack(BasicAckOptions::default()).await?;
@@ -121,4 +170,41 @@ pub(crate) async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
         }
     }
     bail!("unable to connect to RabbitMQ");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn queue_arguments_include_user_properties() {
+        let declaration: QueueDeclarationConfig = serde_json::from_value(json!({
+            "durable": true,
+            "arguments": {
+                "x-message-ttl": 60000,
+                "x-queue-type": "quorum",
+                "x-single-active-consumer": true
+            }
+        }))
+        .unwrap();
+
+        let table = queue_arguments(&declaration).unwrap();
+
+        assert!(table.contains_key("x-message-ttl"));
+        assert!(table.contains_key("x-queue-type"));
+        assert!(table.contains_key("x-single-active-consumer"));
+    }
+
+    #[test]
+    fn queue_arguments_reject_nested_json_values() {
+        let declaration: QueueDeclarationConfig = serde_json::from_value(json!({
+            "arguments": {
+                "x-invalid": {"nested": true}
+            }
+        }))
+        .unwrap();
+
+        assert!(queue_arguments(&declaration).is_err());
+    }
 }

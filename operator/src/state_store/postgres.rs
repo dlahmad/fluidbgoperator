@@ -82,16 +82,24 @@ impl PostgresStore {
                 retries_remaining INTEGER NOT NULL DEFAULT 0,
                 failure_message TEXT,
                 expires_at TIMESTAMPTZ NOT NULL,
-                PRIMARY KEY (test_id)
+                PRIMARY KEY (blue_green_ref, test_id)
             )"#,
+            table = self.table_name
+        );
+        let drop_legacy_pk = format!(
+            r#"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_pkey"#,
+            table = self.table_name
+        );
+        let add_composite_pk = format!(
+            r#"ALTER TABLE {table} ADD PRIMARY KEY (blue_green_ref, test_id)"#,
             table = self.table_name
         );
         let create_bg_index = format!(
             r#"CREATE INDEX IF NOT EXISTS idx_{table}_blue_green_ref ON {table} (blue_green_ref)"#,
             table = self.table_name
         );
-        let create_test_id_index = format!(
-            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_test_id_unique ON {table} (test_id)"#,
+        let drop_legacy_test_id_index = format!(
+            r#"DROP INDEX IF EXISTS idx_{table}_test_id_unique"#,
             table = self.table_name
         );
         let create_index = format!(
@@ -103,11 +111,19 @@ impl PostgresStore {
             .execute(&self.pool)
             .await
             .map_err(StoreError::Postgres)?;
+        sqlx::query(&drop_legacy_pk)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        sqlx::query(&add_composite_pk)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
         sqlx::query(&create_bg_index)
             .execute(&self.pool)
             .await
             .map_err(StoreError::Postgres)?;
-        sqlx::query(&create_test_id_index)
+        sqlx::query(&drop_legacy_test_id_index)
             .execute(&self.pool)
             .await
             .map_err(StoreError::Postgres)?;
@@ -161,7 +177,7 @@ impl StateStore for PostgresStore {
         let query = format!(
             r#"INSERT INTO {table} (test_id, blue_green_ref, triggered_at, trigger_inception_point, timeout_seconds, status, verdict, verification_mode, verify_url, retries_remaining, failure_message, expires_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-               ON CONFLICT (test_id) DO UPDATE SET
+               ON CONFLICT (blue_green_ref, test_id) DO UPDATE SET
                  triggered_at = LEAST({table}.triggered_at, EXCLUDED.triggered_at),
                  timeout_seconds = GREATEST({table}.timeout_seconds, EXCLUDED.timeout_seconds),
                  trigger_inception_point = CASE
@@ -198,9 +214,13 @@ impl StateStore for PostgresStore {
         Ok(())
     }
 
-    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>> {
-        let query = format!("SELECT * FROM {} WHERE test_id = $1", self.table_name);
+    async fn get(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<TestCaseRecord>> {
+        let query = format!(
+            "SELECT * FROM {} WHERE blue_green_ref = $1 AND test_id = $2",
+            self.table_name
+        );
         let row = sqlx::query(&query)
+            .bind(blue_green_ref)
             .bind(test_id)
             .fetch_optional(&self.pool)
             .await
@@ -210,19 +230,21 @@ impl StateStore for PostgresStore {
 
     async fn set_verdict(
         &self,
+        blue_green_ref: &str,
         test_id: &str,
         passed: bool,
         failure_message: Option<String>,
     ) -> Result<()> {
         let status_str = if passed { "Passed" } else { "Failed" };
         let query = format!(
-            "UPDATE {} SET status = $1, verdict = $2, failure_message = $3 WHERE test_id = $4 AND status IN ('Triggered', 'Observing')",
+            "UPDATE {} SET status = $1, verdict = $2, failure_message = $3 WHERE blue_green_ref = $4 AND test_id = $5 AND status IN ('Triggered', 'Observing')",
             self.table_name
         );
         let result = sqlx::query(&query)
             .bind(status_str)
             .bind(passed)
             .bind(failure_message)
+            .bind(blue_green_ref)
             .bind(test_id)
             .execute(&self.pool)
             .await
@@ -233,12 +255,13 @@ impl StateStore for PostgresStore {
         Ok(())
     }
 
-    async fn mark_timed_out(&self, test_id: &str) -> Result<()> {
+    async fn mark_timed_out(&self, blue_green_ref: &str, test_id: &str) -> Result<()> {
         let query = format!(
-            "UPDATE {} SET status = 'TimedOut', verdict = NULL WHERE test_id = $1 AND status IN ('Triggered', 'Observing')",
+            "UPDATE {} SET status = 'TimedOut', verdict = NULL WHERE blue_green_ref = $1 AND test_id = $2 AND status IN ('Triggered', 'Observing')",
             self.table_name
         );
         let result = sqlx::query(&query)
+            .bind(blue_green_ref)
             .bind(test_id)
             .execute(&self.pool)
             .await
@@ -249,12 +272,13 @@ impl StateStore for PostgresStore {
         Ok(())
     }
 
-    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>> {
+    async fn decrement_retries(&self, blue_green_ref: &str, test_id: &str) -> Result<Option<i32>> {
         let query = format!(
-            "UPDATE {} SET retries_remaining = retries_remaining - 1 WHERE test_id = $1 AND retries_remaining > 0 RETURNING retries_remaining",
+            "UPDATE {} SET retries_remaining = retries_remaining - 1 WHERE blue_green_ref = $1 AND test_id = $2 AND status IN ('Triggered', 'Observing') AND retries_remaining > 0 RETURNING retries_remaining",
             self.table_name
         );
         let row = sqlx::query(&query)
+            .bind(blue_green_ref)
             .bind(test_id)
             .fetch_optional(&self.pool)
             .await

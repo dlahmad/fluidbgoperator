@@ -5,7 +5,10 @@ use fluidbg_plugin_sdk::PluginRole;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::config::{AppState, RuntimeMode, combiner_config, has_role, observer_config, required};
+use crate::config::{
+    AppState, RuntimeMode, combiner_config, has_role, inceptor_infra_disabled, observer_config,
+    required, shadow_queue_name,
+};
 use crate::filtering::{
     extract_test_id, matches_filter, notify_observer, route_from_output_source,
 };
@@ -19,7 +22,17 @@ async fn run_combine_loop(
 
     loop {
         match state.runtime_mode() {
-            RuntimeMode::Idle | RuntimeMode::Draining => {
+            RuntimeMode::Idle => {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                continue;
+            }
+            RuntimeMode::Draining => {
+                if let Err(err) = drain_output_queue(&state, &source_queue, &result_queue).await {
+                    warn!(
+                        "azure service bus combiner drain from '{}' failed: {}",
+                        source_queue, err
+                    );
+                }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
             }
@@ -41,6 +54,16 @@ async fn run_combine_loop(
                 continue;
             }
         };
+        let _in_flight = state.track_message();
+        if !matches!(state.runtime_mode(), RuntimeMode::Active) {
+            if let Err(err) = state.service_bus.abandon(&message).await {
+                warn!(
+                    "azure service bus combiner unlock after drain started from '{}' failed: {}",
+                    source_queue, err
+                );
+            }
+            continue;
+        }
 
         let route = route_from_output_source(&combiner, &source_queue);
         let body_json: Value = serde_json::from_slice(&message.body).unwrap_or(Value::Null);
@@ -98,6 +121,76 @@ async fn run_combine_loop(
             }
         }
     }
+}
+
+async fn drain_output_queue(
+    state: &AppState,
+    source_queue: &str,
+    result_queue: &str,
+) -> Result<()> {
+    if !inceptor_infra_disabled() {
+        state
+            .service_bus
+            .create_queue(result_queue, &state.config.queue_declaration)
+            .await?;
+        if let Some(result_shadow_queue) = shadow_queue_name(&state.config, result_queue) {
+            let shadow_declaration = state
+                .config
+                .shadow_queue
+                .as_ref()
+                .map(|shadow| &shadow.queue_declaration)
+                .unwrap_or(&state.config.queue_declaration);
+            state
+                .service_bus
+                .create_queue(&result_shadow_queue, shadow_declaration)
+                .await?;
+        }
+    }
+    let moved = state
+        .service_bus
+        .move_available_messages(source_queue, result_queue)
+        .await?;
+    if moved > 0 {
+        info!(
+            "moved {} Service Bus output message(s) from {} back to {} during drain",
+            moved, source_queue, result_queue
+        );
+    }
+    let moved_dead_letter = state
+        .service_bus
+        .move_available_dead_letter_messages(source_queue, result_queue)
+        .await?;
+    if moved_dead_letter > 0 {
+        info!(
+            "moved {} Service Bus output dead-letter message(s) from {} back to {} during drain",
+            moved_dead_letter, source_queue, result_queue
+        );
+    }
+    if let Some(shadow_queue) = shadow_queue_name(&state.config, source_queue) {
+        let target_shadow_queue = shadow_queue_name(&state.config, result_queue)
+            .unwrap_or_else(|| result_queue.to_string());
+        let moved = state
+            .service_bus
+            .move_available_messages(&shadow_queue, &target_shadow_queue)
+            .await?;
+        if moved > 0 {
+            info!(
+                "moved {} Service Bus output shadow message(s) from {} back to {} during drain",
+                moved, shadow_queue, target_shadow_queue
+            );
+        }
+        let moved_dead_letter = state
+            .service_bus
+            .move_available_dead_letter_messages(&shadow_queue, &target_shadow_queue)
+            .await?;
+        if moved_dead_letter > 0 {
+            info!(
+                "moved {} Service Bus output shadow dead-letter message(s) from {} back to {} during drain",
+                moved_dead_letter, shadow_queue, target_shadow_queue
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn run_combiner(state: AppState) -> Result<()> {

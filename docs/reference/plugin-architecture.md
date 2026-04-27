@@ -99,6 +99,7 @@ Inceptor rules:
 
 - Receive `FLUIDBG_PLUGIN_AUTH_TOKEN`, not the signing key.
 - Require incoming operator calls to use the same bearer token value.
+- Start idle and do not move traffic until the operator calls `preparePath`.
 - Use `FLUIDBG_INCEPTOR_INFRA_DISABLED=true` to skip privileged create/delete
   operations when a manager is configured.
 - Move traffic and perform observation using the secured config emitted by the
@@ -118,15 +119,23 @@ sequenceDiagram
     O->>K: read signing key from operator namespace
     O->>O: sign per-inception JWT
     O->>O: derive secured temp resource names
-    O->>I: create ConfigMap/Deployment/Service with token only
-    O->>M: POST /manager/prepare + Bearer JWT
-    M->>M: verify JWT signature
-    M->>T: create derived temporary resources
-    O->>I: POST /prepare + Bearer same JWT
-    I->>I: exact token match
-    I-->>O: assignments for app/test containers
-    O->>A: patch env assignments
+    loop each inception point
+        O->>I: create ConfigMap/Deployment/Service with token only
+        I->>I: stay idle until prepared
+        O->>M: POST /manager/prepare + Bearer JWT
+        M->>M: verify JWT signature
+        M->>T: create derived temporary resources
+        O->>I: POST /prepare + Bearer same JWT
+        I->>I: exact token match, activate traffic work
+        I-->>O: assignments for app/test containers
+    end
+    O->>A: patch all env assignments in one batch
 ```
+
+The operator intentionally batches app/test assignment patches after all
+inception points have been prepared. This avoids partial wiring such as input
+traffic being redirected while the same app still publishes to an old output
+queue.
 
 ## Traffic Flow
 
@@ -182,9 +191,22 @@ sequenceDiagram
     O->>O: delete inceptor Deployments/Services/ConfigMaps/Pods
 ```
 
-RabbitMQ drain waits for temporary queues to be empty and for input queues to
-have no active consumers before cleanup. Azure Service Bus uses a stability
-window because locked messages can become visible again after the lock expires.
+RabbitMQ drain waits for temporary queues to have zero ready messages and zero
+unacknowledged messages when the management API is configured. Attached
+consumers are diagnostic only; they do not block drain if no messages are ready
+or locked. Without management API access, the fallback AMQP signal can only
+observe ready message count plus consumer count and the drain message states
+that limitation. Optional RabbitMQ shadow queues are configured per inception
+point; temporary shadow queues drain back to matching base shadow queues, not
+to the regular base queue.
+
+Azure Service Bus drain stops plugin admission, abandons any plugin-owned
+message that was peek-locked after drain started, and waits for temporary
+queues to report zero total messages plus zero plugin-owned in-flight locks.
+During drain it also moves messages from temporary `$deadletterqueue` subqueues
+back to the corresponding base queue before temporary queues are deleted. If an
+optional shadow queue is configured, temporary shadow queue messages and their
+dead-letter subqueue messages are moved back to the matching base shadow queue.
 If the configured drain timeout is exceeded, the operator records
 `TimedOutMaybeSuccessful` instead of silently treating the drain as safe.
 
@@ -195,4 +217,3 @@ If the configured drain timeout is exceeded, the operator records
 | HTTP | Not used | Combined splitter/observer/mock/writer service | Yes | No external resource-admin secret is needed. |
 | RabbitMQ | Optional, recommended | Duplicator/splitter/combiner/observer/writer/consumer | Yes | Manager owns temp queue create/delete; inceptor moves messages. |
 | Azure Service Bus | Optional, recommended | Duplicator/splitter/combiner/observer/writer/consumer | Yes | Manager supports connection string and workload identity modes. |
-

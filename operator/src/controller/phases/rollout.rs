@@ -3,9 +3,8 @@ use kube::api::{Api, ListParams};
 use tracing::info;
 
 use super::super::deployments::{
-    apply_family_labels_to_deployment, candidate_ref, clear_rollout_candidate_labels,
-    delete_current_green, deployment_namespace, deployment_namespace_spec, label_selector,
-    set_green_label,
+    candidate_ref, delete_current_green, deployment_namespace, deployment_namespace_spec,
+    label_selector, wait_for_deployments_ready,
 };
 use super::super::plugin_lifecycle::{AssignmentTarget, start_plugin_draining};
 use super::super::resources::{apply_deployment_manifest, delete_deployment};
@@ -21,21 +20,21 @@ pub(in crate::controller) async fn promote(
     let current_green =
         resolve_previous_green_for_promotion(client, namespace, &bgd.spec.selector, &candidate)
             .await?;
-    let candidate_namespace = deployment_namespace(&candidate, namespace);
-
-    let candidate_api: Api<Deployment> = Api::namespaced(client.clone(), &candidate_namespace);
-    let mut candidate_deploy = candidate_api.get(&candidate.name).await?;
-    apply_family_labels_to_deployment(&mut candidate_deploy, &bgd.spec.selector.match_labels)?;
-    set_green_label(&mut candidate_deploy, true)?;
-    clear_rollout_candidate_labels(&mut candidate_deploy)?;
-
-    candidate_api
-        .replace(&candidate.name, &Default::default(), &candidate_deploy)
-        .await?;
+    let candidate_identity = apply_deployment_manifest(
+        client,
+        bgd,
+        namespace,
+        &bgd.spec.deployment,
+        &bgd.spec.selector.match_labels,
+        true,
+    )
+    .await?;
+    wait_for_deployments_ready(client, &[candidate_identity]).await?;
 
     info!(
         "promoted: deployment '{}/{}' now marked fluidbg.io/green=true",
-        candidate_namespace, candidate.name
+        deployment_namespace(&candidate, namespace),
+        candidate.name
     );
 
     Ok(current_green)

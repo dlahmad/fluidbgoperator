@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::config::{
     AppState, RuntimeMode, consumer_config, duplicator_config, has_role, inceptor_infra_disabled,
-    observer_config, required, routes_to_blue, splitter_config,
+    observer_config, required, routes_to_blue, shadow_queue_name, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
 use crate::servicebus::LockedMessage;
@@ -98,7 +98,22 @@ async fn drain_input_queues(state: &AppState) -> Result<()> {
     };
 
     if !inceptor_infra_disabled() {
-        state.service_bus.create_queue(&base_queue).await?;
+        state
+            .service_bus
+            .create_queue(&base_queue, &state.config.queue_declaration)
+            .await?;
+        if let Some(base_shadow_queue) = shadow_queue_name(&state.config, &base_queue) {
+            let shadow_declaration = state
+                .config
+                .shadow_queue
+                .as_ref()
+                .map(|shadow| &shadow.queue_declaration)
+                .unwrap_or(&state.config.queue_declaration);
+            state
+                .service_bus
+                .create_queue(&base_shadow_queue, shadow_declaration)
+                .await?;
+        }
     }
     for source in [green_queue, blue_queue] {
         let moved = state
@@ -110,6 +125,40 @@ async fn drain_input_queues(state: &AppState) -> Result<()> {
                 "moved {} Service Bus message(s) from {} back to {} during drain",
                 moved, source, base_queue
             );
+        }
+        let moved_dead_letter = state
+            .service_bus
+            .move_available_dead_letter_messages(&source, &base_queue)
+            .await?;
+        if moved_dead_letter > 0 {
+            info!(
+                "moved {} Service Bus dead-letter message(s) from {} back to {} during drain",
+                moved_dead_letter, source, base_queue
+            );
+        }
+        if let Some(shadow_queue) = shadow_queue_name(&state.config, &source) {
+            let target_shadow_queue =
+                shadow_queue_name(&state.config, &base_queue).unwrap_or_else(|| base_queue.clone());
+            let moved = state
+                .service_bus
+                .move_available_messages(&shadow_queue, &target_shadow_queue)
+                .await?;
+            if moved > 0 {
+                info!(
+                    "moved {} Service Bus shadow message(s) from {} back to {} during drain",
+                    moved, shadow_queue, target_shadow_queue
+                );
+            }
+            let moved_dead_letter = state
+                .service_bus
+                .move_available_dead_letter_messages(&shadow_queue, &target_shadow_queue)
+                .await?;
+            if moved_dead_letter > 0 {
+                info!(
+                    "moved {} Service Bus shadow dead-letter message(s) from {} back to {} during drain",
+                    moved_dead_letter, shadow_queue, target_shadow_queue
+                );
+            }
         }
     }
 
@@ -165,6 +214,16 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
                 continue;
             }
         };
+        let _in_flight = state.track_message();
+        if !matches!(state.runtime_mode(), RuntimeMode::Active) {
+            if let Err(err) = state.service_bus.abandon(&message).await {
+                warn!(
+                    "azure service bus input unlock after drain started failed: {}",
+                    err
+                );
+            }
+            continue;
+        }
 
         match process_input_message(&state, &message).await {
             Ok(_) => {

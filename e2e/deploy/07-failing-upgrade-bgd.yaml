@@ -39,9 +39,22 @@ spec:
         name: rabbitmq
       roles: [duplicator, observer]
       drain:
-        maxWaitSeconds: 15
+        maxWaitSeconds: 60
       config:
         amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-system:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
+        queueDeclaration:
+          durable: true
+          arguments:
+            x-message-ttl: 600000
+        shadowQueue:
+          suffix: "_dlq"
+          queueDeclaration:
+            durable: true
         duplicator:
           inputQueue: orders
           greenInputQueue: orders-green
@@ -62,9 +75,22 @@ spec:
         name: rabbitmq
       roles: [combiner, observer]
       drain:
-        maxWaitSeconds: 15
+        maxWaitSeconds: 60
       config:
         amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-system:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
+        queueDeclaration:
+          durable: true
+          arguments:
+            x-message-ttl: 600000
+        shadowQueue:
+          suffix: "_dlq"
+          queueDeclaration:
+            durable: true
         combiner:
           greenOutputQueueEnvVar: OUTPUT_QUEUE
           blueOutputQueueEnvVar: OUTPUT_QUEUE

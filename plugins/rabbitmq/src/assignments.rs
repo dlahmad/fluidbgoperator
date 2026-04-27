@@ -55,6 +55,7 @@ pub(crate) fn build_prepare_assignments(
             &combiner.blue_output_queue,
         );
     }
+    push_temp_queue_declaration_assignments(&mut assignments, config);
     assignments
 }
 
@@ -135,5 +136,78 @@ fn push_queue_assignment(
             value: queue.clone(),
             container_name: None,
         });
+    }
+}
+
+fn push_temp_queue_declaration_assignments(
+    assignments: &mut Vec<PropertyAssignment>,
+    config: &Config,
+) {
+    let durable = config
+        .queue_declaration
+        .durable
+        .unwrap_or(false)
+        .to_string();
+    let arguments = serde_json::to_string(&config.queue_declaration.arguments)
+        .unwrap_or_else(|_| "{}".to_string());
+
+    for target in [AssignmentTarget::Green, AssignmentTarget::Blue] {
+        push_env_assignment(assignments, target, "AMQP_TEMP_QUEUE_DURABLE", &durable);
+        push_env_assignment(
+            assignments,
+            target,
+            "AMQP_TEMP_QUEUE_ARGUMENTS_JSON",
+            &arguments,
+        );
+    }
+}
+
+fn push_env_assignment(
+    assignments: &mut Vec<PropertyAssignment>,
+    target: AssignmentTarget,
+    name: &str,
+    value: &str,
+) {
+    assignments.push(PropertyAssignment {
+        target,
+        kind: AssignmentKind::Env,
+        name: name.to_string(),
+        value: value.to_string(),
+        container_name: None,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prepare_assignments_include_temp_queue_declaration_metadata() {
+        let config: Config = serde_json::from_value(json!({
+            "queueDeclaration": {
+                "durable": true,
+                "arguments": {
+                    "x-message-ttl": 600000
+                }
+            },
+            "shadowQueue": {
+                "suffix": "_dlq"
+            }
+        }))
+        .unwrap();
+
+        let assignments = build_prepare_assignments(&config, &[PluginRole::Duplicator]);
+
+        assert!(assignments.iter().any(|assignment| {
+            assignment.target == AssignmentTarget::Green
+                && assignment.name == "AMQP_TEMP_QUEUE_DURABLE"
+                && assignment.value == "true"
+        }));
+        assert!(assignments.iter().any(|assignment| {
+            assignment.target == AssignmentTarget::Blue
+                && assignment.name == "AMQP_TEMP_QUEUE_ARGUMENTS_JSON"
+                && assignment.value.contains("x-message-ttl")
+        }));
     }
 }

@@ -31,6 +31,14 @@ spec:
               value: signing-key
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
               value: fluidbg-system
+            - name: FLUIDBG_OPERATOR_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: FLUIDBG_RECONCILE_LEASE_DURATION_SECONDS
+              value: "30"
+            - name: FLUIDBG_RECONCILE_LEASE_RENEW_INTERVAL_SECONDS
+              value: "10"
           livenessProbe:
             httpGet:
               path: /health

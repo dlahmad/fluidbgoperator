@@ -192,6 +192,7 @@ mod tests {
                     namespace: None,
                     spec: Default::default(),
                 },
+                test_deployment_patch: None,
                 inception_points: Vec::new(),
                 tests: Vec::new(),
                 promotion: Some(PromotionSpec {

@@ -1,4 +1,5 @@
-use k8s_openapi::api::apps::v1::DeploymentSpec;
+use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStrategy};
+use k8s_openapi::api::core::v1::PodTemplateSpec;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,25 @@ pub struct ManagedDeploymentSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     pub spec: DeploymentSpec,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TestDeploymentPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<DeploymentStrategy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_ready_seconds: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_history_limit: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_deadline_seconds: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<PodTemplateSpec>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -206,7 +226,7 @@ pub struct PromotionSpec {
     pub strategy: PromotionStrategy,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "PascalCase")]
 pub enum BGDPhase {
     Pending,
@@ -234,6 +254,26 @@ pub struct InceptionPointDrainStatus {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+pub enum ConditionStatus {
+    True,
+    False,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlueGreenDeploymentCondition {
+    #[serde(rename = "type")]
+    pub condition_type: String,
+    pub status: ConditionStatus,
+    pub reason: String,
+    pub message: String,
+    pub observed_generation: i64,
+    pub last_transition_time: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -273,6 +313,8 @@ pub struct BlueGreenDeploymentStatus {
     pub drain_started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inception_point_drains: Vec<InceptionPointDrainStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<BlueGreenDeploymentCondition>,
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
@@ -287,6 +329,8 @@ pub struct BlueGreenDeploymentStatus {
 pub struct BlueGreenDeploymentSpec {
     pub selector: DeploymentSelector,
     pub deployment: ManagedDeploymentSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_deployment_patch: Option<TestDeploymentPatch>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inception_points: Vec<InceptionPoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

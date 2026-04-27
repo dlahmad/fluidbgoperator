@@ -57,6 +57,14 @@ spec:
               value: {{ .Values.stateStore.type | quote }}
             - name: FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS
               value: {{ .Values.operator.orphanCleanup.intervalSeconds | quote }}
+            - name: FLUIDBG_OPERATOR_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: FLUIDBG_RECONCILE_LEASE_DURATION_SECONDS
+              value: {{ .Values.operator.reconcileLease.durationSeconds | quote }}
+            - name: FLUIDBG_RECONCILE_LEASE_RENEW_INTERVAL_SECONDS
+              value: {{ .Values.operator.reconcileLease.renewIntervalSeconds | quote }}
             {{- if eq .Values.stateStore.type "postgres" }}
             - name: FLUIDBG_POSTGRES_AUTH_MODE
               value: {{ .Values.stateStore.postgres.authMode | quote }}

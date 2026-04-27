@@ -9,7 +9,7 @@ spec:
       fluidbg.io/name: order-processor
   deployment:
     spec:
-      replicas: 1
+      replicas: 2
       selector:
         matchLabels:
           app: order-processor-blue
@@ -33,6 +33,8 @@ spec:
                   value: "results"
                 - name: HTTP_UPSTREAM
                   value: "http://httpbin.fluidbg-system/post"
+  testDeploymentPatch:
+    replicas: 1
   inceptionPoints:
     - name: incoming-orders
       pluginRef:
@@ -42,6 +44,11 @@ spec:
         maxWaitSeconds: 15
       config:
         amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-system:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
         duplicator:
           inputQueue: orders
           greenInputQueue: orders-green
@@ -88,6 +95,11 @@ spec:
         maxWaitSeconds: 15
       config:
         amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-system:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
         combiner:
           greenOutputQueueEnvVar: OUTPUT_QUEUE
           blueOutputQueueEnvVar: OUTPUT_QUEUE

@@ -22,6 +22,7 @@ use crate::plugins::reconciler::{
     inception_service_name,
 };
 
+use super::deployments::DeploymentIdentity;
 use super::{
     AuthConfig, ReconcileError, apply_family_labels_to_deployment, apply_rollout_candidate_labels,
     candidate_ref, clear_rollout_candidate_labels, deployment_namespace_spec, set_green_label,
@@ -296,9 +297,21 @@ pub(super) async fn sign_inception_auth_token(
         &auth.signing_secret_key,
     )
     .await?;
-    let claims = fluidbg_plugin_sdk::PluginAuthClaims::new(
+    let bgd_api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let blue_green_uid = bgd_api
+        .get(blue_green_ref)
+        .await?
+        .metadata
+        .uid
+        .ok_or_else(|| {
+            ReconcileError::Store(format!(
+                "BlueGreenDeployment '{namespace}/{blue_green_ref}' has no uid"
+            ))
+        })?;
+    let claims = fluidbg_plugin_sdk::PluginAuthClaims::new_with_uid(
         namespace,
         blue_green_ref,
+        &blue_green_uid,
         inception_point,
         plugin.metadata.name.as_deref().unwrap_or(""),
     );
@@ -429,8 +442,13 @@ pub(super) async fn apply_deployment_manifest(
     deployment_spec: &ManagedDeploymentSpec,
     family_labels: &BTreeMap<String, String>,
     is_green: bool,
-) -> std::result::Result<(), ReconcileError> {
+) -> std::result::Result<DeploymentIdentity, ReconcileError> {
     let candidate = candidate_ref(bgd);
+    let spec = if is_green {
+        deployment_spec.spec.clone()
+    } else {
+        deployment_spec_with_test_patch(bgd, &deployment_spec.spec)?
+    };
     let mut deployment = Deployment {
         metadata: ObjectMeta {
             name: Some(candidate.name.clone()),
@@ -440,7 +458,7 @@ pub(super) async fn apply_deployment_manifest(
             )),
             ..Default::default()
         },
-        spec: Some(deployment_spec.spec.clone()),
+        spec: Some(spec),
         ..Default::default()
     };
     apply_family_labels_to_deployment(&mut deployment, family_labels)?;
@@ -482,7 +500,52 @@ pub(super) async fn apply_deployment_manifest(
         "applied declared deployment '{}/{}'",
         deploy_namespace, name
     );
-    Ok(())
+    Ok(DeploymentIdentity {
+        namespace: deploy_namespace,
+        name,
+    })
+}
+
+pub(super) fn deployment_spec_with_test_patch(
+    bgd: &BlueGreenDeployment,
+    base: &DeploymentSpec,
+) -> std::result::Result<DeploymentSpec, ReconcileError> {
+    let Some(patch) = bgd.spec.test_deployment_patch.as_ref() else {
+        return Ok(base.clone());
+    };
+    let mut value = serde_json::to_value(base).map_err(|err| {
+        ReconcileError::Store(format!(
+            "failed to encode deployment spec for patching: {err}"
+        ))
+    })?;
+    let patch = serde_json::to_value(patch).map_err(|err| {
+        ReconcileError::Store(format!(
+            "failed to encode spec.testDeploymentPatch for patching: {err}"
+        ))
+    })?;
+    merge_json_value(&mut value, &patch);
+    serde_json::from_value(value).map_err(|err| {
+        ReconcileError::Store(format!(
+            "spec.testDeploymentPatch does not produce a valid apps/v1 DeploymentSpec: {err}"
+        ))
+    })
+}
+
+fn merge_json_value(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(base), Value::Object(patch)) => {
+            for (key, patch_value) in patch {
+                if patch_value.is_null() {
+                    base.remove(key);
+                } else {
+                    merge_json_value(base.entry(key.clone()).or_insert(Value::Null), patch_value);
+                }
+            }
+        }
+        (base, patch) => {
+            *base = patch.clone();
+        }
+    }
 }
 
 fn apply_runtime_identity_selector(
@@ -829,11 +892,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::test_instance_name;
+    use super::{deployment_spec_with_test_patch, test_instance_name};
     use crate::crd::blue_green::{
         BlueGreenDeployment, BlueGreenDeploymentSpec, DeploymentSelector, ManagedDeploymentSpec,
+        TestDeploymentPatch,
     };
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::api::apps::v1::DeploymentSpec;
+    use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
     use std::collections::BTreeMap;
 
     fn bgd(name: &str) -> BlueGreenDeployment {
@@ -856,6 +922,7 @@ mod tests {
                     namespace: None,
                     spec: Default::default(),
                 },
+                test_deployment_patch: None,
                 inception_points: Vec::new(),
                 tests: Vec::new(),
                 promotion: None,
@@ -903,6 +970,85 @@ mod tests {
         assert!(
             name.chars()
                 .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        );
+    }
+
+    #[test]
+    fn test_deployment_patch_overlays_optional_fields_only() {
+        let mut bgd = bgd("rollout-a");
+        bgd.spec.test_deployment_patch = Some(TestDeploymentPatch {
+            replicas: Some(2),
+            template: Some(PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    annotations: Some(BTreeMap::from([(
+                        "fluidbg.io/test-mode".to_string(),
+                        "true".to_string(),
+                    )])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let base = DeploymentSpec {
+            replicas: Some(10),
+            selector: LabelSelector {
+                match_labels: Some(BTreeMap::from([("app".to_string(), "orders".to_string())])),
+                ..Default::default()
+            },
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(BTreeMap::from([("app".to_string(), "orders".to_string())])),
+                    ..Default::default()
+                }),
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        name: "orders".to_string(),
+                        image: Some("orders:prod".to_string()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        };
+
+        let patched = deployment_spec_with_test_patch(&bgd, &base).unwrap();
+
+        assert_eq!(patched.replicas, Some(2));
+        assert_eq!(
+            patched.selector.match_labels.as_ref().unwrap().get("app"),
+            Some(&"orders".to_string())
+        );
+        assert_eq!(
+            patched
+                .template
+                .metadata
+                .as_ref()
+                .unwrap()
+                .labels
+                .as_ref()
+                .unwrap()
+                .get("app"),
+            Some(&"orders".to_string())
+        );
+        assert_eq!(
+            patched
+                .template
+                .metadata
+                .as_ref()
+                .unwrap()
+                .annotations
+                .as_ref()
+                .unwrap()
+                .get("fluidbg.io/test-mode"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            patched.template.spec.as_ref().unwrap().containers[0]
+                .image
+                .as_deref(),
+            Some("orders:prod")
         );
     }
 }
