@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
-use futures_lite::StreamExt;
-use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions};
-use lapin::types::FieldTable;
+use lapin::options::{BasicAckOptions, BasicGetOptions, BasicNackOptions};
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -41,17 +39,17 @@ async fn run_combine_loop_once(
     }
     let combiner = combiner_config(&state.config)?;
 
-    let mut consumer = consume_channel
-        .basic_consume(
-            source_queue.as_str().into(),
-            "fluidbg-rabbitmq-combiner".into(),
-            BasicConsumeOptions::default(),
-            FieldTable::default(),
-        )
-        .await?;
-
-    while let Some(delivery) = consumer.next().await {
-        let delivery = delivery?;
+    loop {
+        let delivery = match consume_channel
+            .basic_get(source_queue.as_str().into(), BasicGetOptions::default())
+            .await?
+        {
+            Some(delivery) => delivery,
+            None => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         match state.runtime_mode() {
             RuntimeMode::Idle | RuntimeMode::Draining => {
                 delivery
@@ -96,8 +94,6 @@ async fn run_combine_loop_once(
         }
         delivery.ack(BasicAckOptions::default()).await?;
     }
-
-    Ok(())
 }
 
 async fn run_combine_loop(

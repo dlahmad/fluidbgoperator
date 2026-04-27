@@ -603,22 +603,14 @@ wait_no_inception_resources "$NS"
 
 echo ""
 echo "--- Step 3: Deploy operator and built-in plugins with Helm ---"
-HELM_STATE_STORE_ARGS=()
-if [ "$E2E_STATE_STORE" = "postgres" ]; then
-    HELM_STATE_STORE_ARGS=(
-        --set stateStore.type=postgres
-        --set stateStore.postgres.authMode=password
-        --set stateStore.postgres.urlSecretName=fluidbg-postgres
-        --set stateStore.postgres.urlSecretKey=url
-        --set stateStore.postgres.tableName=fluidbg_cases
-    )
-elif [ "$E2E_STATE_STORE" != "memory" ]; then
+if [ "$E2E_STATE_STORE" != "memory" ] && [ "$E2E_STATE_STORE" != "postgres" ]; then
     echo "Unsupported E2E_STATE_STORE=$E2E_STATE_STORE" >&2
     exit 1
 fi
 
 install_operator_chart() {
-    helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
+    local helm_args=(
+        upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator"
         --namespace "$NS_SYSTEM" \
         --create-namespace \
         --set fullnameOverride=fluidbg-operator \
@@ -641,8 +633,18 @@ install_operator_chart() {
         --set builtinPlugins.rabbitmq.image.tag=dev \
         --set builtinPlugins.rabbitmq.manager.enabled=true \
         --set builtinPlugins.rabbitmq.manager.amqpUrl="amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f" \
-        --set builtinPlugins.azureServiceBus.enabled=false \
-        "${HELM_STATE_STORE_ARGS[@]}"
+        --set builtinPlugins.azureServiceBus.enabled=false
+    )
+    if [ "$E2E_STATE_STORE" = "postgres" ]; then
+        helm_args+=(
+            --set stateStore.type=postgres
+            --set stateStore.postgres.authMode=password
+            --set stateStore.postgres.urlSecretName=fluidbg-postgres
+            --set stateStore.postgres.urlSecretKey=url
+            --set stateStore.postgres.tableName=fluidbg_cases
+        )
+    fi
+    helm "${helm_args[@]}"
 }
 
 install_operator_chart
