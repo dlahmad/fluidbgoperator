@@ -105,11 +105,11 @@ Observed arm64 image sizes:
 - Published docs are served from GitHub Pages once the `Docs` workflow succeeds: <https://dlahmad.github.io/fluidbgoperator/>.
 - [docs/index.md](docs/index.md) is the GitHub Pages entry point.
 - [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
+- [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.
+- [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
 - [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
 - [docs/reference/sdk.md](docs/reference/sdk.md) documents the SDK layout and language-neutral spec.
 - [docs/reference/crds.md](docs/reference/crds.md) documents CRD generation and chart mirroring.
-- `ARCHITECTURE.md` describes the operator model, CRDs, state store, plugin orchestration, and project layout.
-- `PLUGIN.md` defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
-- `IMPLEMENTATION_PLAN.md` tracks the current implementation state and near-term work.
+- [docs/development/implementation-plan.md](docs/development/implementation-plan.md) tracks the current implementation state and near-term work.
 - `docs/` is the GitHub Pages/Jekyll source for online documentation.

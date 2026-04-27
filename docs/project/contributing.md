@@ -1,3 +1,7 @@
+---
+title: Contributing
+---
+
 # Contributing
 
 ## Development Checks
@@ -31,4 +35,3 @@ KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 - Keep transport behavior inside plugins; the operator should orchestrate, not hardcode transport semantics.
 - Add tests for reconciliation state transitions and plugin contracts when changing rollout behavior.
 - Do not rely on application payload fields for FluidBG routing semantics.
-

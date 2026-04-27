@@ -1,3 +1,7 @@
+---
+title: Plugin Interface
+---
+
 # Plugin Interface
 
 This document describes the runtime contract between:
@@ -402,6 +406,38 @@ flowchart TD
 
 ## Current Built-In RabbitMQ Plugin Behavior
 
+```mermaid
+flowchart TD
+    SRC["Base input queue"]
+    DUP["duplicator role"]
+    SPLIT["splitter role"]
+    GREENQ["green input queue"]
+    BLUEQ["blue input queue"]
+    GREEN["green app"]
+    BLUE["blue app"]
+    GOUT["green output queue"]
+    BOUT["blue output queue"]
+    COMB["combiner role"]
+    OUT["base output queue"]
+    TEST["test container"]
+    OP["operator"]
+
+    SRC --> DUP
+    SRC --> SPLIT
+    DUP -->|"route both"| GREENQ
+    DUP -->|"route both"| BLUEQ
+    SPLIT -->|"route green"| GREENQ
+    SPLIT -->|"route blue"| BLUEQ
+    GREENQ --> GREEN --> GOUT
+    BLUEQ --> BLUE --> BOUT
+    GOUT --> COMB
+    BOUT --> COMB
+    COMB --> OUT
+    DUP -->|"register and notify"| OP
+    DUP --> TEST
+    COMB -->|"notify source route"| TEST
+```
+
 ### Duplicator
 
 - consumes `duplicator.inputQueue`
@@ -439,10 +475,42 @@ flowchart TD
 - registers the `testCase` with the operator for `blue`, `both`, and `unknown` routes
 - does not register green-only observations as operator verification cases
 
+### Promotion and Rollback Safety
+
+RabbitMQ loss prevention is handled by the plugin state machine plus the
+operator drain phase:
+
+- Duplicator and splitter queue consumers acknowledge the source message only after the plugin has successfully published the required downstream copy or route.
+- During drain, the plugin stops accepting new temporary work and reports `drained: true` only when temporary paths are empty or no longer have active work that must be moved.
+- For rollback, blue-only temporary messages are either consumed by blue during the drain window or left/moved so the base queue can continue safely after cleanup.
+- For promotion, surviving traffic is moved back to the base wiring before cleanup removes temporary resources.
+- If drain exceeds the configured wait, the operator records `TimedOutMaybeSuccessful` and proceeds; this is explicit risk accounting rather than silent success.
+
 ## Current Built-In HTTP Plugin Behavior
 
 The HTTP plugin is one combined standalone service with `splitter`, `observer`,
 `mock`, and `writer` roles.
+
+```mermaid
+flowchart LR
+    CLIENT["caller"]
+    HP["fbg-plugin-http"]
+    GREEN["green endpoint"]
+    BLUE["blue endpoint"]
+    UP["real upstream"]
+    TEST["test container"]
+    OP["operator"]
+
+    CLIENT --> HP
+    HP -->|"progressive route green"| GREEN
+    HP -->|"progressive route blue"| BLUE
+    BLUE -->|"egress call via plugin"| HP
+    HP -->|"proxy fallback"| UP
+    HP -->|"observer or mock callback"| TEST
+    HP -->|"register blue case"| OP
+    TEST -->|"POST /write"| HP
+    HP -->|"write to blue target"| BLUE
+```
 
 ### Splitter / Proxy
 
@@ -463,6 +531,19 @@ The HTTP plugin is one combined standalone service with `splitter`, `observer`,
 - exposes `/write`
 - forwards test-container initiated HTTP calls to `targetUrl` or the configured blue endpoint
 - is reached through the env var declared by `writeEnvVar`
+
+### Promotion and Rollback Safety
+
+HTTP cannot provide queue-style durable replay for in-flight requests. The
+operator and plugin minimize request loss by ordering traffic restoration before
+resource removal:
+
+- Progressive changes are applied through `POST /traffic`, so the plugin pod is not restarted when percentages change.
+- Drain tells the plugin to stop accepting new temporary routing decisions before cleanup begins.
+- The operator applies restore assignments so application env vars point back to direct green/blue endpoints before deleting the plugin service.
+- Existing calls already accepted by the HTTP plugin are allowed to complete during the drain window.
+- Cleanup removes the plugin only after drain succeeds or the configured timeout is reached.
+- If the timeout is hit, the status records that drain was not proven fully successful; the operator does not pretend zero-loss was guaranteed.
 
 ## Practical Notes
 

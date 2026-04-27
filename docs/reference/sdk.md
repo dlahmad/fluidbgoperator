@@ -13,6 +13,9 @@ from plugin implementations.
 | CRDs | `fluidbg.io/v1alpha1` | `crds/` and `sdk/spec/crd-versions.yaml` |
 | Rust SDK | crate workspace member | `sdk/rust` |
 
+The [SDK Specs](sdk-spec.md) page explains the language-neutral OpenAPI setup
+and generation targets.
+
 Rust plugins should import shared models from `fluidbg-plugin-sdk`. Other
 language SDKs should be generated from the OpenAPI spec so payloads remain
 consistent.
@@ -26,4 +29,3 @@ openapi-generator-cli generate \
 
 Generated SDKs are build artifacts and should be published per language package
 ecosystem when their maintenance guarantees are clear.
-

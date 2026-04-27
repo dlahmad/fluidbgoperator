@@ -1,4 +1,11 @@
-This folder gives you a verified manual apply sequence for the current controller behavior.
+---
+title: Sequential Blue-Green Example
+---
+
+# Sequential Blue-Green Example
+
+The `examples/sequential-bgd` folder gives you a verified manual apply sequence
+for the current controller behavior.
 
 Apply order:
 

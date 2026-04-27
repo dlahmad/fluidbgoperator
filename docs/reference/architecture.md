@@ -1,3 +1,7 @@
+---
+title: Architecture
+---
+
 # FluidBG Operator Architecture
 
 ## Overview
@@ -13,6 +17,38 @@ The operator is intentionally transport-agnostic. Transport behavior lives in
 one or more roles, and provides plugin-specific config. The operator renders the
 declared Kubernetes resources, calls lifecycle endpoints, tracks test cases, and
 removes temporary resources after promotion or rollback.
+
+## Component Architecture
+
+```mermaid
+flowchart LR
+    CRD["fluidbg.io CRDs<br/>BlueGreenDeployment<br/>InceptionPlugin<br/>StateStore"]
+    CTRL["controller<br/>phase machine"]
+    VAL["validation<br/>roles, schemas, namespaces"]
+    PLUGREC["plugin reconciler<br/>ConfigMap, Deployment, Service"]
+    LIFE["plugin lifecycle client<br/>prepare, traffic, drain, cleanup"]
+    API["operator HTTP API<br/>testcases, verdicts, counts"]
+    STORE["state store<br/>memory or postgres"]
+    SDK["plugin SDK<br/>v1alpha1 HTTP models"]
+    PLUG["plugin pods<br/>HTTP and RabbitMQ"]
+    TEST["verifier pods"]
+    APP["green and blue app deployments"]
+
+    CRD --> CTRL
+    CTRL --> VAL
+    CTRL --> PLUGREC
+    CTRL --> LIFE
+    CTRL --> API
+    API --> STORE
+    PLUGREC --> PLUG
+    PLUGREC --> APP
+    PLUGREC --> TEST
+    LIFE --> PLUG
+    SDK --> PLUG
+    PLUG --> API
+    PLUG --> TEST
+    CTRL -->|"poll verifyPath"| TEST
+```
 
 ```mermaid
 flowchart TD

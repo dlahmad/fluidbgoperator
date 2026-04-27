@@ -14,7 +14,13 @@ are promoted.
 - [Architecture](reference/architecture.md)
 - [Plugin Interface](reference/plugin-interface.md)
 - [SDK Contract](reference/sdk.md)
+- [E2E Test Flow](testing/e2e.md)
 - [Development](development/development.md)
+- [Implementation Plan](development/implementation-plan.md)
+- [Sequential Example](examples/sequential-bgd.md)
+- [Changelog](project/changelog.md)
+- [Contributing](project/contributing.md)
+- [Security Policy](project/security.md)
 
 ## What Ships
 
@@ -24,4 +30,3 @@ are promoted.
 - A versioned plugin API under `fluidbg.plugin/v1alpha1`.
 - A Rust plugin SDK plus OpenAPI specs for generated SDKs in other languages.
 - A Helm chart for installing the operator and namespaced built-in plugin CRs.
-

@@ -1,3 +1,7 @@
+---
+title: SDK Specs
+---
+
 # FluidBG Plugin SDK Specs
 
 This directory contains the language-neutral plugin contract. The Rust SDK in

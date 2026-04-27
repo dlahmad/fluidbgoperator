@@ -1,3 +1,7 @@
+---
+title: Security Policy
+---
+
 # Security Policy
 
 ## Supported Versions
@@ -22,4 +26,3 @@ Include:
 The Helm chart runs the operator as non-root, drops Linux capabilities, uses a
 read-only root filesystem, and applies the Kubernetes `RuntimeDefault` seccomp
 profile.
-

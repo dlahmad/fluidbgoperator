@@ -12,6 +12,7 @@ header_pages:
   - operations/helm.md
   - reference/architecture.md
   - reference/plugin-interface.md
+  - testing/e2e.md
 
 defaults:
   - scope:

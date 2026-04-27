@@ -23,19 +23,7 @@ jobs:
       - uses: actions/configure-pages@v5
       - name: Assemble docs source
         run: |
-          mkdir -p docs/reference docs/development
-          {
-            printf '%s\n' '---' 'title: Architecture' '---' ''
-            cat ARCHITECTURE.md
-          } > docs/reference/architecture.md
-          {
-            printf '%s\n' '---' 'title: Plugin Interface' '---' ''
-            cat PLUGIN.md
-          } > docs/reference/plugin-interface.md
-          {
-            printf '%s\n' '---' 'title: Implementation Plan' '---' ''
-            cat IMPLEMENTATION_PLAN.md
-          } > docs/development/implementation-plan.md
+          mkdir -p docs/reference
           cp -R sdk/spec docs/reference/sdk-spec
       - uses: actions/jekyll-build-pages@v1
         with:

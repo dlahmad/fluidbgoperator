@@ -1,3 +1,7 @@
+---
+title: Changelog
+---
+
 # Changelog
 
 ## Unreleased
@@ -8,4 +12,3 @@
 - Added Helm chart for operator, CRDs, RBAC, service, and built-in plugin CRs.
 - Added CI, e2e, release, and docs workflows.
 - Added optimized release profile and distroless runtime image build scripts.
-

@@ -1,8 +1,12 @@
+---
+title: Implementation Plan
+---
+
 # FluidBG Operator Implementation Plan
 
 This document tracks the current implementation state and remaining work. The
 Rust CRD models, SDK models, plugin manifests, and workflows are the source of
-truth; `ARCHITECTURE.md` and `PLUGIN.md` describe that implementation.
+truth; the architecture and plugin-interface docs describe that implementation.
 
 ## Current Layout
 
