@@ -1,0 +1,15 @@
+title: FluidBG Operator
+description: Blue-green and progressive delivery for queue and HTTP workloads on Kubernetes
+theme: minima
+markdown: kramdown
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true
+header_pages:
+  - getting-started.md
+  - operations/helm.md
+  - reference/architecture.md
+  - reference/plugin-interface.md
+

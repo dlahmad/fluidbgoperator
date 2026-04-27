@@ -2,6 +2,16 @@
 
 FluidBG is a Kubernetes operator for blue-green deployments where the candidate version is validated with live traffic before promotion. It wires transport-specific inception plugins around the candidate, records test cases through the operator API, polls verifier containers, and promotes or rolls back from the configured success criteria.
 
+## Status
+
+The repository is structured as a production-ready Rust workspace:
+
+- operator and plugin crates build as stripped release executables
+- runtime images are distroless and non-root
+- CRDs are generated from Rust models and mirrored into the Helm chart
+- CI covers formatting, clippy, unit tests, shell/Python checks, Docker builds, and Helm rendering
+- scheduled/manual e2e runs execute the kind-based full rollout suite
+
 ## Workspace
 
 ```text
@@ -9,6 +19,8 @@ operator/              Rust operator crate and CRD generator
 plugins/http/          Built-in HTTP observe/mock/write plugin
 plugins/rabbitmq/      Built-in RabbitMQ multi-role plugin
 sdk/                   Versioned plugin SDK models and language-neutral OpenAPI spec
+charts/                Helm chart for CRDs, operator, and built-in plugin CRs
+docs/                  GitHub Pages/Jekyll documentation source
 crds/                  Generated CRD manifests
 builtin-plugins/       InceptionPlugin manifests for shipped plugins
 deploy/                Operator deployment and RBAC
@@ -29,20 +41,68 @@ operator/src/controller/status.rs           Status patch helpers
 ## Build And Test
 
 ```sh
+just check
+```
+
+Equivalent raw commands:
+
+```sh
 cargo fmt --all --check
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+Build optimized release binaries and images:
+
+```sh
+just build-binaries
+just build-images dev
 ```
 
 End-to-end tests require Docker, kind, kubectl, and local images:
 
 ```sh
-./e2e/run-test.sh
+KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```
 
-Useful approved local workflows in this repository also include `docker build`, `kind load docker-image`, and `kubectl` inspection for the kind cluster.
+## Install
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace
+```
+
+If application `BlueGreenDeployment` resources live outside the operator namespace, install built-in plugin CRs into those namespaces:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set builtinPlugins.namespaces='{fluidbg-system,my-app-namespace}'
+```
+
+## Images
+
+Published image names are:
+
+- `fluidbg/operator`
+- `fluidbg/http`
+- `fluidbg/rabbitmq`
+
+Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base.
+
+Observed arm64 image sizes:
+
+| Image | Size |
+|---|---:|
+| `fluidbg/operator` | 16.5 MB |
+| `fluidbg/http` | 12.1 MB |
+| `fluidbg/rabbitmq` | 13.9 MB |
 
 ## Documentation
 
 - `ARCHITECTURE.md` describes the operator model, CRDs, state store, plugin orchestration, and project layout.
 - `PLUGIN.md` defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
 - `IMPLEMENTATION_PLAN.md` tracks the current implementation state and near-term work.
+- `docs/` is the GitHub Pages/Jekyll source for online documentation.

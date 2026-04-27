@@ -1,0 +1,40 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "fluidbg.fullname" . }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["fluidbg.io"]
+    resources: ["inceptionplugins", "statestores", "bluegreendeployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["fluidbg.io"]
+    resources: ["bluegreendeployments/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "fluidbg.fullname" . }}
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "fluidbg.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "fluidbg.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+

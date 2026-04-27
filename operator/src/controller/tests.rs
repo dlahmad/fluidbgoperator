@@ -1,12 +1,15 @@
 use super::{
     BlueGreenDeployment, ManagedDeploymentSpec, candidate_name_with_suffix,
     deterministic_candidate_suffixes, generated_candidate_name_seed,
-    validate_progressive_splitter_plugin,
+    select_previous_green_for_promotion, validate_progressive_splitter_plugin,
 };
-use crate::crd::blue_green::{BlueGreenDeploymentSpec, DeploymentSelector, PluginRef, TestSpec};
+use crate::crd::blue_green::{
+    BlueGreenDeploymentSpec, DeploymentRef, DeploymentSelector, PluginRef, TestSpec,
+};
 use crate::crd::inception_plugin::{
     InceptionPlugin, InceptionPluginSpec, PluginContainer, PluginFeatures, Topology,
 };
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::collections::BTreeMap;
 
@@ -62,6 +65,16 @@ fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> Inc
     )
 }
 
+fn deployment_named(name: &str) -> Deployment {
+    Deployment {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 #[test]
 fn deterministic_candidate_suffixes_are_stable_for_a_rollout() {
     let bgd = sample_bgd(3);
@@ -111,4 +124,61 @@ fn progressive_splitter_requires_standalone_topology() {
 fn progressive_splitter_accepts_standalone_plugin_with_support_flag() {
     let plugin = sample_plugin(Topology::Standalone, true);
     validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap();
+}
+
+#[test]
+fn promotion_resume_treats_non_candidate_green_as_previous_green() {
+    let candidate = DeploymentRef {
+        name: "order-processor-upgrade-a1b2c3".to_string(),
+        namespace: Some("fluidbg-test".to_string()),
+    };
+    let deployments = vec![
+        deployment_named("order-processor-bootstrap"),
+        deployment_named("order-processor-upgrade-a1b2c3"),
+    ];
+
+    let previous =
+        select_previous_green_for_promotion("fluidbg-test", &deployments, &candidate, "default")
+            .unwrap();
+
+    assert_eq!(previous.name, "order-processor-bootstrap");
+    assert_eq!(previous.namespace.as_deref(), Some("fluidbg-test"));
+}
+
+#[test]
+fn promotion_resume_accepts_candidate_as_only_green() {
+    let candidate = DeploymentRef {
+        name: "order-processor-upgrade-a1b2c3".to_string(),
+        namespace: Some("fluidbg-test".to_string()),
+    };
+    let deployments = vec![deployment_named("order-processor-upgrade-a1b2c3")];
+
+    let previous =
+        select_previous_green_for_promotion("fluidbg-test", &deployments, &candidate, "default")
+            .unwrap();
+
+    assert_eq!(previous.name, "order-processor-upgrade-a1b2c3");
+    assert_eq!(previous.namespace.as_deref(), Some("fluidbg-test"));
+}
+
+#[test]
+fn promotion_resume_rejects_multiple_previous_green_deployments() {
+    let candidate = DeploymentRef {
+        name: "order-processor-upgrade-a1b2c3".to_string(),
+        namespace: Some("fluidbg-test".to_string()),
+    };
+    let deployments = vec![
+        deployment_named("order-processor-bootstrap"),
+        deployment_named("order-processor-v2"),
+        deployment_named("order-processor-upgrade-a1b2c3"),
+    ];
+
+    let err =
+        select_previous_green_for_promotion("fluidbg-test", &deployments, &candidate, "default")
+            .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("expected at most one previous green")
+    );
 }

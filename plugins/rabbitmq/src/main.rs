@@ -221,14 +221,13 @@ async fn notify_observer(
     payload: &Value,
     route: TrafficRoute,
 ) {
-    if let Some(path) = observer.notify_path.as_deref() {
-        if let Err(err) = state
+    if let Some(path) = observer.notify_path.as_deref()
+        && let Err(err) = state
             .runtime
             .notify_observer(path, test_id, payload, route)
             .await
-        {
-            warn!("failed to notify test container for {}: {}", test_id, err);
-        }
+    {
+        warn!("failed to notify test container for {}: {}", test_id, err);
     }
 }
 

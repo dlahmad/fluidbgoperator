@@ -97,22 +97,26 @@ pub fn inception_config_map_name(blue_green_ref: &str, inception_point: &str) ->
     format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), suffix)
 }
 
+pub struct ReconcileInceptionContext<'a> {
+    pub namespace: &'a str,
+    pub operator_url: &'a str,
+    pub test_container_url: &'a str,
+    pub test_data_verify_path: Option<&'a str>,
+    pub blue_deployment_name: &'a str,
+    pub blue_green_ref: &'a str,
+}
+
 pub fn reconcile_inception_point(
     plugin: &InceptionPlugin,
     ip: &InceptionPoint,
-    namespace: &str,
-    operator_url: &str,
-    test_container_url: &str,
-    test_data_verify_path: Option<&str>,
-    _blue_deployment_name: &str,
-    blue_green_ref: &str,
+    context: ReconcileInceptionContext<'_>,
 ) -> Result<ReconciledResources, String> {
     crate::validation::validate_roles(&plugin.spec.supported_roles, &ip.roles)?;
 
     crate::plugins::schema::validate_config_against_schema(&ip.config, &plugin.spec.config_schema)
         .map_err(|errs| format!("config validation failed: {:?}", errs))?;
 
-    let config_name = inception_config_map_name(blue_green_ref, &ip.name);
+    let config_name = inception_config_map_name(context.blue_green_ref, &ip.name);
     let role_str = ip
         .roles
         .iter()
@@ -140,12 +144,12 @@ pub fn reconcile_inception_point(
     let cm = ConfigMap {
         metadata: ObjectMeta {
             name: Some(config_name.clone()),
-            namespace: Some(namespace.to_string()),
+            namespace: Some(context.namespace.to_string()),
             labels: Some(BTreeMap::from([
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
                 (
                     "fluidbg.io/blue-green-ref".to_string(),
-                    blue_green_ref.to_string(),
+                    context.blue_green_ref.to_string(),
                 ),
             ])),
             ..Default::default()
@@ -157,22 +161,25 @@ pub fn reconcile_inception_point(
     let env_vars = vec![
         EnvVar {
             name: "FLUIDBG_OPERATOR_URL".to_string(),
-            value: Some(operator_url.to_string()),
+            value: Some(context.operator_url.to_string()),
             ..Default::default()
         },
         EnvVar {
             name: "FLUIDBG_TESTCASE_REGISTRATION_URL".to_string(),
-            value: Some(format!("{}/testcases", operator_url.trim_end_matches('/'))),
+            value: Some(format!(
+                "{}/testcases",
+                context.operator_url.trim_end_matches('/')
+            )),
             ..Default::default()
         },
         EnvVar {
             name: "FLUIDBG_TEST_CONTAINER_URL".to_string(),
-            value: Some(test_container_url.to_string()),
+            value: Some(context.test_container_url.to_string()),
             ..Default::default()
         },
         EnvVar {
             name: "FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE".to_string(),
-            value: test_data_verify_path.map(|value| value.to_string()),
+            value: context.test_data_verify_path.map(|value| value.to_string()),
             ..Default::default()
         },
         EnvVar {
@@ -182,7 +189,7 @@ pub fn reconcile_inception_point(
         },
         EnvVar {
             name: "FLUIDBG_BLUE_GREEN_REF".to_string(),
-            value: Some(blue_green_ref.to_string()),
+            value: Some(context.blue_green_ref.to_string()),
             ..Default::default()
         },
         EnvVar {
@@ -223,7 +230,7 @@ pub fn reconcile_inception_point(
         .collect::<Vec<_>>();
 
     let plugin_container = Container {
-        name: inception_instance_base_name(blue_green_ref, &ip.name),
+        name: inception_instance_base_name(context.blue_green_ref, &ip.name),
         image: Some(plugin.spec.image.clone()),
         env: Some(env_vars),
         ports: if container_ports.is_empty() {
@@ -248,9 +255,9 @@ pub fn reconcile_inception_point(
         ..Default::default()
     }];
 
-    let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
-    let service_name = inception_service_name(blue_green_ref, &ip.name);
-    let template_context = plugin_template_context(ip, namespace, blue_green_ref);
+    let deployment_name = inception_instance_base_name(context.blue_green_ref, &ip.name);
+    let service_name = inception_service_name(context.blue_green_ref, &ip.name);
+    let template_context = plugin_template_context(ip, context.namespace, context.blue_green_ref);
     let env_injections = render_container_env_injections(plugin, &template_context, false);
 
     match plugin.spec.topology {
@@ -273,7 +280,7 @@ pub fn reconcile_inception_point(
                 ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
                 (
                     "fluidbg.io/blue-green-ref".to_string(),
-                    blue_green_ref.to_string(),
+                    context.blue_green_ref.to_string(),
                 ),
             ]);
 
@@ -291,7 +298,7 @@ pub fn reconcile_inception_point(
             let deployment = Deployment {
                 metadata: ObjectMeta {
                     name: Some(deployment_name.clone()),
-                    namespace: Some(namespace.to_string()),
+                    namespace: Some(context.namespace.to_string()),
                     labels: Some(labels.clone()),
                     ..Default::default()
                 },
@@ -315,7 +322,7 @@ pub fn reconcile_inception_point(
             let service = Service {
                 metadata: ObjectMeta {
                     name: Some(service_name),
-                    namespace: Some(namespace.to_string()),
+                    namespace: Some(context.namespace.to_string()),
                     labels: Some(labels),
                     ..Default::default()
                 },
@@ -682,6 +689,17 @@ mod tests {
         }
     }
 
+    fn test_context<'a>() -> ReconcileInceptionContext<'a> {
+        ReconcileInceptionContext {
+            namespace: "production",
+            operator_url: "http://operator:8090",
+            test_container_url: "http://test-container:8080",
+            test_data_verify_path: Some("/result/{testId}"),
+            blue_deployment_name: "order-processor-blue",
+            blue_green_ref: "order-processor-bg",
+        }
+    }
+
     #[test]
     fn inception_resource_names_are_stable_for_same_inputs() {
         assert_eq!(
@@ -774,17 +792,7 @@ mod tests {
                 "filters": [{"match": [{"field": "http.path", "matches": "^/v1/charge$"}], "notifyPath": "/observe/{testId}/payment-charge", "payload": "both"}]
             }),
         );
-        let resources = reconcile_inception_point(
-            &plugin,
-            &ip,
-            "production",
-            "http://operator:8090",
-            "http://test-container:8080",
-            Some("/result/{testId}"),
-            "order-processor-blue",
-            "order-processor-bg",
-        )
-        .unwrap();
+        let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
 
         assert_eq!(resources.config_maps.len(), 1);
         assert_eq!(resources.sidecar_containers.len(), 0);
@@ -830,17 +838,7 @@ mod tests {
                 }
             }),
         );
-        let resources = reconcile_inception_point(
-            &plugin,
-            &ip,
-            "production",
-            "http://operator:8090",
-            "http://test-container:8080",
-            Some("/result/{testId}"),
-            "order-processor-blue",
-            "order-processor-bg",
-        )
-        .unwrap();
+        let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
 
         assert_eq!(resources.config_maps.len(), 1);
         assert_eq!(resources.deployments.len(), 1);
@@ -904,12 +902,14 @@ mod tests {
         let resources = reconcile_inception_point(
             &plugin,
             &ip,
-            "test-ns",
-            "http://operator:8090",
-            "http://tc:8080",
-            Some("/result/{testId}"),
-            "blue",
-            "order-processor-bg",
+            ReconcileInceptionContext {
+                namespace: "test-ns",
+                operator_url: "http://operator:8090",
+                test_container_url: "http://tc:8080",
+                test_data_verify_path: Some("/result/{testId}"),
+                blue_deployment_name: "blue",
+                blue_green_ref: "order-processor-bg",
+            },
         )
         .unwrap();
 
@@ -954,12 +954,14 @@ mod tests {
             reconcile_inception_point(
                 &plugin,
                 &ip,
-                "ns",
-                "http://op:8090",
-                "http://tc:8080",
-                Some("/result/{testId}"),
-                "blue",
-                "order-processor-bg"
+                ReconcileInceptionContext {
+                    namespace: "ns",
+                    operator_url: "http://op:8090",
+                    test_container_url: "http://tc:8080",
+                    test_data_verify_path: Some("/result/{testId}"),
+                    blue_deployment_name: "blue",
+                    blue_green_ref: "order-processor-bg",
+                }
             )
             .is_err()
         );
@@ -995,12 +997,14 @@ mod tests {
             reconcile_inception_point(
                 &consumer_plugin,
                 &ip,
-                "ns",
-                "http://op:8090",
-                "http://tc:8080",
-                Some("/result/{testId}"),
-                "blue",
-                "order-processor-bg"
+                ReconcileInceptionContext {
+                    namespace: "ns",
+                    operator_url: "http://op:8090",
+                    test_container_url: "http://tc:8080",
+                    test_data_verify_path: Some("/result/{testId}"),
+                    blue_deployment_name: "blue",
+                    blue_green_ref: "order-processor-bg",
+                }
             )
             .is_ok()
         );

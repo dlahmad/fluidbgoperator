@@ -1,0 +1,17 @@
+apiVersion: v2
+name: fluidbg-operator
+description: FluidBG Kubernetes operator and built-in inception plugin definitions
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+keywords:
+  - blue-green
+  - kubernetes-operator
+  - progressive-delivery
+  - rabbitmq
+  - http
+home: https://github.com/dlahmad/fluidbgoperator
+sources:
+  - https://github.com/dlahmad/fluidbgoperator
+maintainers:
+  - name: FluidBG maintainers

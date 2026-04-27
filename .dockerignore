@@ -26,13 +26,28 @@ testenv/
 deploy/
 crds/
 builtin-plugins/
+docs/
+charts/
+examples/
+.github/
+operator/
+sdk/
+Cargo.toml
+Cargo.lock
+**/src/
+**/Cargo.toml
 
 # Documentation and project-only files
 ARCHITECTURE.md
 IMPLEMENTATION_PLAN.md
 README.md
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
 LICENSE
 justfile
+scripts/
+docker-bake.hcl
 
 # Docker metadata and compose files
 docker-compose*

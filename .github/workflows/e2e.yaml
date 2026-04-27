@@ -1,0 +1,29 @@
+name: E2E
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind-e2e:
+    name: Kind end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: fluidbg-dev
+          config: testenv/kind-config.yaml
+      - uses: Swatinem/rust-cache@v2
+      - name: Run full e2e
+        env:
+          KIND_CLUSTER: fluidbg-dev
+          BUILD_IMAGES: "1"
+        run: ./e2e/run-test.sh
+

@@ -27,11 +27,10 @@ pub(super) async fn decide_promotion_action(
         None
     };
 
-    let custom_action = if let Some(custom) = promotion.custom.as_ref() {
-        Some(decide_custom_promotion(custom_counts, custom))
-    } else {
-        None
-    };
+    let custom_action = promotion
+        .custom
+        .as_ref()
+        .map(|custom| decide_custom_promotion(custom_counts, custom));
 
     match (data_action, custom_action) {
         (Some(PromotionAction::Rollback), _) | (_, Some(PromotionAction::Rollback)) => {

@@ -1,0 +1,27 @@
+---
+layout: home
+title: FluidBG Operator
+---
+
+FluidBG is a Kubernetes operator for blue-green and progressive delivery where
+candidate applications are validated with live queue or HTTP traffic before they
+are promoted.
+
+## Start Here
+
+- [Getting Started](getting-started.md)
+- [Helm Installation](operations/helm.md)
+- [Architecture](reference/architecture.md)
+- [Plugin Interface](reference/plugin-interface.md)
+- [SDK Contract](reference/sdk.md)
+- [Development](development/development.md)
+
+## What Ships
+
+- A Rust Kubernetes operator.
+- Built-in RabbitMQ and HTTP inception plugins.
+- Versioned CRDs under `fluidbg.io/v1alpha1`.
+- A versioned plugin API under `fluidbg.plugin/v1alpha1`.
+- A Rust plugin SDK plus OpenAPI specs for generated SDKs in other languages.
+- A Helm chart for installing the operator and namespaced built-in plugin CRs.
+

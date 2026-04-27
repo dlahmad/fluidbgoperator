@@ -38,33 +38,7 @@ target_arch() {
 
 build_linux_rust_binaries() {
     local arch="$1"
-    local platform="linux/$arch"
-    mkdir -p \
-        "$ROOT_DIR/dist" \
-        "$ROOT_DIR/.docker-target" \
-        "$ROOT_DIR/.docker-cargo-home/registry" \
-        "$ROOT_DIR/.docker-cargo-home/git"
-    docker run --rm --platform "$platform" \
-        -v "$ROOT_DIR":/work \
-        -v "$ROOT_DIR/.docker-target":/cargo-target \
-        -v "$ROOT_DIR/.docker-cargo-home":/cargo-home \
-        -e CARGO_HOME=/cargo-home \
-        -e CARGO_TARGET_DIR=/cargo-target \
-        -e CARGO_HTTP_TIMEOUT=600 \
-        -e CARGO_NET_RETRY=10 \
-        -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
-        -w /work \
-        rust:bookworm \
-        bash -lc '
-            set -euo pipefail
-            export PATH=/usr/local/cargo/bin:$PATH
-            cargo build --release --bin fluidbg-operator
-            cargo build --release -p fluidbg-http
-            cargo build --release -p fluidbg-rabbitmq
-            cp /cargo-target/release/fluidbg-operator /work/dist/fluidbg-operator
-            cp /cargo-target/release/fluidbg-http /work/dist/fluidbg-http
-            cp /cargo-target/release/fluidbg-rabbitmq /work/dist/fluidbg-rabbitmq
-        '
+    "$ROOT_DIR/scripts/build-linux-binaries.sh" --arch "$arch"
 }
 
 prefetch_linux_rust_dependencies() {

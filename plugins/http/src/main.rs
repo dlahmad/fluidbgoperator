@@ -225,25 +225,25 @@ async fn proxy_handler(
     let matched =
         matched_root_filter && (!has_any_filters(&state.config) || matched_filter.is_some());
 
-    if matched && state.runtime.observes() {
-        if let Some(sel) = &state.config.test_id
-            && let Some(test_id) = extract_test_id(sel, &body_json, &path, &headers)
+    if matched
+        && state.runtime.observes()
+        && let Some(sel) = &state.config.test_id
+        && let Some(test_id) = extract_test_id(sel, &body_json, &path, &headers)
+    {
+        if let Some(filter) = matched_filter
+            && let Some(notify_path) = &filter.notify_path
+            && let Err(err) = state
+                .runtime
+                .notify_observer(notify_path, &test_id, &body_json, route)
+                .await
         {
-            if let Some(filter) = matched_filter
-                && let Some(notify_path) = &filter.notify_path
-                && let Err(err) = state
-                    .runtime
-                    .notify_observer(notify_path, &test_id, &body_json, route)
-                    .await
-            {
-                warn!("failed to notify test container: {}", err);
-            }
+            warn!("failed to notify test container: {}", err);
+        }
 
-            if route.should_register_case()
-                && let Err(err) = state.runtime.register_test_case(&test_id).await
-            {
-                warn!("failed to register case: {}", err);
-            }
+        if route.should_register_case()
+            && let Err(err) = state.runtime.register_test_case(&test_id).await
+        {
+            warn!("failed to register case: {}", err);
         }
     }
 

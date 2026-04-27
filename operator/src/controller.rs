@@ -17,7 +17,7 @@ use crate::crd::blue_green::{
     InceptionPointDrainStatus, ManagedDeploymentSpec,
 };
 use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
-use crate::plugins::reconciler::reconcile_inception_point;
+use crate::plugins::reconciler::{ReconcileInceptionContext, reconcile_inception_point};
 use crate::state_store::StateStore;
 use crate::state_store::VerificationMode;
 use crate::strategy::PromotionAction;
@@ -394,8 +394,10 @@ async fn promote(
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<DeploymentRef, ReconcileError> {
-    let current_green = resolve_current_green(client, namespace, &bgd.spec.selector).await?;
     let candidate = candidate_ref(bgd);
+    let current_green =
+        resolve_previous_green_for_promotion(client, namespace, &bgd.spec.selector, &candidate)
+            .await?;
     let candidate_namespace = deployment_namespace(&candidate, namespace);
 
     let candidate_api: Api<Deployment> = Api::namespaced(client.clone(), &candidate_namespace);
@@ -413,6 +415,77 @@ async fn promote(
     );
 
     Ok(current_green)
+}
+
+async fn resolve_previous_green_for_promotion(
+    client: &kube::Client,
+    namespace: &str,
+    selector: &DeploymentSelector,
+    candidate: &DeploymentRef,
+) -> std::result::Result<DeploymentRef, ReconcileError> {
+    if selector.match_labels.is_empty() {
+        return Err(ReconcileError::Store(
+            "selector.matchLabels must contain at least one label".to_string(),
+        ));
+    }
+
+    let green_namespace = selector
+        .namespace
+        .clone()
+        .unwrap_or_else(|| namespace.to_string());
+    let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), &green_namespace);
+    let mut labels = selector.match_labels.clone();
+    labels.insert("fluidbg.io/green".to_string(), "true".to_string());
+    let deployments = deploy_api
+        .list(&ListParams::default().labels(&label_selector(&labels)))
+        .await?;
+
+    select_previous_green_for_promotion(&green_namespace, &deployments.items, candidate, namespace)
+}
+
+fn select_previous_green_for_promotion(
+    green_namespace: &str,
+    green_deployments: &[Deployment],
+    candidate: &DeploymentRef,
+    default_namespace: &str,
+) -> std::result::Result<DeploymentRef, ReconcileError> {
+    let candidate_namespace = deployment_namespace(candidate, default_namespace);
+    let mut candidate_seen = false;
+    let mut previous = Vec::new();
+
+    for deployment in green_deployments {
+        let name = deployment.metadata.name.clone().ok_or_else(|| {
+            ReconcileError::Store("selected green deployment has no name".to_string())
+        })?;
+        if name == candidate.name && green_namespace == candidate_namespace {
+            candidate_seen = true;
+        } else {
+            previous.push(DeploymentRef {
+                name,
+                namespace: Some(green_namespace.to_string()),
+            });
+        }
+    }
+
+    match (candidate_seen, previous.as_slice()) {
+        (true, [deployment]) => Ok(deployment.clone()),
+        (true, []) => Ok(candidate.clone()),
+        (true, deployments) => Err(ReconcileError::Store(format!(
+            "promotion found candidate plus {} previous green deployments in namespace '{}'; expected at most one previous green",
+            deployments.len(),
+            green_namespace
+        ))),
+        (false, [deployment]) => Ok(deployment.clone()),
+        (false, []) => Err(ReconcileError::Store(format!(
+            "selector matched no green deployments in namespace '{}'",
+            green_namespace
+        ))),
+        (false, deployments) => Err(ReconcileError::Store(format!(
+            "selector matched {} green deployments in namespace '{}'; expected exactly one or an in-progress promotion candidate plus previous green",
+            deployments.len(),
+            green_namespace
+        ))),
+    }
 }
 
 async fn ensure_declared_deployments(
@@ -535,12 +608,14 @@ async fn ensure_inception_resources(
         let resources = reconcile_inception_point(
             &plugin,
             ip,
-            namespace,
-            operator_url,
-            &test_container_url,
-            test_data_verify_path,
-            &candidate_ref(bgd).name,
-            bgd.metadata.name.as_deref().unwrap_or(""),
+            ReconcileInceptionContext {
+                namespace,
+                operator_url,
+                test_container_url: &test_container_url,
+                test_data_verify_path,
+                blue_deployment_name: &candidate_ref(bgd).name,
+                blue_green_ref: bgd.metadata.name.as_deref().unwrap_or(""),
+            },
         )
         .map_err(ReconcileError::Store)?;
         let mut plugin_deployments = Vec::new();

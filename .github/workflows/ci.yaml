@@ -5,60 +5,72 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  lint-and-test:
+  rust:
+    name: Rust fmt, lint, test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Format check
-        run: cargo fmt --check --all
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-      - name: Unit tests
-        run: cargo test --workspace --lib
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace --locked
 
-  integration:
-    if: github.event_name == 'schedule'
+  python-and-shell:
+    name: Python and shell checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile e2e Python apps
+        run: python -m py_compile e2e/blue-app/app.py e2e/green-app/app.py e2e/test-app/app.py
+      - name: Check shell scripts
+        run: |
+          bash -n e2e/run-test.sh
+          bash -n scripts/build-linux-binaries.sh
+          bash -n scripts/build-images.sh
+
+  manifests:
+    name: CRDs and Helm templates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Set up kind
-        uses: helm/kind-action@v1.10.0
-        with:
-          cluster_name: fluidbg-dev
-          config: testenv/kind-config.yaml
-      - name: Install RabbitMQ + Postgres
-        run: just test-env-infra
-      - name: Build images
+      - uses: azure/setup-helm@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate CRDs
+        run: cargo run --locked --bin gen-crds
+      - name: Verify generated CRDs are committed
+        run: git diff --exit-code -- crds charts/fluidbg-operator/crds
+      - name: Verify chart CRDs mirror generated CRDs
         run: |
-          docker build -t fluidbg/operator:ci .
-          kind load docker-image fluidbg/operator:ci --name fluidbg-dev
-      - name: Run integration tests
-        run: cargo test --workspace --test '*' --features integration-tests
+          cmp crds/blue_green_deployment.yaml charts/fluidbg-operator/crds/blue_green_deployment.yaml
+          cmp crds/inception_plugin.yaml charts/fluidbg-operator/crds/inception_plugin.yaml
+          cmp crds/state_store.yaml charts/fluidbg-operator/crds/state_store.yaml
+      - name: Lint Helm chart
+        run: helm lint charts/fluidbg-operator
+      - name: Render Helm chart
+        run: helm template fluidbg charts/fluidbg-operator --namespace fluidbg-system >/tmp/fluidbg-rendered.yaml
 
-  e2e:
-    if: github.event_name == 'schedule'
+  docker-build:
+    name: Docker images build
     runs-on: ubuntu-latest
+    needs: [rust, python-and-shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Set up kind
-        uses: helm/kind-action@v1.10.0
-        with:
-          cluster_name: fluidbg-dev
-          config: testenv/kind-config.yaml
-      - name: Install RabbitMQ + Postgres
-        run: just test-env-infra
-      - name: Build images
-        run: |
-          docker build -t fluidbg/operator:ci .
-          kind load docker-image fluidbg/operator:ci --name fluidbg-dev
-      - name: Run E2E tests
-        run: cargo test --workspace --test e2e_* --features e2e-tests
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: ./scripts/build-linux-binaries.sh
+      - name: Build local images
+        run: ./scripts/build-images.sh --tag ci

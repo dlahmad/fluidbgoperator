@@ -28,8 +28,8 @@ chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 async-trait = "0.1"
 axum = "0.8"
-reqwest = { version = "0.12", features = ["json"] }
-jsonschema = "0.30"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonschema = { version = "0.30", default-features = false }
 regex = "1"
 jsonpath-rust = "1"
 lapin = "2"
@@ -38,3 +38,10 @@ futures-lite = "2"
 rand = "0.9"
 futures = "0.3"
 sha2 = "0.10"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "z"
+panic = "abort"
+strip = "symbols"
