@@ -39,6 +39,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-${{ matrix.arch }}-musl
       - uses: docker/setup-buildx-action@v3
       - name: Install musl toolchain
         run: |

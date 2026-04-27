@@ -21,9 +21,19 @@ jobs:
           cluster_name: fluidbg-dev
           config: testenv/kind-config.yaml
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-host
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .docker-cargo-home/registry
+            .docker-cargo-home/git
+            .docker-target
+          key: e2e-docker-musl-amd64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            e2e-docker-musl-amd64-
       - name: Run full e2e
         env:
           KIND_CLUSTER: fluidbg-dev
           BUILD_IMAGES: "1"
         run: ./e2e/run-test.sh
-
