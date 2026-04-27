@@ -69,7 +69,7 @@ spec:
       serviceAccountName: fluidbg-operator
       containers:
         - name: operator
-          image: fluidbg/operator:dev
+          image: fluidbg/fbg-operator:dev
           imagePullPolicy: Never
           ports:
             - containerPort: 8090
@@ -192,7 +192,7 @@ metadata:
   namespace: fluidbg-test
 spec:
   description: "RabbitMQ transport plugin"
-  image: fluidbg/rabbitmq:dev
+  image: fluidbg/fbg-plugin-rabbitmq:dev
   supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
   topology: standalone
   lifecycle:

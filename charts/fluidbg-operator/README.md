@@ -28,16 +28,16 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
 ```yaml
 operator:
   image:
-    repository: ghcr.io/dlahmad/operator
+    repository: ghcr.io/dlahmad/fbg-operator
     tag: 0.1.0
 
 builtinPlugins:
   http:
     image:
-      repository: ghcr.io/dlahmad/http
+      repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: 0.1.0
   rabbitmq:
     image:
-      repository: ghcr.io/dlahmad/rabbitmq
+      repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
 ```

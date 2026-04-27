@@ -22,13 +22,13 @@ cargo test --workspace --locked
 The runtime images are intentionally thin: each image contains only one stripped,
 musl-linked release executable on a distroless static non-root base image.
 
-Observed arm64 image sizes:
+Observed local arm64 dev image sizes:
 
 | Image | Size |
 |---|---:|
-| `fluidbg/operator` | 16.5 MB |
-| `fluidbg/http` | 12.1 MB |
-| `fluidbg/rabbitmq` | 13.9 MB |
+| `fluidbg/fbg-operator:dev` | 16.5 MB |
+| `fluidbg/fbg-plugin-http:dev` | 12.1 MB |
+| `fluidbg/fbg-plugin-rabbitmq:dev` | 13.9 MB |
 
 ## E2E Loop
 

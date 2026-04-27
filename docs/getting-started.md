@@ -32,9 +32,9 @@ default so the produced Docker images are valid even when invoked from macOS.
 For a local kind cluster:
 
 ```sh
-kind load docker-image fluidbg/operator:dev --name fluidbg-dev
-kind load docker-image fluidbg/http:dev --name fluidbg-dev
-kind load docker-image fluidbg/rabbitmq:dev --name fluidbg-dev
+kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
+kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
+kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name fluidbg-dev
 ```
 
 ## Install With Helm

@@ -17,8 +17,8 @@ Short reset:
 Image prerequisite:
 
 ```bash
-kind load docker-image fluidbg/operator:dev --name <your-kind-cluster>
-kind load docker-image fluidbg/rabbitmq:dev --name <your-kind-cluster>
+kind load docker-image fluidbg/fbg-operator:dev --name <your-kind-cluster>
+kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name <your-kind-cluster>
 kind load docker-image fluidbg/green-app:dev --name <your-kind-cluster>
 kind load docker-image fluidbg/blue-app:dev --name <your-kind-cluster>
 kind load docker-image fluidbg/test-app:dev --name <your-kind-cluster>

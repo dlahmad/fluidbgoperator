@@ -76,8 +76,8 @@ if [ "$BUILD_IMAGES" = "1" ]; then
     IMAGE_ARCH="$(target_arch)"
     prefetch_linux_rust_dependencies "$IMAGE_ARCH"
     build_linux_rust_binaries "$IMAGE_ARCH"
-    docker build --platform "linux/$IMAGE_ARCH" -t fluidbg/operator:dev "$ROOT_DIR"
-    docker build --platform "linux/$IMAGE_ARCH" -f "$ROOT_DIR/plugins/rabbitmq/Dockerfile" -t fluidbg/rabbitmq:dev "$ROOT_DIR"
+    docker build --platform "linux/$IMAGE_ARCH" -t fluidbg/fbg-operator:dev "$ROOT_DIR"
+    docker build --platform "linux/$IMAGE_ARCH" -f "$ROOT_DIR/plugins/rabbitmq/Dockerfile" -t fluidbg/fbg-plugin-rabbitmq:dev "$ROOT_DIR"
     docker build -t fluidbg/blue-app:dev "$ROOT_DIR/e2e/blue-app"
     docker build -t fluidbg/green-app:dev "$ROOT_DIR/e2e/green-app"
     docker build -t fluidbg/test-app:dev "$ROOT_DIR/e2e/test-app"
@@ -91,8 +91,8 @@ if [ "$BUILD_IMAGES" = "1" ]; then
         fi
 
         if [ -n "$KIND_CLUSTER" ] && kind get clusters | grep -qx "$KIND_CLUSTER"; then
-            kind load docker-image fluidbg/operator:dev --name "$KIND_CLUSTER"
-            kind load docker-image fluidbg/rabbitmq:dev --name "$KIND_CLUSTER"
+            kind load docker-image fluidbg/fbg-operator:dev --name "$KIND_CLUSTER"
+            kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name "$KIND_CLUSTER"
             kind load docker-image fluidbg/blue-app:dev --name "$KIND_CLUSTER"
             kind load docker-image fluidbg/green-app:dev --name "$KIND_CLUSTER"
             kind load docker-image fluidbg/test-app:dev --name "$KIND_CLUSTER"

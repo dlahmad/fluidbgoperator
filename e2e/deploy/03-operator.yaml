@@ -59,7 +59,7 @@ spec:
       serviceAccountName: fluidbg-operator
       containers:
         - name: operator
-          image: fluidbg/operator:dev
+          image: fluidbg/fbg-operator:dev
           imagePullPolicy: Never
           ports:
             - containerPort: 8090

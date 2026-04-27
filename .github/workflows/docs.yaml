@@ -24,9 +24,18 @@ jobs:
       - name: Assemble docs source
         run: |
           mkdir -p docs/reference docs/development
-          cp ARCHITECTURE.md docs/reference/architecture.md
-          cp PLUGIN.md docs/reference/plugin-interface.md
-          cp IMPLEMENTATION_PLAN.md docs/development/implementation-plan.md
+          {
+            printf '%s\n' '---' 'title: Architecture' '---' ''
+            cat ARCHITECTURE.md
+          } > docs/reference/architecture.md
+          {
+            printf '%s\n' '---' 'title: Plugin Interface' '---' ''
+            cat PLUGIN.md
+          } > docs/reference/plugin-interface.md
+          {
+            printf '%s\n' '---' 'title: Implementation Plan' '---' ''
+            cat IMPLEMENTATION_PLAN.md
+          } > docs/development/implementation-plan.md
           cp -R sdk/spec docs/reference/sdk-spec
       - uses: actions/jekyll-build-pages@v1
         with:

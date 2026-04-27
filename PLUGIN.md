@@ -294,6 +294,11 @@ RabbitMQ operator registration semantics:
 - `blue`, `both`, and `unknown` observations register an operator `testCase`.
 - `green` observations still call `observer.notifyPath`, but do not register an operator `testCase`; this prevents progressive splitter traffic sent only to green from becoming pending blue verification cases.
 
+HTTP operator registration follows the same route semantics. Splitter/proxy
+requests routed to blue register operator `testCase`s; green-only progressive
+traffic can still be observed by the test container without creating pending
+blue verification cases.
+
 ## Communication Diagrams
 
 ### 1. Runtime Discovery
@@ -415,8 +420,10 @@ flowchart TD
 ### Splitter
 
 - consumes `splitter.inputQueue`
-- routes messages to green or blue based on `FLUIDBG_TRAFFIC_PERCENT`
-- progressive shifting is implemented by the operator changing that env value on the plugin deployment
+- routes messages to green or blue based on the current traffic percentage
+- initializes that percentage from `FLUIDBG_TRAFFIC_PERCENT` when the plugin starts
+- updates the percentage at runtime when the operator calls lifecycle `trafficShiftPath` with `{ "trafficPercent": n }`
+- does not require the operator to patch env vars or restart the plugin pod during normal progressive shifting
 
 ### Combiner
 
@@ -436,6 +443,31 @@ flowchart TD
 - calls `observer.notifyPath` with `route` metadata in the body
 - registers the `testCase` with the operator for `blue`, `both`, and `unknown` routes
 - does not register green-only observations as operator verification cases
+
+## Current Built-In HTTP Plugin Behavior
+
+The HTTP plugin is one combined standalone service with `splitter`, `observer`,
+`mock`, and `writer` roles.
+
+### Splitter / Proxy
+
+- proxies requests through the plugin service
+- routes traffic to `greenEndpoint` or `blueEndpoint` from config using the current traffic percentage
+- reports route metadata as `green`, `blue`, or `unknown`
+- updates progressive percentage through lifecycle `trafficShiftPath`
+
+### Observer / Mock
+
+- filters requests according to `match`/`filters`
+- extracts `testId`
+- posts observer notifications with route metadata in the JSON body
+- can return mock responses from the test container when configured as a mock
+
+### Writer
+
+- exposes `/write`
+- forwards test-container initiated HTTP calls to `targetUrl` or the configured blue endpoint
+- is reached through the env var declared by `writeEnvVar`
 
 ## Practical Notes
 

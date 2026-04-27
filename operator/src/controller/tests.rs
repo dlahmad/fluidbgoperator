@@ -46,7 +46,7 @@ fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> Inc
         "rabbitmq",
         InceptionPluginSpec {
             description: "test plugin".to_string(),
-            image: "fluidbg/rabbitmq:dev".to_string(),
+            image: "fluidbg/fbg-plugin-rabbitmq:dev".to_string(),
             supported_roles: Vec::new(),
             topology,
             field_namespaces: Vec::new(),

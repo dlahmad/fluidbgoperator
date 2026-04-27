@@ -67,6 +67,6 @@ for binary in fluidbg-operator fluidbg-http fluidbg-rabbitmq; do
     fi
 done
 
-build_image operator "$ROOT_DIR/Dockerfile"
-build_image http "$ROOT_DIR/plugins/http/Dockerfile"
-build_image rabbitmq "$ROOT_DIR/plugins/rabbitmq/Dockerfile"
+build_image fbg-operator "$ROOT_DIR/Dockerfile"
+build_image fbg-plugin-http "$ROOT_DIR/plugins/http/Dockerfile"
+build_image fbg-plugin-rabbitmq "$ROOT_DIR/plugins/rabbitmq/Dockerfile"

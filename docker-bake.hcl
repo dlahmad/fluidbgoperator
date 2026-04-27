@@ -7,23 +7,23 @@ variable "TAG" {
 }
 
 group "default" {
-  targets = ["operator", "http", "rabbitmq"]
+  targets = ["fbg-operator", "fbg-plugin-http", "fbg-plugin-rabbitmq"]
 }
 
-target "operator" {
+target "fbg-operator" {
   context = "."
   dockerfile = "Dockerfile"
-  tags = ["${REGISTRY}/operator:${TAG}"]
+  tags = ["${REGISTRY}/fbg-operator:${TAG}"]
 }
 
-target "http" {
+target "fbg-plugin-http" {
   context = "."
   dockerfile = "plugins/http/Dockerfile"
-  tags = ["${REGISTRY}/http:${TAG}"]
+  tags = ["${REGISTRY}/fbg-plugin-http:${TAG}"]
 }
 
-target "rabbitmq" {
+target "fbg-plugin-rabbitmq" {
   context = "."
   dockerfile = "plugins/rabbitmq/Dockerfile"
-  tags = ["${REGISTRY}/rabbitmq:${TAG}"]
+  tags = ["${REGISTRY}/fbg-plugin-rabbitmq:${TAG}"]
 }

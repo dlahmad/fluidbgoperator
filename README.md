@@ -84,11 +84,11 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
 
 ## Images
 
-Published image names are:
+Published release image names are:
 
-- `fluidbg/operator`
-- `fluidbg/http`
-- `fluidbg/rabbitmq`
+- `ghcr.io/dlahmad/fbg-operator`
+- `ghcr.io/dlahmad/fbg-plugin-http`
+- `ghcr.io/dlahmad/fbg-plugin-rabbitmq`
 
 Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base.
 
@@ -96,9 +96,9 @@ Observed arm64 image sizes:
 
 | Image | Size |
 |---|---:|
-| `fluidbg/operator` | 16.5 MB |
-| `fluidbg/http` | 12.1 MB |
-| `fluidbg/rabbitmq` | 13.9 MB |
+| `ghcr.io/dlahmad/fbg-operator` | 16.5 MB |
+| `ghcr.io/dlahmad/fbg-plugin-http` | 12.1 MB |
+| `ghcr.io/dlahmad/fbg-plugin-rabbitmq` | 13.9 MB |
 
 ## Documentation
 

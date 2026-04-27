@@ -20,20 +20,23 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
 
 ## Production Image Values
 
+The checked-in chart defaults point at this repository's GHCR packages. For a
+fork, replace `dlahmad` with the publishing owner.
+
 ```yaml
 operator:
   image:
-    repository: ghcr.io/your-org/operator
+    repository: ghcr.io/dlahmad/fbg-operator
     tag: 0.1.0
 
 builtinPlugins:
   http:
     image:
-      repository: ghcr.io/your-org/http
+      repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: 0.1.0
   rabbitmq:
     image:
-      repository: ghcr.io/your-org/rabbitmq
+      repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0
 ```
 
@@ -62,4 +65,3 @@ changes, apply the generated CRDs explicitly before upgrading the chart:
 kubectl apply -f crds/
 helm upgrade fluidbg charts/fluidbg-operator -n fluidbg-system
 ```
-

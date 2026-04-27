@@ -1,6 +1,8 @@
 # FluidBG Operator Implementation Plan
 
-This document tracks the current implementation state and remaining work. `ARCHITECTURE.md` is the source of truth for the system model; `PLUGIN.md` is the source of truth for the plugin runtime contract.
+This document tracks the current implementation state and remaining work. The
+Rust CRD models, SDK models, plugin manifests, and workflows are the source of
+truth; `ARCHITECTURE.md` and `PLUGIN.md` describe that implementation.
 
 ## Current Layout
 
@@ -37,14 +39,16 @@ controller/status.rs           BlueGreenDeployment status patches
 | Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
 | Operator API | `/health`, `/testcases`, `/testcase-verdicts`, `/counts/{bg_ref}` |
 | Test harness | Unit tests plus kind-based e2e assets |
+| Packaging | Helm chart, GitHub Actions CI/docs/e2e/release workflows, GHCR release targets |
 
 ## Near-Term Work
 
-1. Expand controller unit tests around draining finalization, generated candidate name collisions, and env assignment grouping.
+1. Expand controller unit tests around draining finalization and env assignment grouping.
 2. Add integration tests for PostgreSQL state-store migration and recovery.
-3. Add plugin contract tests that exercise `/prepare`, `/drain`, `/drain-status`, `/cleanup`, and returned assignments.
+3. Add standalone plugin contract tests that exercise `/prepare`, `/drain`, `/drain-status`, `/cleanup`, `/traffic`, and returned assignments outside the e2e suite.
 4. Decide whether Redis remains on the roadmap; if yes, add the backend and document its operational model before advertising it as supported.
-5. Add CI jobs for `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and a gated kind e2e workflow.
+5. Add release hardening for signed images, SBOMs, provenance attestations, and package retention policy.
+6. Migrate JavaScript-based GitHub Actions to Node 24-compatible action versions as they become available.
 
 ## Local Verification
 

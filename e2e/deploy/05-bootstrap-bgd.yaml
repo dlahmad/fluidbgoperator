@@ -52,7 +52,7 @@ metadata:
   namespace: fluidbg-test
 spec:
   description: "HTTP transport plugin for observing, mocking, and writing HTTP traffic"
-  image: fluidbg/http:dev
+  image: fluidbg/fbg-plugin-http:dev
   supportedRoles: [splitter, observer, mock, writer]
   topology: standalone
   lifecycle:
@@ -99,7 +99,7 @@ metadata:
   namespace: fluidbg-test
 spec:
   description: "RabbitMQ transport plugin"
-  image: fluidbg/rabbitmq:dev
+  image: fluidbg/fbg-plugin-rabbitmq:dev
   supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
   topology: standalone
   lifecycle:

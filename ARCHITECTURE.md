@@ -1,410 +1,68 @@
-# FluidBG Operator — Architecture
+# FluidBG Operator Architecture
 
 ## Overview
 
-FluidBG is a Kubernetes operator that automates **blue-green deployments for message-queue and HTTP consumers**. It validates a new version of a service ("blue") against live traffic before promoting it to production ("green") — or rolling it back — based on configurable acceptance criteria.
+FluidBG is a Kubernetes operator for blue-green and progressive delivery of queue
+and HTTP workloads. A candidate deployment is exposed to controlled live traffic,
+verifier containers decide whether observed test cases passed, and the operator
+promotes or rolls back from configured success criteria.
 
-The core idea: wire **inception points** around the blue deployment so that traffic is observed, mocked, split, combined, or injected as needed. The operator does not hardcode how a given transport works. Each `InceptionPlugin` declares an orchestration contract, such as `queue-split`, `queue-combine`, or `http-split`; the `BlueGreenDeployment` supplies concrete queue names, service names, env vars, and deployment specs; the operator executes the declared plugin contract. Plugins forward intercepted data to a **test container** that decides, per test run, whether blue behaved correctly. The operator tracks test runs, counts green/not-green verdicts, drives promotion, and restores direct wiring after the decision.
+The operator is intentionally transport-agnostic. Transport behavior lives in
+`InceptionPlugin` resources and their plugin containers. A
+`BlueGreenDeployment` selects plugins through named `inceptionPoints`, activates
+one or more roles, and provides plugin-specific config. The operator renders the
+declared Kubernetes resources, calls lifecycle endpoints, tracks test cases, and
+removes temporary resources after promotion or rollback.
 
----
+```mermaid
+flowchart TD
+    SRC["Production source<br/>Queue or HTTP client"]
+    SPLIT["Splitter / duplicator plugin"]
+    GREEN["Current green deployment"]
+    BLUE["Candidate blue deployment"]
+    OBS["Observer / combiner / mock plugin"]
+    TEST["Verifier test container"]
+    OP["FluidBG operator"]
+    OUT["Production output / upstream"]
+
+    SRC --> SPLIT
+    SPLIT -->|"green route"| GREEN
+    SPLIT -->|"blue route"| BLUE
+    SPLIT -->|"register test case"| OP
+    SPLIT -->|"notify observation"| TEST
+    GREEN --> OBS
+    BLUE --> OBS
+    OBS -->|"route metadata + payload"| TEST
+    OBS --> OUT
+    OP -->|"GET verifyPath"| TEST
+    TEST -->|"passed / failed / pending"| OP
+    OP -->|"promote, rollback, drain, cleanup"| SPLIT
+    OP -->|"promote, rollback, drain, cleanup"| OBS
+```
 
 ## Core Concepts
 
-| Term | Definition |
+| Term | Current Meaning |
 |---|---|
-| **Inception Point** | A named place in the traffic flow where FluidBG intercepts data. Has a **mode**, one or more **directions**, and references a plugin. |
-| **Mode** | What the inception point does: `trigger`, `passthrough-duplicate`, `reroute-mock`, or `write`. |
-| **Direction** | `ingress` (traffic into blue), `egress` (traffic out of blue), or both (same plugin handles both flows). |
-| **Inception Plugin** | A pluggable, CRD-registered container that implements interception. Plugins are **external containers** — any language, any registry. |
-| **Test Container** | User-supplied HTTP server that holds observation state and answers one question per test run: **green or not green**. |
-| **Test ID** | User-defined correlation key extracted from traffic by a selector. All observations for a test run are grouped by `testId`. |
-| **State Store** | Pluggable persistence for the operator's tracking state (active testIds, verdicts, counts). Implemented backends: `memory`, `postgres`; `redis` is planned. |
-| **Plugin Orchestration Contract** | The plugin-declared set of lifecycle actions the operator must perform: deploy plugin resources, patch application env vars, create or reference transport resources, and clean up or restore after promotion/rollback. |
-| **Split Plugin** | A plugin that takes one production input and fans it out to green and blue paths. For queues this may mean original queue → green queue + blue queue; for HTTP it may mean proxying one request stream to two backends. |
-| **Combine Plugin** | A plugin that merges blue and green output paths into one result path using plugin-defined rules. For queues this may mean blue output queue + green output queue → production result queue. |
-
-### The Operator's Logic Is Minimal
-
-1. **Register** a test run each time a trigger fires (with a user-defined timeout).
-2. **Track** runs by `testId` in the configured state store.
-3. **Poll** the test container for a verdict on each run.
-4. **Time out** runs that don't get a verdict in time — these count as not-green.
-5. **Count** green vs not-green verdicts.
-6. **Decide** promotion based on the user-defined success-rate threshold.
-7. **Execute terminal orchestration** defined by the plugin contract: after success, promoted blue is restored to direct production wiring; after failure, green is restored; temporary test/plugin resources are removed in both cases.
-
-The operator does **not** hold observation state. The test container owns all domain knowledge. The operator is a bookkeeper that wires traffic to the test container and counts answers.
-
----
-
-## High-Level Flow
-
-```mermaid
-flowchart TD
-    SRC["Source<br/>(Queue / HTTP Client)"]
-    SRC -->|"split plugin<br/>transport-specific"| SPLIT["Split Inception"]
-    SPLIT -->|"register testId"| OP["Operator"]
-    SPLIT -->|"notify trigger"| TC["Test Container"]
-    SPLIT -->|"green path"| GREEN["Green<br/>(live)"]
-    SPLIT -->|"blue path"| BLUE["Blue<br/>(candidate)"]
-
-    BLUE -->|"egress traffic"| OUT["Output Inception<br/>observe / mock / combine"]
-    GREEN -->|"egress traffic"| OUT
-    OUT -->|"observations"| TC
-    OUT -->|"combined result or passthrough"| REAL["Real Output / Upstream"]
-
-    TC -->|"write plugin<br/>inject traffic"| BLUE
-
-    OP -->|"GET /result/{testId}"| TC
-    TC -->|"passed: true/false"| OP
-
-    OP -->|"successRate met"| PROM["Promote / Rollback"]
-```
-
----
-
-## Capabilities
-
-Plugins are described by two separate ideas:
-
-- **Traffic capability**: what the plugin does to traffic.
-- **Orchestration contract**: what Kubernetes and transport setup the operator must perform for that plugin.
-
-### Traffic Capabilities
-
-| Capability | Purpose | Typical Stage | Creates Test Runs? |
-|---|---|---|---|
-| `split` | Take one production stream and fan it out to green and blue paths | input | Usually |
-| `combine` | Merge blue and green output paths into one result path | output | No |
-| `sink` | Consume a resource branch and intentionally terminate it | input or output | No |
-| `trigger` | Register a test run and notify the test container for matched traffic | input or output | Yes |
-| `passthrough-duplicate` | Forward traffic normally and send a copy to the test container | input or output | Optional |
-| `reroute-mock` | Replace an external dependency with the test container's response | output | No |
-| `write` | Expose a writer endpoint the test container can call to inject traffic | input or output | No |
-
-For backward compatibility, `mode` still names these capabilities in the CRD. New plugin definitions should prefer the simpler capability vocabulary: `split`, `combine`, `sink`, `trigger`, `mock`, `write`, and `observe`. Older names such as `passthrough-duplicate` and `reroute-mock` map to `observe` and `mock`.
-
-```mermaid
-flowchart LR
-    subgraph S["split"]
-        S1["production input"] --> S2["Plugin"]
-        S2 --> S3["green path"]
-        S2 --> S4["blue path"]
-        S2 -->|register / notify| S5["Operator + Test Container"]
-    end
-```
-
-```mermaid
-flowchart LR
-    subgraph C["combine"]
-        C1["green output"] --> C3["Plugin"]
-        C2["blue output"] --> C3
-        C3 --> C4["single result output"]
-    end
-```
-
-```mermaid
-flowchart LR
-    subgraph RM["reroute-mock"]
-        RM1["Blue"] --> RM2["Plugin"]
-        RM2 -->|route + return mock| RM3["Test Container"]
-    end
-```
-
-```mermaid
-flowchart LR
-    subgraph W["write"]
-        W1["Test Container"] -->|POST /write| W2["Plugin"]
-        W2 -->|inject| W3["Blue's queue / HTTP ingress"]
-    end
-```
-
-### Stages
-
-The old `direction` field is best understood as the stage where the plugin attaches:
-
-| Stage | What the plugin sees |
-|---|---|
-| `ingress` / input | Traffic entering the application: messages consumed from input queues, HTTP requests to the service |
-| `egress` / output | Traffic leaving the application: output queues, outbound HTTP calls, emitted events |
-| both | A plugin that manages both sides, usually with separate config blocks |
-
-### Capability × Stage Validity
-
-| Capability | input | output | both |
-|---|---|---|---|
-| `split` | ✓ | possible, but uncommon | plugin-defined |
-| `combine` | uncommon | ✓ | plugin-defined |
-| `sink` | ✓ | ✓ | plugin-defined |
-| `trigger` | ✓ | ✓ | ✓ |
-| `passthrough-duplicate` | ✓ | ✓ | ✓ |
-| `reroute-mock` | ✗ (would replace blue itself) | ✓ | ✗ |
-| `write` | ✓ | ✓ | ✓ |
-
-The operator rejects invalid combinations at CRD-validation time.
-
-### Orchestration Contracts
-
-The plugin system owns transport-specific lifecycle behavior. The operator only executes the contract declared by the plugin:
-
-| Orchestration Kind | Operator Actions | Plugin Responsibility |
-|---|---|---|
-| `queue-split` | Patch green and blue Deployment env vars to temporary queues; deploy the split plugin; restore direct queue wiring after promotion/rollback; clean up plugin/test resources | Consume from the original queue and publish to the green and blue queues without acknowledging the source message until fanout succeeds |
-| `queue-combine` | Patch output env vars to temporary blue/green output queues; deploy the combine plugin; restore direct output wiring after terminal state | Consume/merge from blue and green output queues and publish to the result queue according to plugin rules |
-| `http-split` | Patch service/env routing to the HTTP split plugin; deploy proxy resources; restore direct service routing after terminal state | Proxy or mirror HTTP traffic according to plugin-specific semantics |
-
-This distinction matters: duplicating HTTP requests is not the same operation as creating two queues, and combining queue outputs is not the same as merging HTTP responses. The `InceptionPlugin` declares the orchestration kind; the `BlueGreenDeployment` supplies concrete names and values; the operator reconciles Kubernetes state from those declarations.
-
-### Plugin-Advertised Capabilities
-
-Progressive shifting and event notifications are not configured ad hoc on an inception point. They are advertised by the plugin and then used by the BGD strategy layer:
-
-| Advertised Capability | Meaning |
-|---|---|
-| `supportsProgressiveShifting` | The plugin can perform weighted traffic shifting. This is a splitter capability only. Combiners do not own progressive shifting. |
-| `canNotifyTestOnEvents` | The plugin can optionally notify the test container for every matching resource that passes through it. This may be used by splitters, combiners, or observers. |
-| `providesSink` | The plugin can expose a sink path that consumes and terminates a resource branch. |
-
-The operator rejects progressive strategy rollouts unless at least one referenced standalone splitter plugin advertises `supportsProgressiveShifting: true`.
-
----
-
-## Field References, Filters, Selectors
-
-All matching and extraction across every plugin type is built on a single abstraction: the **field reference**.
-
-### Field Namespaces
-
-| Field | Namespace | Description |
-|---|---|---|
-| `http.method` | `http` | HTTP method (`GET`, `POST`, etc.) |
-| `http.path` | `http` | URL path (e.g. `/orders/123`) |
-| `http.header.<name>` | `http` | Request header by name |
-| `http.query.<name>` | `http` | Query parameter by name |
-| `http.body` | `http` | Request body (parsed as JSON when `jsonPath` is used) |
-| `queue.body` | `queue` | Message body (parsed as JSON when `jsonPath` is used) |
-| `queue.property.<name>` | `queue` | Message property/attribute by name |
-
-A plugin declares which namespaces it supports (`fieldNamespaces: [http]`, `[queue]`, etc.). The operator rejects filters/selectors using unsupported namespaces at CRD-validation time. New plugins can add their own namespaces (`grpc.*`, `amqp.*`, …) without changes to the filter engine.
-
-### Filters
-
-A filter is a condition on a field. All conditions in a filter's `match` list must pass (AND):
-
-```yaml
-match:
-  - field: "http.method"
-    equals: "POST"                       # exact string match
-  - field: "http.path"
-    matches: "^/orders$"                 # regex match
-  - field: "http.body"
-    jsonPath: "$.type"
-    matches: "^order$"                   # regex on JSON-extracted value
-```
-
-| Property | Required | Notes |
-|---|---|---|
-| `field` | yes | A field reference |
-| `equals` | no | Exact string match |
-| `matches` | no | Regex match (RE2 syntax) |
-| `jsonPath` | no | JSONPath into the field value (only valid for `*.body` fields) |
-
-Exactly one of `equals` or `matches` must be provided.
-
-### Selectors
-
-A selector extracts a value — used for `testId` extraction.
-
-```yaml
-testId:
-  field: "http.body"
-  jsonPath: "$.orderId"
-
-# OR: a header / query / path-segment / queue property
-testId:
-  field: "http.header.X-Test-Id"
-
-testId:
-  field: "http.path"
-  pathSegment: 2                         # /orders/{seg2}/process
-
-testId:
-  field: "queue.property.correlationId"
-
-# OR: static value (all traffic grouped under one test run)
-testId:
-  value: "fixed-id"
-```
-
-| Property | Required | Notes |
-|---|---|---|
-| `field` | yes* | Field reference (*unless `value` is set) |
-| `jsonPath` | no | For `*.body` fields |
-| `pathSegment` | no | 1-indexed segment; only for `http.path` |
-| `value` | no* | Static value (*required if `field` is not set) |
-
-If extraction fails, the traffic is still delivered to blue but no test case is created; the operator logs a warning.
-
----
-
-## Plugin System
-
-Plugins are the key extension point. The operator does **not** hardcode plugin types. A plugin is:
-
-- An external container image (any language, any registry), plus
-- An `InceptionPlugin` CRD that declares what it does, how it deploys, what it injects, and a JSON Schema for its user-facing config.
-
-**No operator code changes are required to add a new plugin.** The operator treats the CRD as a declarative blueprint.
-
-### Deployment Topologies
-
-| Topology | Description | Typical Use |
-|---|---|---|
-| `sidecar-blue` | Plugin injected as a sidecar into the blue pod | HTTP / gRPC proxy — intercepts blue's in-process traffic |
-| `sidecar-test` | Plugin injected as a sidecar into the test container pod | Rare; e.g., a co-located mock server |
-| `standalone` | Plugin deployed as a separate Deployment + Service | Queue duplicators, write gateways — independent of blue's pod |
-
-### Plugin Runtime Contract
-
-Every plugin container receives these standard environment variables from the operator:
-
-| Env Var | Description |
-|---|---|
-| `FLUIDBG_OPERATOR_URL` | URL of the operator's case-registration API |
-| `FLUIDBG_TEST_CONTAINER_URL` | Base URL of the test container |
-| `FLUIDBG_INCEPTION_POINT` | Name of the inception point this instance serves |
-| `FLUIDBG_MODE` | `trigger` / `passthrough-duplicate` / `reroute-mock` / `write` |
-| `FLUIDBG_DIRECTIONS` | Active directions: `ingress`, `egress`, or `ingress,egress` |
-| `FLUIDBG_CONFIG_PATH` | Path to the mounted YAML config file |
-
-A plugin must:
-
-1. Read the YAML config at `FLUIDBG_CONFIG_PATH`.
-2. For `trigger` mode: `POST` to `{FLUIDBG_OPERATOR_URL}/cases` with `{testId, inceptionPoint, triggeredAt}` when matched.
-3. Notify the test container by `POST`ing to `{FLUIDBG_TEST_CONTAINER_URL}{notifyPath}` (paths substitute `{testId}`).
-4. Forward / route / inject traffic per `FLUIDBG_MODE` and `FLUIDBG_DIRECTIONS`.
-
-Plugins are **stateless**. They hold no observation state, no test results, no verdicts. All state lives in the test container or the operator's state store.
-
-### How the Operator Deploys Plugins
-
-When reconciling a `BlueGreenDeployment`, the operator processes each inception point:
-
-1. **Look up** the referenced `InceptionPlugin` CRD.
-2. **Validate** that the plugin supports the requested mode and direction, and that the user's `config` matches the plugin's `configSchema`.
-3. **Generate** a ConfigMap from the user's `config` (optionally transformed via the plugin's `configTemplate`).
-4. **Deploy** based on topology:
-   - `sidecar-blue` / `sidecar-test`: inject the plugin container as a sidecar into the target pod, mount the ConfigMap.
-   - `standalone`: create a `Deployment` + `Service` + ConfigMap.
-5. **Inject** standard runtime env vars into the plugin container.
-6. **Resolve** plugin-declared env-var injections into the blue and/or test containers:
-   - For sidecars injecting into blue: value is `http://localhost:{port}` (same-pod networking).
-   - For standalone plugins injecting into blue or the test container: value can reference `{{pluginServiceName}}`, `{{pluginDeploymentName}}`, `{{inceptionPoint}}`, `{{blueGreenRef}}`, and `{{namespace}}`.
-
-Because every step is driven by the CRD, **adding a plugin means: publish a container image + apply an `InceptionPlugin` CRD.** No operator rebuild.
-
-### Plugin Catalog (Built-in)
-
-FluidBG ships with these plugins (each is an `InceptionPlugin` CRD + container image pre-registered by the installer):
-
-| Plugin | Roles | Topology | Notes |
-|---|---|---|---|
-| `http` | `observer`, `mock`, `writer` | standalone | One HTTP service exposes proxy fallback and `/write`. |
-| `rabbitmq` | `duplicator`, `splitter`, `combiner`, `observer`, `writer`, `consumer` | standalone | Supports progressive shifting through the splitter role. |
-
-Additional plugins (SQS, NATS, Azure Service Bus, gRPC, …) follow the same CRD and SDK contract and can be added by the user via their own `InceptionPlugin` CRDs.
-
-**Archetype summary:**
-
-- **Queue transport plugins** — read, duplicate, split, combine, observe, consume, or write queue resources.
-- **HTTP transport plugin** — exposes one service for observing/mocking HTTP requests and for `/write` injection.
-
-### Plugin Deployment Diagrams
-
-**HTTP plugin (standalone service):**
-
-```mermaid
-flowchart TD
-    HP["http plugin Deployment<br/>reads config from ConfigMap"]
-    SVC["http plugin Service"]
-    B["Blue container"]
-    T["Test container"]
-
-    B -->|"envVarName points to Service"| SVC
-    T -->|"writeEnvVar points to Service"| SVC
-    SVC --> HP
-    HP -->|"register testId"| OP["Operator"]
-    HP -->|"observe / mock"| T
-    HP -->|"proxy fallback"| REAL["Real Upstream / Blue target"]
-    T -->|"POST /write"| HP
-```
-
-**Queue duplicator (standalone deployment):**
-
-```mermaid
-flowchart TD
-    DUP["Duplicator Deployment<br/>stateless, reads ConfigMap"]
-    SRC["Source Queue"] --> GREEN["Green consumes normally"]
-    SRC --> DUP
-    DUP -->|"matched messages"| SHQ["Shadow Queue"]
-    SHQ --> BLUE["Blue"]
-    DUP -->|"register testId"| OP["Operator"]
-    DUP -->|"POST /trigger"| TC["Test Container"]
-```
-
-**Write gateway (standalone deployment):**
-
-```mermaid
-flowchart LR
-    TC["Test Container"] -->|"call $WRITE_URL/write"| WR["Writer Deployment"]
-    WR -->|"publish / request"| BLUE["Blue's queue / HTTP ingress"]
-```
-
----
-
-## State Store
-
-The state store is the operator's persistence for active test runs (testIds, timeouts, verdicts, counts). It is configured — not built as a container plugin — because state-store access is latency-sensitive and the operator reads/writes it in-process.
-
-A cluster admin picks a backend by creating a `StateStore` resource; a `BlueGreenDeployment` references it via `stateStoreRef`.
-
-| Backend | Description | When to Use |
-|---|---|---|
-| `memory` | In-process hash map | Development / tests only |
-| `postgres` | PostgreSQL table with TTL column | Production; durable; queryable |
-| `redis` | Planned Redis hash + sorted set backend | Not implemented yet |
-
-All backends implement the same Rust trait; adding a backend is a matter of implementing the trait and extending the `StateStore` CRD's `type` enum.
-
-```rust
-trait StateStore: Send + Sync {
-    async fn register(&self, run: TestCaseRecord) -> Result<()>;
-    async fn get(&self, test_id: &str) -> Result<Option<TestCaseRecord>>;
-    async fn set_verdict(
-        &self,
-        test_id: &str,
-        passed: bool,
-        failure_message: Option<String>,
-    ) -> Result<()>;
-    async fn mark_timed_out(&self, test_id: &str) -> Result<()>;
-    async fn decrement_retries(&self, test_id: &str) -> Result<Option<i32>>;
-    async fn list_pending(&self) -> Result<Vec<TestCaseRecord>>;
-    async fn counts(&self, bg: &str) -> Result<Counts>;
-    async fn counts_for_mode(&self, bg: &str, mode: VerificationMode) -> Result<Counts>;
-    async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>>;
-    async fn cleanup_expired(&self) -> Result<usize>;
-}
-```
-
----
-
-## Custom Resource Definitions
-
-All three CRDs live in the `fluidbg.io/v1alpha1` API group.
+| `BlueGreenDeployment` | Names the green deployment, candidate blue template, inception points, verifier containers, and promotion strategy. |
+| `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
+| `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
+| Plugin role | The behavior activated for an inception point: `duplicator`, `splitter`, `combiner`, `observer`, `mock`, `writer`, or `consumer`. |
+| Verifier test container | User-owned HTTP service that stores domain observations and returns `passed: true`, `passed: false`, or `passed: null` for a `testId`. |
+| State store | Operator persistence for registered test cases and counts. Implemented backends are `memory` and `postgres`. |
+| Progressive shifting | Weighted blue traffic controlled by the operator through plugin lifecycle `trafficShiftPath` calls. |
+
+Older docs described `mode`, `direction`, and transport-specific orchestration
+kinds. The current CRD model is role-based. `FLUIDBG_MODE` remains only as a
+backward-compatible SDK fallback; the operator injects `FLUIDBG_ACTIVE_ROLES`.
+
+## CRD Model
+
+All Kubernetes resources use API group `fluidbg.io/v1alpha1`.
 
 ### `InceptionPlugin`
 
-Declares a plugin: its image, topology, what it supports, the schema of user config, and the template used to produce the plugin ConfigMap.
+An `InceptionPlugin` declares the reusable plugin contract:
 
 ```yaml
 apiVersion: fluidbg.io/v1alpha1
@@ -413,51 +71,86 @@ metadata:
   name: http
 spec:
   description: "HTTP transport plugin for observing, mocking, and writing HTTP traffic"
-  image: fluidbg/http:v0.1.0
+  image: ghcr.io/dlahmad/fbg-plugin-http:0.1.0
+  supportedRoles: [splitter, observer, mock, writer]
   topology: standalone
-
-  supportedRoles: [observer, mock, writer]
+  lifecycle:
+    preparePath: /prepare
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+    trafficShiftPath: /traffic
+  features:
+    supportsProgressiveShifting: true
   fieldNamespaces: [http]
-
-  # JSON Schema that validates the user's `config` block in the BlueGreenDeployment.
-  # The operator rejects BlueGreenDeployments whose config does not match this schema.
   configSchema:
     type: object
-    properties:
-      port: { type: integer }
-      realEndpoint: { type: string }
-      targetUrl: { type: string }
-      envVarName: { type: string }
-      writeEnvVar: { type: string }
-      testId: { type: object }
-      match: { type: array }
-      filters: { type: array }
-      ingress: { type: object }
-      egress: { type: object }
-
-  # Optional: Go-template-style transform from user `config` → plugin ConfigMap.
-  # Omit for identity (operator writes user's config verbatim plus standard fields).
-  configTemplate: ""
-
   container:
     ports:
       - name: http
         containerPort: 9090
-    volumeMounts:
-      - name: plugin-config
-        mountPath: /etc/fluidbg
-        readOnly: true
+```
 
-  # What this plugin injects into other containers in the BlueGreenDeployment.
-  injects:
-    blueContainer:
-      env:
-        - nameFromConfig: envVarName                   # key in user's config whose value is the env var name
-          valueTemplate: "http://{{pluginServiceName}}:9090"
-    testContainer:
-      env:
-        - nameFromConfig: writeEnvVar
-          valueTemplate: "http://{{pluginServiceName}}:9090"
+Important fields:
+
+| Field | Meaning |
+|---|---|
+| `supportedRoles` | Roles this plugin can run for an inception point. |
+| `topology` | `standalone`, `sidecar-blue`, or `sidecar-test`. Built-in plugins currently run as `standalone`. |
+| `fieldNamespaces` | Filter/selector namespaces supported by the plugin, for example `http` or `queue`. |
+| `configSchema` | JSON Schema used by the operator to validate the inception point config. |
+| `lifecycle` | HTTP endpoints called by the operator for prepare, drain, cleanup, and traffic shifting. |
+| `injects` | Env vars the operator patches into green, blue, or test containers from plugin config/template values. |
+| `features.supportsProgressiveShifting` | Required for progressive strategies that use standalone splitter plugins. |
+
+### `BlueGreenDeployment`
+
+The current `inceptionPoints` shape is:
+
+```yaml
+inceptionPoints:
+  - name: incoming-orders
+    pluginRef:
+      name: rabbitmq
+    roles: [duplicator, observer]
+    drain:
+      maxWaitSeconds: 60
+    config:
+      amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+      duplicator:
+        inputQueue: orders
+        greenInputQueue: orders-green
+        blueInputQueue: orders-blue
+        greenInputQueueEnvVar: INPUT_QUEUE
+        blueInputQueueEnvVar: INPUT_QUEUE
+      observer:
+        testId:
+          field: queue.body
+          jsonPath: $.orderId
+        match:
+          - field: queue.body
+            jsonPath: $.type
+            matches: "^order$"
+        notifyPath: /observe/{testId}/incoming-orders
+```
+
+Promotion supports data-verification and custom-verification criteria:
+
+```yaml
+promotion:
+  data:
+    minTestCases: 100
+    successRate: 0.98
+    timeoutSeconds: 1800
+  strategy:
+    type: progressive
+    progressive:
+      steps:
+        - { trafficPercent: 5, observeCases: 20, successRate: 0.99 }
+        - { trafficPercent: 25, observeCases: 50, successRate: 0.98 }
+        - { trafficPercent: 100, observeCases: 50, successRate: 0.98 }
+      rollbackOnStepFailure: true
+      stepTimeoutMinutes: 15
 ```
 
 ### `StateStore`
@@ -468,411 +161,216 @@ kind: StateStore
 metadata:
   name: default
 spec:
-  type: postgres              # memory | postgres; redis is planned
+  type: postgres
   postgres:
     url: "postgres://fluidbg:secret@postgres.fluidbg:5432/fluidbg"
-    tableName: "fluidbg_cases"
+    tableName: fluidbg_cases
     ttlSeconds: 86400
 ```
 
-Only the sub-block matching `type` is read; others are ignored.
+`memory` is useful for development and tests. `postgres` is the production
+backend. Redis is not implemented.
 
-### `BlueGreenDeployment`
+## Operator Reconciliation
 
-Below is a focused example. See the [Test Container Contract](#test-container-contract) for how the test container is wired.
+For one `BlueGreenDeployment`, reconciliation does the following:
 
-```yaml
-apiVersion: fluidbg.io/v1alpha1
-kind: BlueGreenDeployment
-metadata:
-  name: order-processor
-spec:
-  stateStoreRef:
-    name: default
+1. Validate tests, promotion settings, plugin references, supported roles,
+   supported field namespaces, plugin config schemas, and progressive capability.
+2. Render verifier test deployments/services.
+3. Render plugin ConfigMaps, Deployments, and Services from `InceptionPlugin`.
+4. Inject runtime env vars into plugin containers.
+5. Call plugin `preparePath` and patch returned assignments into green, blue,
+   and test deployments.
+6. Register and poll test cases through the operator HTTP API and verifier
+   `verifyPath`.
+7. Apply progressive traffic updates by calling plugin `trafficShiftPath`.
+8. On promotion or rollback, enter draining, call plugin `drainPath`, poll
+   `drainStatusPath`, then call `cleanupPath`.
+9. Remove temporary test/plugin resources and restore direct assignment values
+   where plugins declared restore templates.
 
-  green:
-    deployment: { name: order-processor-green, namespace: production }
+The operator also prevents two rollouts of the same `BlueGreenDeployment` from
+colliding while the previous rollout's temporary inception resources still
+exist. Different `BlueGreenDeployment` names can run concurrently because
+generated resource names include the BGD name and inception point.
 
-  blue:
-    deployment: { name: order-processor-blue, namespace: production }
-    template:
-      spec:
-        containers:
-          - name: order-processor
-            image: myregistry/order-processor:v2.0.0-rc1
+## Plugin Runtime Contract
 
-  inceptionPoints:
-    # Trigger: a RabbitMQ message creates a test run.
-    - name: incoming-orders
-      directions: [ingress]
-      mode: trigger
-      pluginRef: { name: rabbitmq }
-      config:
-        inputQueue: orders
-        blueInputQueue: orders-blue
-        testId:
-          field: "queue.body"
-          jsonPath: "$.orderId"
-        match:
-          - field: "queue.body"
-            jsonPath: "$.type"
-            matches: "^order$"
-        notifyPath: "/trigger"
-      notifyTests: [order-validation]
-      timeout: 60s
+Standalone plugin containers receive these operator-managed env vars:
 
-    # Passthrough-duplicate: observe egress HTTP calls to the payment service.
-    - name: payment-calls
-      directions: [egress]
-      mode: passthrough-duplicate
-      pluginRef: { name: http }
-      config:
-        port: 9090
-        realEndpoint: https://payment.internal/v1
-        envVarName: PAYMENT_SERVICE_URL
-        testId:
-          field: "http.body"
-          jsonPath: "$.orderId"
-        filters:
-          - match:
-              - field: "http.path"
-                matches: "^/v1/charge$"
-            notifyPath: "/observe/{testId}/payment-charge"
-            payload: both
-      notifyTests: [order-validation]
-
-    # Reroute-mock: test container mocks the inventory service.
-    - name: inventory-calls
-      directions: [egress]
-      mode: reroute-mock
-      pluginRef: { name: http }
-      config:
-        port: 9090
-        realEndpoint: https://inventory.internal/v2
-        envVarName: INVENTORY_SERVICE_URL
-        testId:
-          field: "http.body"
-          jsonPath: "$.orderId"
-        filters:
-          - match:
-              - field: "http.path"
-                matches: "^/v2/reserve$"
-            notifyPath: "/observe/{testId}/inventory-reserve"
-            payload: both
-      notifyTests: [order-validation]
-
-    # Write: the test container can publish messages into blue's input queue.
-    - name: order-inject
-      directions: [ingress]
-      mode: write
-      pluginRef: { name: http }
-      config:
-        targetUrl: http://order-processor-blue:8080
-        writeEnvVar: ORDER_INJECT_URL
-      notifyTests: [order-validation]
-
-  tests:
-    - name: order-validation
-      image: myregistry/order-processor-tests:v2.0.0-rc1
-      port: 8080
-      triggerPath: /trigger
-      resultPath: /result/{testId}
-      env:
-        - name: EXPECT_MAX_PROCESSING_TIME_MS
-          value: "5000"
-
-  promotion:
-    successCriteria:
-      minCases: 100
-      successRate: 0.98
-      observationWindowMinutes: 30
-
-    strategy:
-      type: progressive
-      progressive:
-        steps:
-          - { trafficPercent: 5,   observeCases: 20,  successRate: 0.99 }
-          - { trafficPercent: 25,  observeCases: 50,  successRate: 0.98 }
-          - { trafficPercent: 50,  observeCases: 100, successRate: 0.98 }
-          - { trafficPercent: 100, observeCases: 50,  successRate: 0.98 }
-        rollbackOnStepFailure: true
-        stepTimeoutMinutes: 15
-
-status:
-  phase: Observing
-  casesObserved: 142
-  casesPassed: 140
-  casesFailed: 2
-  casesPending: 3
-  casesTimedOut: 1
-  currentSuccessRate: 0.9859
-  currentTrafficPercent: 25
-  currentStep: 1
-  startedAt: "2026-04-20T10:00:00Z"
-  lastCaseAt: "2026-04-20T10:28:14Z"
-```
-
-#### Per-filter `payload` option
-
-| Value | Meaning |
+| Env Var | Meaning |
 |---|---|
-| `request` | Forward only the request to the test container |
-| `response` | Forward only the response (after upstream call) |
-| `both` (default) | Forward request and response |
+| `FLUIDBG_OPERATOR_URL` | Base URL of the operator API. |
+| `FLUIDBG_TESTCASE_REGISTRATION_URL` | Full operator URL for registering test cases. |
+| `FLUIDBG_TEST_CONTAINER_URL` | Base URL of the selected verifier test service. |
+| `FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE` | Verifier path template, for example `/result/{testId}`. |
+| `FLUIDBG_INCEPTION_POINT` | Active inception point name. |
+| `FLUIDBG_BLUE_GREEN_REF` | Owning `BlueGreenDeployment` name. |
+| `FLUIDBG_ACTIVE_ROLES` | Comma-separated roles activated for this plugin instance. |
+| `FLUIDBG_CONFIG_PATH` | Mounted plugin config file path, currently `/etc/fluidbg/config.yaml`. |
 
-For `trigger` and `write` modes, `payload` is ignored (no response exists).
+Plugins should import shared Rust types from `sdk/rust` or generate clients from
+`sdk/spec/plugin-api-v1alpha1.openapi.yaml`. The SDK defines lifecycle payloads,
+assignments, test-case registration, observer notifications, traffic routes, and
+traffic shifting.
 
-#### `notifyPath` template variables
+## Lifecycle Endpoints
 
-| Variable | Expands to |
-|---|---|
-| `{testId}` | The extracted `testId` for this case |
-| `{inceptionPoint}` | The name of the inception point |
-| `{direction}` | `ingress` or `egress` (in bidirectional plugins) |
+The operator calls lifecycle endpoints declared by the plugin CRD:
 
----
-
-## Test Container Contract
-
-Test containers are user-supplied HTTP servers that hold all observation state and answer one question per test run: **green or not green**.
-
-### Endpoints
-
-| Endpoint | Called By | Purpose |
+| Endpoint | Called When | Expected Behavior |
 |---|---|---|
-| `POST {triggerPath}` | Trigger plugins | "A new test run has started for this testId" |
-| `POST {notifyPath}` | Passthrough-duplicate / reroute-mock plugins | Observation event; `reroute-mock` uses the response as the mock reply to blue |
-| `POST {writerService}/write` | The test container itself (the URL is injected as an env var) | Inject traffic into blue |
-| `GET {resultPath}` | The operator | Request a verdict for a specific testId |
+| `POST /prepare` | Before observation starts | Create derived transport resources and return assignments to patch into green/blue/test containers. |
+| `POST /drain` | After promotion or rollback decision | Stop accepting new temporary work and return assignments that move the surviving deployment toward direct production wiring. |
+| `GET /drain-status` | While phase is `Draining` | Return whether temporary resources are drained. Missing endpoint means drain-complete. |
+| `POST /cleanup` | After drain completion or timeout | Delete derived transport resources and leave plugin safe to terminate. |
+| `POST /traffic` | Initial rollout and progressive step changes | Update blue traffic percentage without restarting the plugin pod. |
 
-### Trigger
-
-```
-POST /trigger
-{ "testId": "ORD-123", "inceptionPoint": "incoming-orders",
-  "payload": { ... }, "timestamp": "2026-04-20T10:00:00Z" }
-```
-
-### Observation
-
-```
-POST /observe/ORD-123/payment-charge
-{ "inceptionPoint": "payment-calls", "direction": "egress",
-  "mode": "passthrough-duplicate",
-  "request":  { "method": "POST", "path": "/v1/charge", "headers": {...}, "body": {...} },
-  "response": { "status": 200, "headers": {...}, "body": {...} },
-  "timestamp": "2026-04-20T10:00:01Z" }
-```
-
-For `reroute-mock`, the test container's **response body** is the mock the plugin returns to blue:
+Traffic shifting uses this SDK payload:
 
 ```json
-{ "status": "reserved", "quantity": 100 }
+{ "trafficPercent": 25 }
 ```
 
-### Write (injected env vars)
+Built-in plugins keep the current percentage in process memory and update it via
+`POST /traffic`. `FLUIDBG_TRAFFIC_PERCENT` is only the startup default; normal
+progressive operation does not patch env vars or restart plugin pods.
 
-The operator injects one env var per `write` inception point:
+## Progressive Shifting
 
-```
-ORDER_INJECT_URL=http://fluidbg-order-inject-1a2b3c4d-svc:9090
-```
-
-The test container calls `POST $ORDER_INJECT_URL/write` with a plugin-specific payload.
-
-### Result
-
-```
-GET /result/ORD-123
-→ { "testId": "ORD-123", "passed": true }
-→ { "testId": "ORD-123", "passed": false }
-→ { "testId": "ORD-123", "passed": null, "pending": ["inventory-reserve"] }
-```
-
-Only `testId` and `passed` are returned. If `passed` is `null`, the operator retries until the trigger's timeout elapses.
-
----
-
-## Tracking & Correlation
-
-The operator's `inception` module tracks testIds, enforces timeouts, and counts verdicts via the configured state store.
-
-```rust
-struct InceptionTest {
-    test_id: String,
-    blue_green_ref: String,            // which BlueGreenDeployment
-    triggered_at: DateTime<Utc>,
-    trigger_inception_point: String,
-    timeout: Duration,
-    status: TestStatus,                // Triggered | Observing | Passed | Failed | TimedOut
-    verdict: Option<bool>,             // Some(true)=green, Some(false)=not-green, None=pending
-}
-```
-
-### State Machine
+Progressive strategy is allowed only when a referenced standalone splitter plugin
+advertises `features.supportsProgressiveShifting: true`. The operator enforces
+that requirement before rollout.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Triggered : trigger plugin matches,<br/>extracts testId,<br/>registers with operator
-    Triggered --> Observing : test container receives trigger
-    Observing --> Passed : test container returns passed=true
-    Observing --> Failed : test container returns passed=false
-    Observing --> TimedOut : no verdict before timeout
-    Passed --> [*] : counts.passed++
-    Failed --> [*] : counts.failed++
-    TimedOut --> [*] : counts.timedOut++
+    [*] --> Pending
+    Pending --> Observing: resources prepared and initial traffic set
+    Observing --> Observing: step passed, POST /traffic with next percentage
+    Observing --> Draining: final step passed or rollback needed
+    Draining --> Completed: promoted and cleanup done
+    Draining --> RolledBack: rollback cleanup done
 ```
 
-The operator periodically polls `GET /result/{testId}` on the test container. The evaluator divides `passed / (passed + failed + timedOut)` and compares against the user-defined `successRate`.
+Traffic route semantics are plugin-owned:
 
----
+| Route | Meaning |
+|---|---|
+| `blue` | Resource was routed only to candidate blue. |
+| `green` | Resource was routed only to current green. |
+| `both` | Resource was duplicated to green and blue. |
+| `unknown` | Plugin cannot determine the route. |
 
-## Message Flow Sequence
+RabbitMQ and HTTP both support progressive splitting where it makes transport
+sense. RabbitMQ uses stable hashing to decide whether a message goes to blue at
+the current percentage. HTTP uses the same route decision for proxy traffic.
 
-```mermaid
-sequenceDiagram
-    participant RD as rabbitmq<br/>(duplicator + observer)
-    participant BC as Blue
-    participant HP as http<br/>(observer / mock / writer)
-    participant TC as Test Container
-    participant OP as Operator
+## Built-In Plugins
 
-    RD->>RD: message arrives, match filters,<br/>extract testId="ORD-123"
-    RD->>OP: POST /cases { testId, timeout=60s }
-    RD->>TC: POST /trigger
-    RD->>BC: publish to shadow queue
+| Plugin | Roles | Topology | Progressive | Notes |
+|---|---|---|---|---|
+| `http` | `splitter`, `observer`, `mock`, `writer` | `standalone` | yes | One combined HTTP service exposes proxy/splitter, observer/mock behavior, and `/write`. |
+| `rabbitmq` | `duplicator`, `splitter`, `observer`, `writer`, `consumer`, `combiner` | `standalone` | yes | Handles queue fanout, weighted split, observer notifications, writes, consumption, and output combining. |
 
-    BC->>HP: POST /v1/charge
-    HP->>TC: POST /observe/ORD-123/payment-charge
-    HP->>BC: forward real response
+Built-in plugin manifests live in `builtin-plugins/` and are also templated by
+the Helm chart for each configured namespace.
 
-    BC->>HP: POST /v2/reserve
-    HP->>TC: POST /observe/ORD-123/inventory-reserve
-    TC-->>HP: { status: "reserved", quantity: 100 }
-    HP-->>BC: mock response
+## Filtering, Selectors, and Field Namespaces
 
-    Note over TC: test container may POST $ORDER_INJECT_URL/write to drive traffic
+Plugins declare supported field namespaces. The built-in HTTP plugin supports
+`http`; the RabbitMQ plugin supports `queue`.
 
-    OP->>TC: GET /result/ORD-123 (polling)
-    TC-->>OP: { passed: true }
-    Note over OP: counts.passed++<br/>evaluator checks threshold
-```
-
----
-
-## Promotion
-
-The user defines a success-rate threshold and a strategy.
-
-### Success Criteria (Global)
+Examples:
 
 ```yaml
-successCriteria:
-  minCases: 100               # don't decide until this many cases have verdicts
-  successRate: 0.98           # threshold for "green"
-  observationWindowMinutes: 30
+match:
+  - field: http.method
+    equals: POST
+  - field: http.path
+    matches: "^/orders$"
+  - field: http.body
+    jsonPath: $.type
+    matches: "^order$"
 ```
 
-### Progressive Strategy
-
-Traffic shifts to blue in steps; each step has its own minimum-case count and threshold.
-
-```mermaid
-flowchart TD
-    OBS["Observing at current step"]
-    OBS -->|"minCases met<br/>successRate ≥ threshold"| DEC["Last step?"]
-    OBS -->|"successRate < threshold"| RB["Rollback"]
-    DEC -->|yes| DONE["Completed (promoted)"]
-    DEC -->|no| NEXT["Advance to next step<br/>(more traffic to blue)"]
-    NEXT --> OBS
+```yaml
+testId:
+  field: queue.body
+  jsonPath: $.orderId
 ```
 
-Traffic split is implemented:
-- **Queue plugins**: the trigger duplicator routes a percentage of matched messages to the shadow queue (blue); the rest bypass, going only to green.
-- **HTTP plugin**: the built-in HTTP plugin does not advertise `supportsProgressiveShifting`; progressive rollouts require a splitter-capable plugin such as the built-in RabbitMQ splitter.
+Exactly one of `equals` or `matches` is valid for a match condition. Selectors
+can use a field plus optional `jsonPath`/`pathSegment`, or a static `value`.
 
-### Hard Switch Strategy
+## Test Container Contract
 
-```mermaid
-flowchart TD
-    OBS2["Observing (0% traffic to blue)"]
-    OBS2 -->|"minCases met &<br/>successRate ≥ threshold"| PROM["Promote:<br/>swap blue → green"]
-    OBS2 -->|"successRate < threshold or timeout"| RB2["Rollback:<br/>tear down blue"]
+Verifier containers hold observation state. The operator does not infer
+application correctness from message bodies or HTTP payloads. Plugins notify the
+verifier, register test cases when appropriate, and the operator polls the
+verifier result path.
+
+Verifier response:
+
+```json
+{ "testId": "order-17", "passed": true, "errorMessage": null }
 ```
 
-### Comparison
+Pending response:
 
-| | Progressive | Hard Switch |
-|---|---|---|
-| Risk | Lower — problems caught at low percentages | Higher — full cutover at once |
-| Speed | Slower — multiple windows | Faster — one window |
-| Complexity | Higher — traffic splitting, multi-step evaluation | Lower — binary decision |
+```json
+{ "testId": "order-17", "passed": null, "status": "observing" }
+```
 
----
+Observer notifications include infrastructure route metadata in the body:
+
+```json
+{
+  "testId": "order-17",
+  "inceptionPoint": "incoming-orders",
+  "route": "both",
+  "payload": {}
+}
+```
+
+For RabbitMQ, `both` reflects duplicator fanout to blue and green. For combiner
+observations, the route is derived from the source queue, not from application
+payload content.
 
 ## Project Structure
 
-```
-operator/src/
-├── main.rs                     # Entrypoint and runtime startup
-├── crd/                        # BlueGreenDeployment, InceptionPlugin, StateStore
-├── controller.rs               # Reconcile phase machine
-├── controller/
-│   ├── plugin_lifecycle.rs     # Plugin prepare/drain/cleanup HTTP contract
-│   ├── promotion.rs            # Promotion validation and strategy decisions
-│   ├── resources.rs            # Kubernetes resource apply/delete helpers
-│   ├── status.rs               # Status patch helpers
-│   └── tests.rs                # Controller unit tests
-├── inception.rs                # Case tracking, timeouts, verdict polling
-├── evaluator.rs                # Counts and promotion criteria helpers
-├── http_api.rs                 # /health, /testcases, /testcase-verdicts, /counts/{bg_ref}
-├── plugins/                    # Plugin CRD validation and resource rendering
-├── state_store/                # StateStore trait, memory backend, postgres backend
-├── strategy/                   # Hard-switch and progressive promotion strategies
-└── validation.rs               # Static validation helpers
-
-plugins/
-├── http/                       # Combined HTTP observer/mock/writer
-└── rabbitmq/                   # Combined RabbitMQ duplicator/splitter/combiner/writer/observer
-
-builtin-plugins/
-├── http.yaml
-└── rabbitmq.yaml
+```text
+operator/              Rust operator crate, CRDs, controller, state stores, HTTP API
+plugins/http/          Combined HTTP splitter/observer/mock/writer plugin
+plugins/rabbitmq/      Combined RabbitMQ duplicator/splitter/combiner/writer/observer plugin
+sdk/                   Versioned Rust SDK and language-neutral OpenAPI specs
+crds/                  Generated CRD manifests
+builtin-plugins/       Built-in InceptionPlugin manifests
+charts/                Helm chart with CRDs and built-in plugin CR templates
+deploy/                Raw operator deployment and RBAC
+e2e/                   Kind-based end-to-end suite
+testenv/               RabbitMQ, Postgres, and kind support manifests
 ```
 
-**Key invariant:** `operator/src/plugins/reconciler.rs` is plugin-agnostic. It reads an `InceptionPlugin` CRD and produces K8s resources. Adding a new plugin = new CRD YAML + new container image.
+Important implementation boundaries:
 
----
-
-## Dependencies
-
-| Crate | Purpose |
+| Area | Responsibility |
 |---|---|
-| `kube`, `k8s-openapi`, `schemars` | Kubernetes client, controller runtime, CRD derive |
-| `tokio` | Async runtime |
-| `tracing`, `tracing-subscriber` | Structured logging |
-| `serde`, `serde_json`, `serde_yaml` | Serialization |
-| `jsonschema` | Validate user config against plugin `configSchema` |
-| `reqwest` | HTTP client (trigger test containers, poll results) |
-| `axum` | HTTP server (operator API, writer gateways) |
-| `jsonpath-rust` | JSONPath for selectors and body filters |
-| `regex` | Filter regex matching |
-| `sqlx` (postgres feature) | Postgres state store |
-| `thiserror`, `anyhow` | Errors |
+| `operator/src/controller.rs` | Reconcile phase machine. |
+| `operator/src/controller/plugin_lifecycle.rs` | Plugin lifecycle HTTP client. |
+| `operator/src/controller/promotion.rs` | Promotion validation and decision logic. |
+| `operator/src/plugins/reconciler.rs` | Plugin-agnostic Kubernetes resource rendering. |
+| `sdk/rust` | Shared model and helper types consumed by built-in plugins. |
 
-Plugin containers have their own dependency sets (e.g., `lapin` for RabbitMQ plugins). They are not operator dependencies.
+## Safety Properties
 
----
-
-## Safety Guarantees
-
-- **Green is never disrupted** — it keeps consuming from the source normally throughout.
-- **Blue sees only mirrored traffic** in `passthrough-duplicate` — it cannot affect production state.
-- **Reroute-mock isolates blue from real APIs** — blue's egress never reaches production upstreams.
-- **Write endpoints only target the shadow path** — injected messages/requests reach blue, not green.
-- **Progressive shifting limits blast radius** — failures are caught at small traffic percentages.
-- **Rollback is atomic** — tear down blue, test containers, and all plugin deployments; green is untouched.
-- **Timeouts prevent stuck cases** — every trigger has a user-defined timeout; unresolved cases become not-green.
-- **Plugins are stateless** — ConfigMap + runtime env vars is the full plugin state; restart is safe.
-- **State store is durable** — with `postgres`, the operator recovers tracking state on restart.
-- **CRD validation is strict** — unknown modes/directions, unsupported field namespaces, and configs that fail a plugin's `configSchema` are rejected before any resource is created.
+- Green keeps serving unless the configured promotion path replaces it.
+- Temporary plugin and test resources are removed after promotion or rollback.
+- Draining gives plugins a chance to move or consume temporary work before
+  cleanup; drain timeout is explicit and reflected in status.
+- Progressive shifting changes plugin state through lifecycle HTTP calls, so it
+  does not require plugin pod restarts.
+- The test container owns semantic correctness; application payload formats are
+  not part of the operator contract.
+- `postgres` state store preserves registered cases across operator restarts.
+- CRD models and plugin API models are versioned under `v1alpha1`.

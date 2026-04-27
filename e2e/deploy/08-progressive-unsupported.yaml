@@ -5,7 +5,7 @@ metadata:
   namespace: fluidbg-test
 spec:
   description: "RabbitMQ transport plugin without progressive shifting"
-  image: fluidbg/rabbitmq:dev
+  image: fluidbg/fbg-plugin-rabbitmq:dev
   supportedRoles: [splitter, observer]
   topology: standalone
   lifecycle:

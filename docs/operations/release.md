@@ -4,7 +4,8 @@ title: Release
 
 # Release
 
-Releases are tag driven.
+Releases are tag driven and can also be started manually from the `Release`
+workflow with a `version` input.
 
 ```sh
 git tag v0.1.0
@@ -17,9 +18,9 @@ chart as both a workflow artifact and an OCI chart.
 
 Images:
 
-- `ghcr.io/<owner>/operator:<version>`
-- `ghcr.io/<owner>/http:<version>`
-- `ghcr.io/<owner>/rabbitmq:<version>`
+- `ghcr.io/<owner>/fbg-operator:<version>`
+- `ghcr.io/<owner>/fbg-plugin-http:<version>`
+- `ghcr.io/<owner>/fbg-plugin-rabbitmq:<version>`
 
 Helm chart:
 

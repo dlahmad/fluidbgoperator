@@ -526,7 +526,7 @@ mod tests {
             "http",
             InceptionPluginSpec {
                 description: "HTTP transport plugin".to_string(),
-                image: "fluidbg/http:v0.1.0".to_string(),
+                image: "fluidbg/fbg-plugin-http:v0.1.0".to_string(),
                 supported_roles: vec![PluginRole::Observer, PluginRole::Mock, PluginRole::Writer],
                 topology: Topology::Standalone,
                 field_namespaces: vec!["http".to_string()],
@@ -584,7 +584,7 @@ mod tests {
             "rabbitmq",
             InceptionPluginSpec {
                 description: "RabbitMQ transport plugin".to_string(),
-                image: "fluidbg/rabbitmq:v0.1.0".to_string(),
+                image: "fluidbg/fbg-plugin-rabbitmq:v0.1.0".to_string(),
                 supported_roles: vec![
                     PluginRole::Duplicator,
                     PluginRole::Splitter,
@@ -875,7 +875,7 @@ mod tests {
                 .containers[0]
                 .image
                 .as_deref(),
-            Some("fluidbg/rabbitmq:v0.1.0")
+            Some("fluidbg/fbg-plugin-rabbitmq:v0.1.0")
         );
         assert_eq!(
             deploy

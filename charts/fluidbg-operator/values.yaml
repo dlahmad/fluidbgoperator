@@ -4,7 +4,7 @@ fullnameOverride: ""
 operator:
   replicaCount: 1
   image:
-    repository: ghcr.io/dlahmad/operator
+    repository: ghcr.io/dlahmad/fbg-operator
     tag: 0.1.0
     pullPolicy: IfNotPresent
   imagePullSecrets: []
@@ -56,10 +56,10 @@ builtinPlugins:
   http:
     enabled: true
     image:
-      repository: ghcr.io/dlahmad/http
+      repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: 0.1.0
   rabbitmq:
     enabled: true
     image:
-      repository: ghcr.io/dlahmad/rabbitmq
+      repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: 0.1.0

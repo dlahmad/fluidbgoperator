@@ -18,7 +18,7 @@ spec:
       serviceAccountName: fluidbg-operator
       containers:
         - name: operator
-          image: fluidbg/operator:latest
+          image: ghcr.io/dlahmad/fbg-operator:0.1.0
           ports:
             - containerPort: 8090
               name: api
