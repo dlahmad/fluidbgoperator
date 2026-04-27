@@ -705,7 +705,6 @@ mod tests {
     use super::test_instance_name;
     use crate::crd::blue_green::{
         BlueGreenDeployment, BlueGreenDeploymentSpec, DeploymentSelector, ManagedDeploymentSpec,
-        PluginRef,
     };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use std::collections::BTreeMap;
@@ -722,9 +721,6 @@ mod tests {
                 ..Default::default()
             },
             spec: BlueGreenDeploymentSpec {
-                state_store_ref: PluginRef {
-                    name: "memory-store".to_string(),
-                },
                 selector: DeploymentSelector {
                     namespace: None,
                     match_labels: BTreeMap::new(),

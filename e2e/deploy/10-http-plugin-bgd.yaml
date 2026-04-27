@@ -4,8 +4,6 @@ metadata:
   name: order-processor-http-upgrade
   namespace: fluidbg-test
 spec:
-  stateStoreRef:
-    name: memory-store
   selector:
     matchLabels:
       fluidbg.io/name: order-processor

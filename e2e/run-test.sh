@@ -284,6 +284,7 @@ json_number() {
 echo "=== FluidBG E2E Test ==="
 
 need_cmd kubectl
+need_cmd helm
 need_cmd curl
 need_cmd python3
 need_cmd cargo
@@ -291,9 +292,8 @@ need_cmd cargo
 echo ""
 echo "--- Step 0: Regenerate CRDs ---"
 cargo run -p fluidbg-operator --bin gen-crds
-cp "$ROOT_DIR/crds/blue_green_deployment.yaml" "$DEPLOY_DIR/02-bgd-crd.yaml"
-cp "$ROOT_DIR/crds/inception_plugin.yaml" "$DEPLOY_DIR/02-inceptionplugin-crd.yaml"
-cp "$ROOT_DIR/crds/state_store.yaml" "$DEPLOY_DIR/02-statestore-crd.yaml"
+cp "$ROOT_DIR/crds/blue_green_deployment.yaml" "$ROOT_DIR/charts/fluidbg-operator/crds/blue_green_deployment.yaml"
+cp "$ROOT_DIR/crds/inception_plugin.yaml" "$ROOT_DIR/charts/fluidbg-operator/crds/inception_plugin.yaml"
 
 if [ "$BUILD_IMAGES" = "1" ]; then
     need_cmd docker
@@ -348,50 +348,51 @@ echo "Waiting for RabbitMQ readiness (extra 15s)..."
 sleep 15
 
 echo ""
-echo "--- Step 2: Deploy CRDs ---"
-kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-bgd-crd.yaml"
-kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-inceptionplugin-crd.yaml"
-kubectl apply --server-side --force-conflicts -f "$DEPLOY_DIR/02-statestore-crd.yaml"
-kubectl delete bluegreendeployment order-processor-bg -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-bootstrap -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-upgrade -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-failing-upgrade -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-progressive-unsupported -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-progressive-upgrade -n "$NS" --ignore-not-found
-kubectl delete bluegreendeployment order-processor-http-upgrade -n "$NS" --ignore-not-found
-kubectl delete statestore memory-store -n "$NS" --ignore-not-found
-kubectl delete secret fluidbg-operator-auth -n "$NS" --ignore-not-found
-kubectl delete inceptionplugin http -n "$NS" --ignore-not-found
-kubectl delete inceptionplugin rabbitmq -n "$NS" --ignore-not-found
-kubectl delete inceptionplugin rabbitmq-no-progressive -n "$NS" --ignore-not-found
+echo "--- Step 2: Reset previous chart release and test resources ---"
+helm uninstall fluidbg-e2e -n "$NS_SYSTEM" --ignore-not-found --wait >/dev/null 2>&1 || true
 kubectl delete deployment -n "$NS" -l fluidbg.io/name=order-processor --ignore-not-found
 kubectl delete deployment test-container -n "$NS" --ignore-not-found
 kubectl delete service test-container -n "$NS" --ignore-not-found
 kubectl delete deployment,service -n "$NS" -l fluidbg.io/test --ignore-not-found
 kubectl delete deployment,service,configmap -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
 kubectl delete pod -n "$NS" -l fluidbg.io/inception-point --ignore-not-found
-wait_deleted bluegreendeployment order-processor-bg "$NS"
-wait_deleted bluegreendeployment order-processor-bootstrap "$NS"
-wait_deleted bluegreendeployment order-processor-upgrade "$NS"
-wait_deleted bluegreendeployment order-processor-failing-upgrade "$NS"
-wait_deleted bluegreendeployment order-processor-progressive-unsupported "$NS"
-wait_deleted bluegreendeployment order-processor-progressive-upgrade "$NS"
-wait_deleted bluegreendeployment order-processor-http-upgrade "$NS"
-wait_deleted statestore memory-store "$NS"
-wait_deleted inceptionplugin http "$NS"
-wait_deleted inceptionplugin rabbitmq "$NS"
-wait_deleted inceptionplugin rabbitmq-no-progressive "$NS"
+kubectl delete crd \
+    bluegreendeployments.fluidbg.io \
+    inceptionplugins.fluidbg.io \
+    --ignore-not-found \
+    --wait=true
 wait_deleted deployment test-container "$NS"
 wait_deleted service test-container "$NS"
 wait_no_inception_resources "$NS"
 
 echo ""
-echo "--- Step 3: Deploy operator ---"
-kubectl apply -f "$DEPLOY_DIR/03-operator.yaml"
-reset_deployment "$NS_SYSTEM" fluidbg-operator fluidbg-operator
-reset_deployment "$NS_SYSTEM" fluidbg-rabbitmq-manager fluidbg-rabbitmq-manager
+echo "--- Step 3: Deploy operator and built-in plugins with Helm ---"
+helm upgrade --install fluidbg-e2e "$ROOT_DIR/charts/fluidbg-operator" \
+    --namespace "$NS_SYSTEM" \
+    --create-namespace \
+    --set fullnameOverride=fluidbg-operator \
+    --set serviceAccount.name=fluidbg-operator \
+    --set operator.image.repository=fluidbg/fbg-operator \
+    --set operator.image.tag=dev \
+    --set operator.image.pullPolicy=Never \
+    --set operator.watchNamespace="$NS" \
+    --set operator.auth.createSigningSecret=true \
+    --set operator.auth.signingSecretNamespace="$NS_SYSTEM" \
+    --set operator.auth.signingSecretName=fluidbg-e2e-auth \
+    --set operator.auth.signingSecretKey=signing-key \
+    --set-string operator.auth.signingSecretValue=fluidbg-e2e-signing-key \
+    --set builtinPlugins.namespaces[0]="$NS" \
+    --set builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http \
+    --set builtinPlugins.http.image.tag=dev \
+    --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
+    --set builtinPlugins.rabbitmq.image.tag=dev \
+    --set builtinPlugins.rabbitmq.manager.enabled=true \
+    --set builtinPlugins.rabbitmq.manager.amqpUrl="amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f" \
+    --set builtinPlugins.azureServiceBus.enabled=false
 kubectl rollout status deployment/fluidbg-operator -n "$NS_SYSTEM" --timeout=120s
 kubectl rollout status deployment/fluidbg-rabbitmq-manager -n "$NS_SYSTEM" --timeout=120s
+kubectl get inceptionplugin http -n "$NS" >/dev/null
+kubectl get inceptionplugin rabbitmq -n "$NS" >/dev/null
 
 echo ""
 echo "--- Step 4: Bootstrap initial green from empty cluster ---"
@@ -805,6 +806,26 @@ echo ""
 echo "--- Step 23: Final pod state ---"
 kubectl get pods -n "$NS"
 kubectl get pods -n "$NS_SYSTEM"
+
+echo ""
+echo "--- Step 24: Verify Helm uninstall cleanup ---"
+helm uninstall fluidbg-e2e -n "$NS_SYSTEM" --wait
+wait_deleted deployment fluidbg-operator "$NS_SYSTEM"
+wait_deleted deployment fluidbg-rabbitmq-manager "$NS_SYSTEM"
+wait_deleted service fluidbg-operator "$NS_SYSTEM"
+wait_deleted service fluidbg-rabbitmq-manager "$NS_SYSTEM"
+wait_deleted serviceaccount fluidbg-operator "$NS_SYSTEM"
+wait_deleted secret fluidbg-e2e-auth "$NS_SYSTEM"
+wait_deleted inceptionplugin http "$NS"
+wait_deleted inceptionplugin rabbitmq "$NS"
+if kubectl get clusterrole fluidbg-operator >/dev/null 2>&1; then
+    echo "clusterrole/fluidbg-operator was not removed by Helm uninstall" >&2
+    exit 1
+fi
+if kubectl get clusterrolebinding fluidbg-operator >/dev/null 2>&1; then
+    echo "clusterrolebinding/fluidbg-operator was not removed by Helm uninstall" >&2
+    exit 1
+fi
 
 echo ""
 echo "=== E2E Test Complete ==="

@@ -7,7 +7,7 @@ metadata:
     {{- include "fluidbg.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["fluidbg.io"]
-    resources: ["inceptionplugins", "statestores", "bluegreendeployments"]
+    resources: ["inceptionplugins", "bluegreendeployments"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["fluidbg.io"]
     resources: ["bluegreendeployments/status"]

@@ -4,8 +4,6 @@ metadata:
   name: order-processor-bootstrap
   namespace: fluidbg-test
 spec:
-  stateStoreRef:
-    name: memory-store
   selector:
     matchLabels:
       fluidbg.io/name: order-processor

@@ -17,10 +17,13 @@ operator:
     limits:
       memory: 256Mi
   rustLog: info
+  watchNamespace: ""
   auth:
+    createSigningSecret: false
     signingSecretNamespace: ""
     signingSecretName: fluidbg-operator-auth
     signingSecretKey: signing-key
+    signingSecretValue: ""
   api:
     port: 8090
   nodeSelector: {}
@@ -50,6 +53,15 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}
+
+stateStore:
+  # The operator process uses one global backend for all watched BGDs.
+  type: memory
+  postgres:
+    url: ""
+    urlSecretName: ""
+    urlSecretKey: url
+    tableName: fluidbg_cases
 
 builtinPlugins:
   install: true

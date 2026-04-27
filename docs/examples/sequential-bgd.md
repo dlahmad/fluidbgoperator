@@ -10,10 +10,10 @@ for the current controller behavior.
 Apply order:
 
 1. `./reset.sh`
-2. `00-prereqs.yaml`
-3. `01-bootstrap-from-empty-bgd.yaml`
-4. `02-upgrade-bgd.yaml`
-5. `03-trigger-upgrade-tests.yaml`
+2. `kubectl apply -f 00-prereqs.yaml`
+3. `kubectl apply -f 01-bootstrap-from-empty-bgd.yaml`
+4. `kubectl apply -f 02-upgrade-bgd.yaml`
+5. `kubectl apply -f 03-trigger-upgrade-tests.yaml`
 
 Short reset:
 
@@ -51,11 +51,12 @@ What works today:
 
 Expected flow:
 
-1. `00-prereqs.yaml` installs the operator, RabbitMQ, httpbin, the RabbitMQ plugin CR, and the in-memory state store.
-2. `01-bootstrap-from-empty-bgd.yaml` creates the first generated deployment and marks it `fluidbg.io/green=true`.
-3. `02-upgrade-bgd.yaml` creates a second generated deployment, a test container, and the standalone plugin deployments.
-4. `03-trigger-upgrade-tests.yaml` publishes queue messages to `orders`.
-5. The rollout reaches `Completed`, the previous green deployment is deleted, and the promoted deployment carries `fluidbg.io/green=true`.
+1. `./reset.sh` installs the operator, CRDs, built-in RabbitMQ plugin CR, and signing Secret through the Helm chart.
+2. `00-prereqs.yaml` installs only example infrastructure: namespaces, RabbitMQ, and httpbin.
+3. `01-bootstrap-from-empty-bgd.yaml` creates the first generated deployment and marks it `fluidbg.io/green=true`.
+4. `02-upgrade-bgd.yaml` creates a second generated deployment, a test container, and the standalone plugin deployments.
+5. `03-trigger-upgrade-tests.yaml` publishes queue messages to `orders`.
+6. The rollout reaches `Completed`, the previous green deployment is deleted, and the promoted deployment carries `fluidbg.io/green=true`.
 
 Useful checks during the run:
 

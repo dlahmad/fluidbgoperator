@@ -12,6 +12,7 @@ are promoted.
 - [Getting Started](getting-started.md)
 - [Helm Installation](operations/helm.md)
 - [Architecture](reference/architecture.md)
+- [Plugin Architecture](reference/plugin-architecture.md)
 - [Plugin Interface](reference/plugin-interface.md)
 - [SDK Contract](reference/sdk.md)
 - [E2E Test Flow](testing/e2e.md)

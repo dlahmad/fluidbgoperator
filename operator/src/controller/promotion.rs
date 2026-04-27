@@ -170,7 +170,7 @@ mod tests {
     use crate::crd::blue_green::{
         BlueGreenDeployment, BlueGreenDeploymentSpec, CustomPromotionSpec, CustomVerificationSpec,
         DataPromotionSpec, DataVerificationSpec, DeploymentSelector, ManagedDeploymentSpec,
-        PluginRef, PromotionSpec, PromotionStrategy, StrategyType, TestSpec,
+        PromotionSpec, PromotionStrategy, StrategyType, TestSpec,
     };
     use crate::state_store::Counts;
     use crate::strategy::PromotionAction;
@@ -184,9 +184,6 @@ mod tests {
                 ..Default::default()
             },
             spec: BlueGreenDeploymentSpec {
-                state_store_ref: PluginRef {
-                    name: "memory".to_string(),
-                },
                 selector: DeploymentSelector {
                     namespace: None,
                     match_labels: BTreeMap::from([("app".to_string(), "orders".to_string())]),

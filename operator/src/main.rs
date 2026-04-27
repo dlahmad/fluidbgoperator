@@ -5,7 +5,7 @@ use tracing::info;
 use fluidbg_operator::controller::AuthConfig;
 use fluidbg_operator::http_api;
 use fluidbg_operator::inception::InceptionTracker;
-use fluidbg_operator::state_store::memory::MemoryStore;
+use fluidbg_operator::state_store::{StateStore, memory::MemoryStore, postgres::PostgresStore};
 
 #[tokio::main]
 async fn main() {
@@ -18,7 +18,7 @@ async fn main() {
 
     info!("fluidbg operator v0.1 starting");
 
-    let store: Arc<dyn fluidbg_operator::state_store::StateStore> = Arc::new(MemoryStore::new());
+    let store = build_state_store().await;
 
     let namespace =
         std::env::var("FLUIDBG_NAMESPACE").unwrap_or_else(|_| "fluidbg-system".to_string());
@@ -67,4 +67,28 @@ async fn main() {
     axum::serve(listener, app)
         .await
         .expect("operator API server error");
+}
+
+async fn build_state_store() -> Arc<dyn StateStore> {
+    match std::env::var("FLUIDBG_STATE_STORE_TYPE")
+        .unwrap_or_else(|_| "memory".to_string())
+        .as_str()
+    {
+        "memory" => Arc::new(MemoryStore::new()),
+        "postgres" => {
+            let url = std::env::var("FLUIDBG_POSTGRES_URL")
+                .expect("FLUIDBG_POSTGRES_URL is required when FLUIDBG_STATE_STORE_TYPE=postgres");
+            let table = std::env::var("FLUIDBG_POSTGRES_TABLE")
+                .unwrap_or_else(|_| "fluidbg_cases".to_string());
+            let store = PostgresStore::new(&url, &table)
+                .await
+                .expect("failed to connect to postgres state store");
+            store
+                .migrate()
+                .await
+                .expect("failed to migrate postgres state store");
+            Arc::new(store)
+        }
+        other => panic!("unsupported FLUIDBG_STATE_STORE_TYPE: {other}"),
+    }
 }

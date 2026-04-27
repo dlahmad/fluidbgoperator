@@ -4,7 +4,7 @@ use super::{
     select_previous_green_for_promotion, validate_progressive_splitter_plugin,
 };
 use crate::crd::blue_green::{
-    BlueGreenDeploymentSpec, DeploymentRef, DeploymentSelector, PluginRef, TestSpec,
+    BlueGreenDeploymentSpec, DeploymentRef, DeploymentSelector, TestSpec,
 };
 use crate::crd::inception_plugin::{
     InceptionPlugin, InceptionPluginSpec, PluginFeatures, PluginInceptor, Topology,
@@ -32,9 +32,6 @@ fn sample_bgd(generation: i64) -> BlueGreenDeployment {
             },
             inception_points: Vec::new(),
             tests: Vec::<TestSpec>::new(),
-            state_store_ref: PluginRef {
-                name: "memory-store".to_string(),
-            },
             promotion: None,
         },
         status: None,

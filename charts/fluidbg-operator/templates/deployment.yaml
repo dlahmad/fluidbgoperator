@@ -39,12 +39,29 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.operator.rustLog | quote }}
+            - name: FLUIDBG_NAMESPACE
+              value: {{ .Values.operator.watchNamespace | default .Release.Namespace | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAME
               value: {{ .Values.operator.auth.signingSecretName | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
               value: {{ .Values.operator.auth.signingSecretKey | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
               value: {{ .Values.operator.auth.signingSecretNamespace | default .Release.Namespace | quote }}
+            - name: FLUIDBG_STATE_STORE_TYPE
+              value: {{ .Values.stateStore.type | quote }}
+            {{- if eq .Values.stateStore.type "postgres" }}
+            - name: FLUIDBG_POSTGRES_URL
+              {{- if .Values.stateStore.postgres.urlSecretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.stateStore.postgres.urlSecretName | quote }}
+                  key: {{ .Values.stateStore.postgres.urlSecretKey | quote }}
+              {{- else }}
+              value: {{ required "stateStore.postgres.url or stateStore.postgres.urlSecretName is required when stateStore.type=postgres" .Values.stateStore.postgres.url | quote }}
+              {{- end }}
+            - name: FLUIDBG_POSTGRES_TABLE
+              value: {{ .Values.stateStore.postgres.tableName | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

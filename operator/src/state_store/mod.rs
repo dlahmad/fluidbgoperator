@@ -5,8 +5,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 
-use crate::crd::state_store::StateStore as StateStoreCRD;
-
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("not found: {0}")]
@@ -94,25 +92,3 @@ pub trait StateStore: Send + Sync {
     async fn latest_failure_message(&self, bg: &str) -> Result<Option<String>>;
     async fn cleanup_expired(&self) -> Result<usize>;
 }
-
-pub async fn state_store_from_crd(crd: &StateStoreCRD) -> Result<Arc<dyn StateStore>> {
-    use crate::crd::state_store::StateStoreType;
-    match &crd.spec.store_type {
-        StateStoreType::Memory => Ok(Arc::new(memory::MemoryStore::new())),
-        StateStoreType::Postgres => {
-            let cfg = crd
-                .spec
-                .postgres
-                .as_ref()
-                .ok_or_else(|| StoreError::Other("postgres config required".to_string()))?;
-            let store = postgres::PostgresStore::new(&cfg.url, &cfg.table_name).await?;
-            store.migrate().await?;
-            Ok(Arc::new(store))
-        }
-        StateStoreType::Redis => Err(StoreError::Other(
-            "redis state store not yet implemented".to_string(),
-        )),
-    }
-}
-
-use std::sync::Arc;

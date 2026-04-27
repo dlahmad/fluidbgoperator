@@ -17,7 +17,12 @@ Resources:
 
 - `BlueGreenDeployment`
 - `InceptionPlugin`
-- `StateStore`
+
+The state store is operator-global runtime configuration, not a CRD selected
+per `BlueGreenDeployment`.
+`InceptionPlugin.spec.inceptor` describes the per-inception traffic component.
+`InceptionPlugin.spec.manager` optionally references a privileged manager
+Service in the operator namespace for resource create/delete operations.
 
 Regenerate CRDs after changing Rust CRD models:
 

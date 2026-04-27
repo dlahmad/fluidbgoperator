@@ -18,12 +18,15 @@
           }
         },
         "rustLog": { "type": "string" },
+        "watchNamespace": { "type": "string" },
         "auth": {
           "type": "object",
           "properties": {
+            "createSigningSecret": { "type": "boolean" },
             "signingSecretNamespace": { "type": "string" },
             "signingSecretName": { "type": "string" },
-            "signingSecretKey": { "type": "string" }
+            "signingSecretKey": { "type": "string" },
+            "signingSecretValue": { "type": "string" }
           }
         }
       }
@@ -49,6 +52,24 @@
         "http": { "$ref": "#/$defs/builtinPlugin" },
         "rabbitmq": { "$ref": "#/$defs/builtinPlugin" },
         "azureServiceBus": { "$ref": "#/$defs/builtinPlugin" }
+      }
+    },
+    "stateStore": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["memory", "postgres"]
+        },
+        "postgres": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" },
+            "urlSecretName": { "type": "string" },
+            "urlSecretKey": { "type": "string" },
+            "tableName": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     }
   },

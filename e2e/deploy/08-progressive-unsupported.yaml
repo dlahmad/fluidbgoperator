@@ -51,8 +51,6 @@ metadata:
   name: order-processor-progressive-unsupported
   namespace: fluidbg-test
 spec:
-  stateStoreRef:
-    name: memory-store
   selector:
     matchLabels:
       fluidbg.io/name: order-processor

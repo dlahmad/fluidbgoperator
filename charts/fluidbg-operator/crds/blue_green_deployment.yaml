@@ -5318,13 +5318,6 @@ spec:
                 required:
                 - matchLabels
                 type: object
-              stateStoreRef:
-                properties:
-                  name:
-                    type: string
-                required:
-                - name
-                type: object
               tests:
                 items:
                   properties:
@@ -5387,7 +5380,6 @@ spec:
             required:
             - deployment
             - selector
-            - stateStoreRef
             type: object
           status:
             nullable: true

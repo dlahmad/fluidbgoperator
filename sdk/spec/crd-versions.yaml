@@ -5,7 +5,6 @@ crds:
   kinds:
     - BlueGreenDeployment
     - InceptionPlugin
-    - StateStore
 sdk:
   rustCrate: fluidbg-plugin-sdk
   version: 0.1.0

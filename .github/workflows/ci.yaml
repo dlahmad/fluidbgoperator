@@ -56,7 +56,6 @@ jobs:
         run: |
           cmp crds/blue_green_deployment.yaml charts/fluidbg-operator/crds/blue_green_deployment.yaml
           cmp crds/inception_plugin.yaml charts/fluidbg-operator/crds/inception_plugin.yaml
-          cmp crds/state_store.yaml charts/fluidbg-operator/crds/state_store.yaml
       - name: Lint Helm chart
         run: helm lint charts/fluidbg-operator
       - name: Render Helm chart

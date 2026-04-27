@@ -56,6 +56,31 @@ builtinPlugins:
       tag: 0.1.0
 ```
 
+## State Store
+
+One operator instance uses one global state store backend for all watched
+`BlueGreenDeployment` resources. The chart configures that backend on the
+operator Deployment. The default is suitable for local development and e2e:
+
+```yaml
+stateStore:
+  type: memory
+```
+
+For production, use Postgres:
+
+```yaml
+stateStore:
+  type: postgres
+  postgres:
+    urlSecretName: fluidbg-postgres
+    urlSecretKey: url
+    tableName: fluidbg_cases
+```
+
+For local experiments, `stateStore.postgres.url` can be set directly instead of
+using a Secret. Production installs should use `urlSecretName`.
+
 ## Plugin Managers
 
 RabbitMQ and Azure Service Bus can use split plugin mode:
@@ -109,8 +134,8 @@ builtinPlugins:
 ## Plugin Namespaces
 
 `InceptionPlugin` is namespaced. The operator resolves plugin references in the
-same namespace as the `BlueGreenDeployment`. Install plugin CRs into every
-namespace that should use the built-in plugins:
+same namespace as the `BlueGreenDeployment`. Install built-in plugin CRs into
+every namespace that should use the built-in chart resources:
 
 ```yaml
 builtinPlugins:

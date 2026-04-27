@@ -37,7 +37,7 @@ controller/status.rs           BlueGreenDeployment status patches
 | Area | Status |
 |---|---|
 | Rust workspace | Operator, Rust plugin SDK, combined HTTP plugin, and RabbitMQ plugin crates |
-| CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment`, `InceptionPlugin`, `StateStore` |
+| CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment` and `InceptionPlugin` |
 | State stores | In-memory and PostgreSQL backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |
 | Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |

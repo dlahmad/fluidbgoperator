@@ -4,4 +4,3 @@ pub const PLUGIN_API_VERSION: &str = fluidbg_plugin_sdk::PLUGIN_API_VERSION;
 
 pub mod blue_green;
 pub mod inception_plugin;
-pub mod state_store;

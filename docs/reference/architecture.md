@@ -23,7 +23,7 @@ removes temporary resources after promotion or rollback.
 
 ```mermaid
 flowchart LR
-    CRD["fluidbg.io CRDs<br/>BlueGreenDeployment<br/>InceptionPlugin<br/>StateStore"]
+    CRD["fluidbg.io CRDs<br/>BlueGreenDeployment<br/>InceptionPlugin"]
     CTRL["controller<br/>phase machine"]
     VAL["validation<br/>roles, schemas, namespaces"]
     PLUGREC["inceptor reconciler<br/>ConfigMap, Deployment, Service"]
@@ -94,7 +94,7 @@ flowchart TD
 | Plugin role | The behavior activated for an inception point: `duplicator`, `splitter`, `combiner`, `observer`, `mock`, `writer`, or `consumer`. |
 | Verifier test container | User-owned HTTP service that stores domain observations and returns `passed: true`, `passed: false`, or `passed: null` for a `testId`. |
 | State store | Operator persistence for registered test cases and counts. Implemented backends are `memory` and `postgres`. |
-| Progressive shifting | Weighted blue traffic controlled by the operator through plugin lifecycle `trafficShiftPath` calls. |
+| Progressive shifting | Weighted blue traffic controlled by the operator through inceptor lifecycle `trafficShiftPath` calls. |
 | Operator auth Secret | User-selected Kubernetes Secret containing the JWT signing key used to mint per-inception plugin tokens. |
 
 ## Authentication Boundary
@@ -226,23 +226,11 @@ promotion:
       stepTimeoutMinutes: 15
 ```
 
-### `StateStore`
+### State Store
 
-```yaml
-apiVersion: fluidbg.io/v1alpha1
-kind: StateStore
-metadata:
-  name: default
-spec:
-  type: postgres
-  postgres:
-    url: "postgres://fluidbg:secret@postgres.fluidbg:5432/fluidbg"
-    tableName: fluidbg_cases
-    ttlSeconds: 86400
-```
-
+The state store is operator-global, not selected per `BlueGreenDeployment`.
 `memory` is useful for development and tests. `postgres` is the production
-backend. Redis is not implemented.
+backend and is configured on the operator Deployment through Helm values.
 
 ## Operator Reconciliation
 

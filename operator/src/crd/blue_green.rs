@@ -285,7 +285,6 @@ pub struct BlueGreenDeploymentStatus {
 )]
 #[kube(status = "BlueGreenDeploymentStatus")]
 pub struct BlueGreenDeploymentSpec {
-    pub state_store_ref: PluginRef,
     pub selector: DeploymentSelector,
     pub deployment: ManagedDeploymentSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -327,7 +326,6 @@ mod tests {
                 "namespace": "fluidbg-test"
             },
             "spec": {
-                "stateStoreRef": { "name": "memory-store" },
                 "selector": {
                     "matchLabels": {
                         "fluidbg.io/name": "order-processor"
