@@ -20,6 +20,18 @@ Rust plugins should import shared models from `fluidbg-plugin-sdk`. Other
 language SDKs should be generated from the OpenAPI spec so payloads remain
 consistent.
 
+The Rust SDK also provides the shared auth primitives used by built-in plugins:
+
+- `PLUGIN_AUTH_TOKEN_ENV` for `FLUIDBG_PLUGIN_AUTH_TOKEN`
+- `AUTHORIZATION_HEADER` for bearer-token transport
+- `PluginAuthClaims` for signed per-inception identity
+- `sign_plugin_auth_token` and `verify_plugin_auth_token` for HS256 JWT handling
+- `bearer_value`, `bearer_token`, and `bearer_matches` for endpoint checks
+
+Custom plugins should use the injected `FLUIDBG_PLUGIN_AUTH_TOKEN` unchanged
+when calling the operator and should require the same bearer token on their
+operator-owned lifecycle endpoints.
+
 ```sh
 openapi-generator-cli generate \
   -i sdk/spec/plugin-api-v1alpha1.openapi.yaml \

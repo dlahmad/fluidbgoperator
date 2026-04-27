@@ -25,6 +25,10 @@ spec:
           env:
             - name: RUST_LOG
               value: info
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_NAME
+              value: fluidbg-operator-auth
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
+              value: signing-key
           livenessProbe:
             httpGet:
               path: /health

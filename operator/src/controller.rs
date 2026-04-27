@@ -54,7 +54,14 @@ use status::{
 struct Ctx {
     client: kube::Client,
     namespace: String,
+    auth: AuthConfig,
     store: Arc<dyn StateStore>,
+}
+
+#[derive(Clone)]
+pub struct AuthConfig {
+    pub signing_secret_name: String,
+    pub signing_secret_key: String,
 }
 
 #[derive(Debug, Error)]
@@ -65,12 +72,18 @@ pub(super) enum ReconcileError {
     K8s(#[from] kube::Error),
 }
 
-pub async fn run_controller(client: kube::Client, namespace: String, store: Arc<dyn StateStore>) {
+pub async fn run_controller(
+    client: kube::Client,
+    namespace: String,
+    auth: AuthConfig,
+    store: Arc<dyn StateStore>,
+) {
     let bgd_api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), &namespace);
 
     let ctx = Arc::new(Ctx {
         client,
         namespace,
+        auth,
         store,
     });
 
@@ -87,6 +100,23 @@ pub async fn run_controller(client: kube::Client, namespace: String, store: Arc<
             }
         })
         .await;
+}
+
+pub(crate) async fn validate_plugin_auth(
+    client: &kube::Client,
+    namespace: &str,
+    auth: &AuthConfig,
+    header_value: Option<&str>,
+) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, String> {
+    resources::validate_inception_auth_token(
+        client,
+        namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+        header_value,
+    )
+    .await
+    .map_err(|err| err.to_string())
 }
 
 fn error_policy(_bgd: Arc<BlueGreenDeployment>, _err: &ReconcileError, _ctx: Arc<Ctx>) -> Action {
@@ -145,8 +175,8 @@ async fn reconcile(
             validate_progressive_shifting_support(&bgd, &client, &namespace).await?;
             ensure_declared_deployments(&bgd, &client, &namespace).await?;
             ensure_test_resources(&bgd, &client, &namespace).await?;
-            ensure_inception_resources(&bgd, &client, &namespace).await?;
-            initialize_splitter_traffic(&bgd, &client, &namespace).await?;
+            ensure_inception_resources(&bgd, &client, &namespace, &ctx.auth).await?;
+            initialize_splitter_traffic(&bgd, &client, &namespace, &ctx.auth).await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Observing).await;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
@@ -215,7 +245,7 @@ async fn reconcile(
                 }
                 PromotionAction::Rollback => {
                     info!("BGD '{}' rolling back: rate={:.4}", name, success_rate);
-                    begin_draining_after_rollback(&bgd, &client, &namespace).await?;
+                    begin_draining_after_rollback(&bgd, &client, &namespace, &ctx.auth).await?;
                     update_status_phase(&bgd, &client, &namespace, BGDPhase::Draining).await;
                     update_drain_started_at(&bgd, &client, &namespace).await;
                 }
@@ -223,8 +253,14 @@ async fn reconcile(
                     step,
                     traffic_percent,
                 } => {
-                    apply_splitter_traffic_percent(&bgd, &client, &namespace, traffic_percent)
-                        .await?;
+                    apply_splitter_traffic_percent(
+                        &bgd,
+                        &client,
+                        &namespace,
+                        &ctx.auth,
+                        traffic_percent,
+                    )
+                    .await?;
                     update_status_progress(&bgd, &client, &namespace, step, traffic_percent).await;
                     info!(
                         "BGD '{}' advanced progressive splitter traffic to {}% (step {})",
@@ -236,13 +272,14 @@ async fn reconcile(
         }
         BGDPhase::Promoting => {
             let previous_green = promote(&bgd, &client, &namespace).await?;
-            begin_draining_after_promotion(&bgd, &client, &namespace, &previous_green).await?;
+            begin_draining_after_promotion(&bgd, &client, &namespace, &ctx.auth, &previous_green)
+                .await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Draining).await;
             update_drain_started_at(&bgd, &client, &namespace).await;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Draining => {
-            reconcile_draining(&bgd, &client, &namespace).await?;
+            reconcile_draining(&bgd, &client, &namespace, &ctx.auth).await?;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Completed | BGDPhase::RolledBack => {

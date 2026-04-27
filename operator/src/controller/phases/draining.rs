@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
 use kube::api::Api;
 
-use super::super::ReconcileError;
 use super::super::plugin_lifecycle::{
     PluginLifecycleStage, invoke_plugin_drain_status, invoke_plugin_lifecycle,
 };
 use super::super::resources::{cleanup_inception_resources, cleanup_test_resources};
 use super::super::status::{update_inception_point_drain_statuses, update_status_phase};
+use super::super::{AuthConfig, ReconcileError};
 use crate::crd::blue_green::{
     BGDPhase, BlueGreenDeployment, InceptionPointDrainPhase, InceptionPointDrainStatus,
 };
@@ -16,6 +16,7 @@ pub(in crate::controller) async fn reconcile_draining(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
 ) -> std::result::Result<(), ReconcileError> {
     let drain_started_at = bgd
         .status
@@ -69,10 +70,12 @@ pub(in crate::controller) async fn reconcile_draining(
 
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
         let status = match invoke_plugin_drain_status(
+            client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
             ip.name.as_str(),
             &plugin,
+            auth,
         )
         .await?
         {
@@ -111,13 +114,14 @@ pub(in crate::controller) async fn reconcile_draining(
         return Ok(());
     }
 
-    finalize_draining(bgd, client, namespace).await
+    finalize_draining(bgd, client, namespace, auth).await
 }
 
 async fn finalize_draining(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
 ) -> std::result::Result<(), ReconcileError> {
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     for ip in &bgd.spec.inception_points {
@@ -128,6 +132,7 @@ async fn finalize_draining(
             namespace,
             ip.name.as_str(),
             &plugin,
+            auth,
             PluginLifecycleStage::Cleanup,
         )
         .await?;

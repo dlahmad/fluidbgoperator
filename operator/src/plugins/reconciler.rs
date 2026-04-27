@@ -97,6 +97,15 @@ pub fn inception_config_map_name(blue_green_ref: &str, inception_point: &str) ->
     format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), suffix)
 }
 
+pub fn inception_auth_secret_name(blue_green_ref: &str, inception_point: &str) -> String {
+    let ip = sanitize_dns_label(inception_point);
+    let ip = if ip.is_empty() { "ip".to_string() } else { ip };
+    let suffix = stable_name_suffix(&[blue_green_ref, inception_point]);
+    let prefix = "fluidbg-auth-";
+    let max_ip_len = 63usize.saturating_sub(prefix.len() + 1 + suffix.len());
+    format!("{}{}-{}", prefix, truncate_label(&ip, max_ip_len), suffix)
+}
+
 pub struct ReconcileInceptionContext<'a> {
     pub namespace: &'a str,
     pub operator_url: &'a str,
@@ -104,6 +113,7 @@ pub struct ReconcileInceptionContext<'a> {
     pub test_data_verify_path: Option<&'a str>,
     pub blue_deployment_name: &'a str,
     pub blue_green_ref: &'a str,
+    pub auth_token: &'a str,
 }
 
 pub fn reconcile_inception_point(
@@ -200,6 +210,11 @@ pub fn reconcile_inception_point(
         EnvVar {
             name: "FLUIDBG_CONFIG_PATH".to_string(),
             value: Some("/etc/fluidbg/config.yaml".to_string()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: fluidbg_plugin_sdk::PLUGIN_AUTH_TOKEN_ENV.to_string(),
+            value: Some(context.auth_token.to_string()),
             ..Default::default()
         },
     ];
@@ -697,6 +712,7 @@ mod tests {
             test_data_verify_path: Some("/result/{testId}"),
             blue_deployment_name: "order-processor-blue",
             blue_green_ref: "order-processor-bg",
+            auth_token: "signed-token",
         }
     }
 
@@ -909,6 +925,7 @@ mod tests {
                 test_data_verify_path: Some("/result/{testId}"),
                 blue_deployment_name: "blue",
                 blue_green_ref: "order-processor-bg",
+                auth_token: "signed-token",
             },
         )
         .unwrap();
@@ -961,6 +978,7 @@ mod tests {
                     test_data_verify_path: Some("/result/{testId}"),
                     blue_deployment_name: "blue",
                     blue_green_ref: "order-processor-bg",
+                    auth_token: "signed-token",
                 }
             )
             .is_err()
@@ -1004,6 +1022,7 @@ mod tests {
                     test_data_verify_path: Some("/result/{testId}"),
                     blue_deployment_name: "blue",
                     blue_green_ref: "order-processor-bg",
+                    auth_token: "signed-token",
                 }
             )
             .is_ok()

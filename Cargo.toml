@@ -35,9 +35,9 @@ jsonpath-rust = "1"
 lapin = "4"
 serde_yaml_ng = "0.10"
 futures-lite = "2"
-rand = "0.10"
 futures = "0.3"
 sha2 = "0.11"
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

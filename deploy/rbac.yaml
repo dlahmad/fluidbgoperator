@@ -19,7 +19,7 @@ rules:
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps"]
+    resources: ["pods", "services", "configmaps", "secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["events"]
@@ -37,3 +37,12 @@ subjects:
   - kind: ServiceAccount
     name: fluidbg-operator
     namespace: fluidbg-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fluidbg-operator-auth
+  namespace: fluidbg-system
+type: Opaque
+stringData:
+  signing-key: change-me-before-production

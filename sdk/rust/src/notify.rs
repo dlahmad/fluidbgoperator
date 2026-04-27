@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::Value;
 
+use crate::auth::{AUTHORIZATION_HEADER, bearer_value};
 use crate::models::{ObservationNotification, RegisterTestCaseRequest, TrafficRoute};
 
 pub fn render_path(template: &str, test_id: &str, inception_point: &str) -> String {
@@ -47,6 +48,7 @@ pub async fn register_test_case(
     test_id: &str,
     test_container_url: &str,
     testcase_verify_path_template: Option<&str>,
+    auth_token: Option<&str>,
 ) -> Result<()> {
     let verify_url = testcase_verify_path_template.map(|path| {
         format!(
@@ -63,11 +65,10 @@ pub async fn register_test_case(
         timeout_seconds: Some(120),
         verify_url,
     };
-    client
-        .post(testcase_registration_url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
+    let mut builder = client.post(testcase_registration_url).json(&request);
+    if let Some(auth_token) = auth_token {
+        builder = builder.header(AUTHORIZATION_HEADER, bearer_value(auth_token));
+    }
+    builder.send().await?.error_for_status()?;
     Ok(())
 }

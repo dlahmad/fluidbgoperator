@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
+use crate::auth::auth_token_from_env;
 use crate::config::{active_roles, has_role};
 use crate::models::{PluginRole, TrafficRoute};
 use crate::notify::{notify_observer, register_test_case};
@@ -15,6 +16,7 @@ pub struct PluginRuntime {
     testcase_verify_path_template: Option<String>,
     inception_point: String,
     blue_green_ref: String,
+    auth_token: Option<String>,
 }
 
 impl PluginRuntime {
@@ -34,6 +36,7 @@ impl PluginRuntime {
                 .unwrap_or_else(|_| "unknown".to_string()),
             blue_green_ref: std::env::var("FLUIDBG_BLUE_GREEN_REF")
                 .unwrap_or_else(|_| "unknown".to_string()),
+            auth_token: auth_token_from_env(),
         }
     }
 
@@ -61,6 +64,10 @@ impl PluginRuntime {
         &self.blue_green_ref
     }
 
+    pub fn auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
+    }
+
     pub fn has_role(&self, role: PluginRole) -> bool {
         has_role(&self.roles, role)
     }
@@ -84,6 +91,7 @@ impl PluginRuntime {
             test_id,
             &self.test_container_url,
             self.testcase_verify_path_template.as_deref(),
+            self.auth_token.as_deref(),
         )
         .await
     }

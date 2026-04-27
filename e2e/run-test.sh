@@ -149,19 +149,20 @@ wait_exists() {
 wait_no_inception_resources() {
     local namespace="$1"
     for i in $(seq 1 60); do
-        local deployments services configmaps pods
+        local deployments services configmaps secrets pods
         deployments="$(kubectl get deployment -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         services="$(kubectl get service -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         configmaps="$(kubectl get configmap -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        secrets="$(kubectl get secret -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         pods="$(kubectl get pods -n "$namespace" -l fluidbg.io/inception-point --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-        if [ "$deployments" = "0" ] && [ "$services" = "0" ] && [ "$configmaps" = "0" ] && [ "$pods" = "0" ]; then
+        if [ "$deployments" = "0" ] && [ "$services" = "0" ] && [ "$configmaps" = "0" ] && [ "$secrets" = "0" ] && [ "$pods" = "0" ]; then
             return 0
         fi
-        echo "Waiting for old inception resources to disappear... deployments=$deployments services=$services configmaps=$configmaps pods=$pods ($i/60)"
+        echo "Waiting for old inception resources to disappear... deployments=$deployments services=$services configmaps=$configmaps secrets=$secrets pods=$pods ($i/60)"
         sleep 1
     done
     echo "old inception resources still exist in namespace $namespace" >&2
-    kubectl get deployment,service,configmap,pods -n "$namespace" -l fluidbg.io/inception-point >&2 || true
+    kubectl get deployment,service,configmap,secret,pods -n "$namespace" -l fluidbg.io/inception-point >&2 || true
     return 1
 }
 

@@ -27,6 +27,7 @@ flowchart LR
     VAL["validation<br/>roles, schemas, namespaces"]
     PLUGREC["plugin reconciler<br/>ConfigMap, Deployment, Service"]
     LIFE["plugin lifecycle client<br/>prepare, traffic, drain, cleanup"]
+    AUTH["operator auth Secret<br/>JWT signing key"]
     API["operator HTTP API<br/>testcases, verdicts, counts"]
     STORE["state store<br/>memory or postgres"]
     SDK["plugin SDK<br/>v1alpha1 HTTP models"]
@@ -38,14 +39,15 @@ flowchart LR
     CTRL --> VAL
     CTRL --> PLUGREC
     CTRL --> LIFE
+    CTRL --> AUTH
     CTRL --> API
     API --> STORE
     PLUGREC --> PLUG
     PLUGREC --> APP
     PLUGREC --> TEST
-    LIFE --> PLUG
+    LIFE -->|"Bearer per-inception JWT"| PLUG
     SDK --> PLUG
-    PLUG --> API
+    PLUG -->|"Bearer per-inception JWT"| API
     PLUG --> TEST
     CTRL -->|"poll verifyPath"| TEST
 ```
@@ -87,6 +89,29 @@ flowchart TD
 | Verifier test container | User-owned HTTP service that stores domain observations and returns `passed: true`, `passed: false`, or `passed: null` for a `testId`. |
 | State store | Operator persistence for registered test cases and counts. Implemented backends are `memory` and `postgres`. |
 | Progressive shifting | Weighted blue traffic controlled by the operator through plugin lifecycle `trafficShiftPath` calls. |
+| Operator auth Secret | User-selected Kubernetes Secret containing the JWT signing key used to mint per-inception plugin tokens. |
+
+## Authentication Boundary
+
+FluidBG uses one user-selected signing Secret per operator instance and one
+signed JWT per inception point. The operator signs the token from the configured
+Secret and injects it into the plugin as `FLUIDBG_PLUGIN_AUTH_TOKEN`.
+
+The token is the shared credential for that inception point:
+
+- Operator to plugin lifecycle, drain, cleanup, and traffic-shift calls use
+  `Authorization: Bearer <token>`.
+- Built-in plugins require the bearer token to exactly match their injected
+  `FLUIDBG_PLUGIN_AUTH_TOKEN` on operator-owned endpoints.
+- Plugin to operator `/testcases` calls use the same bearer token.
+- The operator verifies the JWT signature and trusts the token claims, not the
+  message payload, for caller identity. Registration is rejected if the request
+  body identity does not match the verified `blue_green_ref` and
+  `inception_point` claims.
+
+The signing Secret is not rollout-owned and is not cleaned up by the operator.
+Rollout cleanup removes temporary inception resources and waits for Deployments,
+Services, ConfigMaps, Secrets, and Pods carrying inception labels to disappear.
 
 Older docs described `mode`, `direction`, and transport-specific orchestration
 kinds. The current CRD model is role-based. `FLUIDBG_MODE` remains only as a

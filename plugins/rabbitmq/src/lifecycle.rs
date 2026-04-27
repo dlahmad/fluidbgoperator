@@ -1,10 +1,14 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use fluidbg_plugin_sdk::{
-    PluginDrainStatusResponse, PluginLifecycleResponse, PluginRole, TrafficShiftRequest,
-    TrafficShiftResponse,
+    AUTHORIZATION_HEADER, PluginDrainStatusResponse, PluginLifecycleResponse, PluginRole,
+    TrafficShiftRequest, TrafficShiftResponse, bearer_matches,
 };
 
 use crate::amqp::{connect_with_retry, declare_queue, delete_queue, queue_state};
@@ -88,7 +92,9 @@ async fn input_drain_status(
 
 pub(crate) async fn prepare_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Active);
     let conn = connect_with_retry(&state.amqp_url)
         .await
@@ -148,7 +154,9 @@ pub(crate) async fn prepare_handler(
 
 pub(crate) async fn cleanup_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Idle);
     tokio::time::sleep(Duration::from_secs(1)).await;
     let conn = connect_with_retry(&state.amqp_url)
@@ -203,7 +211,9 @@ pub(crate) async fn cleanup_handler(
 
 pub(crate) async fn drain_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<PluginLifecycleResponse>, axum::http::StatusCode> {
+    authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Draining);
     Ok(Json(PluginLifecycleResponse {
         assignments: build_drain_assignments(&state.config, &state.roles),
@@ -212,7 +222,9 @@ pub(crate) async fn drain_handler(
 
 pub(crate) async fn drain_status_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<PluginDrainStatusResponse>, axum::http::StatusCode> {
+    authorize_operator(&state, &headers)?;
     let status = compute_drain_status(&state)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -221,16 +233,29 @@ pub(crate) async fn drain_status_handler(
 
 pub(crate) async fn traffic_shift_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<TrafficShiftRequest>,
-) -> Json<TrafficShiftResponse> {
+) -> Result<Json<TrafficShiftResponse>, axum::http::StatusCode> {
+    authorize_operator(&state, &headers)?;
     state.set_traffic_percent(req.traffic_percent);
-    Json(TrafficShiftResponse {
+    Ok(Json(TrafficShiftResponse {
         traffic_percent: state.traffic_percent(),
-    })
+    }))
 }
 
 pub(crate) async fn health() -> &'static str {
     "ok"
+}
+
+fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    if bearer_matches(header, state.runtime.auth_token()) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 async fn declare_temp_queues(

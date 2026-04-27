@@ -10,6 +10,8 @@ paths:
   /prepare:
     post:
       operationId: prepare
+      security:
+        - pluginAuth: []
       responses:
         "200":
           description: Property assignments to apply before traffic starts.
@@ -20,6 +22,8 @@ paths:
   /drain:
     post:
       operationId: drain
+      security:
+        - pluginAuth: []
       responses:
         "200":
           description: Property assignments to apply before drain starts.
@@ -30,6 +34,8 @@ paths:
   /drain-status:
     get:
       operationId: drainStatus
+      security:
+        - pluginAuth: []
       responses:
         "200":
           description: Drain status for buffered plugin resources.
@@ -40,6 +46,8 @@ paths:
   /cleanup:
     post:
       operationId: cleanup
+      security:
+        - pluginAuth: []
       responses:
         "200":
           description: Property assignments to apply after promotion or rollback.
@@ -51,6 +59,8 @@ paths:
     post:
       operationId: trafficShift
       description: Live progressive traffic update. Must not require a plugin restart.
+      security:
+        - pluginAuth: []
       requestBody:
         required: true
         content:
@@ -67,6 +77,8 @@ paths:
   /testcases:
     post:
       operationId: registerTestCase
+      security:
+        - pluginAuth: []
       requestBody:
         required: true
         content:
@@ -117,6 +129,12 @@ paths:
         "200":
           description: Write accepted or forwarded.
 components:
+  securitySchemes:
+    pluginAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Per-inception JWT signed by the operator and passed in Authorization.
   schemas:
     PluginApiVersion:
       type: string

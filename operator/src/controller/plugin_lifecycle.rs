@@ -7,11 +7,12 @@ use crate::plugins::reconciler::{
     inception_service_name, plugin_template_context, render_container_env_injections,
 };
 
-use super::{ReconcileError, apply_assignments, wait_for_deployments_ready};
+use super::resources::sign_inception_auth_token;
+use super::{AuthConfig, ReconcileError, apply_assignments, wait_for_deployments_ready};
 
 pub(super) use fluidbg_plugin_sdk::{
-    AssignmentKind, AssignmentTarget, PluginDrainStatusResponse, PluginLifecycleResponse,
-    PropertyAssignment,
+    AUTHORIZATION_HEADER, AssignmentKind, AssignmentTarget, PluginDrainStatusResponse,
+    PluginLifecycleResponse, PropertyAssignment, bearer_value,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -22,11 +23,12 @@ pub(super) enum PluginLifecycleStage {
 }
 
 pub(super) async fn invoke_plugin_lifecycle(
-    _client: &kube::Client,
+    client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
     inception_point: &str,
     plugin: &InceptionPlugin,
+    auth: &AuthConfig,
     stage: PluginLifecycleStage,
 ) -> std::result::Result<Option<PluginLifecycleResponse>, ReconcileError> {
     let Some(lifecycle) = &plugin.spec.lifecycle else {
@@ -50,9 +52,24 @@ pub(super) async fn invoke_plugin_lifecycle(
         .unwrap_or(9090);
     let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
     let http = reqwest::Client::new();
+    let auth_token = sign_inception_auth_token(
+        client,
+        namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+        blue_green_ref,
+        inception_point,
+        plugin,
+    )
+    .await?;
 
     for attempt in 1..=10 {
-        match http.post(&url).send().await {
+        match http
+            .post(&url)
+            .header(AUTHORIZATION_HEADER, bearer_value(&auth_token))
+            .send()
+            .await
+        {
             Ok(response) => {
                 let response = response.error_for_status().map_err(|e| {
                     ReconcileError::Store(format!("plugin lifecycle call failed for {url}: {e}"))
@@ -86,10 +103,12 @@ pub(super) async fn invoke_plugin_lifecycle(
 }
 
 pub(super) async fn invoke_plugin_drain_status(
+    client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
     inception_point: &str,
     plugin: &InceptionPlugin,
+    auth: &AuthConfig,
 ) -> std::result::Result<Option<PluginDrainStatusResponse>, ReconcileError> {
     let Some(lifecycle) = &plugin.spec.lifecycle else {
         return Ok(None);
@@ -106,8 +125,19 @@ pub(super) async fn invoke_plugin_drain_status(
         .map(|port| port.container_port)
         .unwrap_or(9090);
     let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
+    let auth_token = sign_inception_auth_token(
+        client,
+        namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+        blue_green_ref,
+        inception_point,
+        plugin,
+    )
+    .await?;
     let response = reqwest::Client::new()
         .get(&url)
+        .header(AUTHORIZATION_HEADER, bearer_value(&auth_token))
         .send()
         .await
         .map_err(|err| {
@@ -129,10 +159,12 @@ pub(super) async fn invoke_plugin_drain_status(
 }
 
 pub(super) async fn invoke_plugin_traffic_shift(
+    client: &kube::Client,
     blue_green_ref: &str,
     namespace: &str,
     inception_point: &str,
     plugin: &InceptionPlugin,
+    auth: &AuthConfig,
     traffic_percent: u8,
 ) -> std::result::Result<(), ReconcileError> {
     let path = plugin
@@ -151,9 +183,20 @@ pub(super) async fn invoke_plugin_traffic_shift(
         .unwrap_or(9090);
     let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
     let http = reqwest::Client::new();
+    let auth_token = sign_inception_auth_token(
+        client,
+        namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+        blue_green_ref,
+        inception_point,
+        plugin,
+    )
+    .await?;
     for attempt in 1..=10 {
         match http
             .post(&url)
+            .header(AUTHORIZATION_HEADER, bearer_value(&auth_token))
             .json(&fluidbg_plugin_sdk::TrafficShiftRequest { traffic_percent })
             .send()
             .await
@@ -187,6 +230,7 @@ pub(super) async fn start_plugin_draining(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
     restore_targets: &[AssignmentTarget],
 ) -> std::result::Result<(), ReconcileError> {
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
@@ -239,6 +283,7 @@ pub(super) async fn start_plugin_draining(
             namespace,
             ip.name.as_str(),
             &plugin,
+            auth,
             PluginLifecycleStage::Drain,
         )
         .await?

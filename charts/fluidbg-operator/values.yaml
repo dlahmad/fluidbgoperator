@@ -17,6 +17,9 @@ operator:
     limits:
       memory: 256Mi
   rustLog: info
+  auth:
+    signingSecretName: fluidbg-operator-auth
+    signingSecretKey: signing-key
   api:
     port: 8090
   nodeSelector: {}

@@ -2,13 +2,13 @@ use k8s_openapi::api::apps::v1::Deployment;
 use kube::api::{Api, ListParams};
 use tracing::info;
 
-use super::super::ReconcileError;
 use super::super::deployments::{
     apply_family_labels_to_deployment, candidate_ref, delete_current_green, deployment_namespace,
     deployment_namespace_spec, label_selector, set_green_label,
 };
 use super::super::plugin_lifecycle::{AssignmentTarget, start_plugin_draining};
 use super::super::resources::{apply_deployment_manifest, delete_deployment};
+use super::super::{AuthConfig, ReconcileError};
 use crate::crd::blue_green::{BlueGreenDeployment, DeploymentRef, DeploymentSelector};
 
 pub(in crate::controller) async fn promote(
@@ -175,9 +175,10 @@ pub(in crate::controller) async fn begin_draining_after_promotion(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
     previous_green: &DeploymentRef,
 ) -> std::result::Result<(), ReconcileError> {
-    start_plugin_draining(bgd, client, namespace, &[AssignmentTarget::Blue]).await?;
+    start_plugin_draining(bgd, client, namespace, auth, &[AssignmentTarget::Blue]).await?;
     delete_current_green(client, namespace, &candidate_ref(bgd), previous_green).await?;
     Ok(())
 }
@@ -186,8 +187,9 @@ pub(in crate::controller) async fn begin_draining_after_rollback(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
 ) -> std::result::Result<(), ReconcileError> {
-    start_plugin_draining(bgd, client, namespace, &[AssignmentTarget::Green]).await?;
+    start_plugin_draining(bgd, client, namespace, auth, &[AssignmentTarget::Green]).await?;
     delete_deployment(
         client,
         &deployment_namespace(&candidate_ref(bgd), namespace),

@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod fields;
 mod http;
@@ -81,3 +82,8 @@ mod tests {
         assert_eq!(manifest["sdk"]["version"], SDK_VERSION);
     }
 }
+pub use auth::{
+    AUTHORIZATION_HEADER, PLUGIN_AUTH_AUDIENCE, PLUGIN_AUTH_ISSUER, PLUGIN_AUTH_TOKEN_ENV,
+    PluginAuthClaims, auth_token_from_env, bearer_matches, bearer_token, bearer_value,
+    sign_plugin_auth_token, verify_plugin_auth_token,
+};

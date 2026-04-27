@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, PodTemplateSpec, Service,
+    ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, PodTemplateSpec, Secret, Service,
     ServicePort, ServiceSpec,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
@@ -14,8 +14,10 @@ use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::crd::blue_green::{BlueGreenDeployment, InceptionPoint, ManagedDeploymentSpec};
+use crate::crd::inception_plugin::InceptionPlugin;
 use crate::plugins::reconciler::{
-    inception_config_map_name, inception_instance_base_name, inception_service_name,
+    inception_auth_secret_name, inception_config_map_name, inception_instance_base_name,
+    inception_service_name,
 };
 
 use super::{
@@ -255,6 +257,70 @@ pub(super) async fn ensure_inception_point_owned_resources(
     Ok(())
 }
 
+pub(super) async fn read_operator_signing_key(
+    client: &kube::Client,
+    namespace: &str,
+    secret_name: &str,
+    secret_key: &str,
+) -> std::result::Result<Vec<u8>, ReconcileError> {
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secret = secrets.get(secret_name).await?;
+    let key = secret
+        .data
+        .as_ref()
+        .and_then(|data| data.get(secret_key))
+        .map(|value| value.0.clone())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ReconcileError::Store(format!(
+                "operator auth Secret '{namespace}/{secret_name}' is missing non-empty key '{secret_key}'"
+            ))
+        })?;
+    Ok(key)
+}
+
+pub(super) async fn sign_inception_auth_token(
+    client: &kube::Client,
+    namespace: &str,
+    signing_secret_name: &str,
+    signing_secret_key: &str,
+    blue_green_ref: &str,
+    inception_point: &str,
+    plugin: &InceptionPlugin,
+) -> std::result::Result<String, ReconcileError> {
+    let signing_key =
+        read_operator_signing_key(client, namespace, signing_secret_name, signing_secret_key)
+            .await?;
+    let claims = fluidbg_plugin_sdk::PluginAuthClaims::new(
+        namespace,
+        blue_green_ref,
+        inception_point,
+        plugin.metadata.name.as_deref().unwrap_or(""),
+    );
+    fluidbg_plugin_sdk::sign_plugin_auth_token(&claims, &signing_key)
+        .map_err(|err| ReconcileError::Store(format!("failed to sign plugin auth token: {err}")))
+}
+
+pub(super) async fn validate_inception_auth_token(
+    client: &kube::Client,
+    namespace: &str,
+    signing_secret_name: &str,
+    signing_secret_key: &str,
+    header_value: Option<&str>,
+) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, ReconcileError> {
+    let Some(token) = header_value.and_then(fluidbg_plugin_sdk::bearer_token) else {
+        return Ok(None);
+    };
+    let signing_key =
+        read_operator_signing_key(client, namespace, signing_secret_name, signing_secret_key)
+            .await?;
+    match fluidbg_plugin_sdk::verify_plugin_auth_token(token, &signing_key) {
+        Ok(claims) if claims.namespace == namespace => Ok(Some(claims)),
+        Ok(_) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
 async fn cleanup_inception_point_owned_resources(
     client: &kube::Client,
     default_namespace: &str,
@@ -471,9 +537,11 @@ pub(super) async fn cleanup_inception_resources(
         let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
         let service_name = inception_service_name(blue_green_ref, &ip.name);
         let config_map_name = inception_config_map_name(blue_green_ref, &ip.name);
+        let auth_secret_name = inception_auth_secret_name(blue_green_ref, &ip.name);
         delete_deployment(client, namespace, &deployment_name).await?;
         delete_service(client, namespace, &service_name).await?;
         delete_config_map(client, namespace, &config_map_name).await?;
+        delete_secret(client, namespace, &auth_secret_name).await?;
     }
     wait_for_inception_resources_deleted(client, namespace, blue_green_ref).await
 }
@@ -505,6 +573,15 @@ async fn delete_config_map(
     delete_resource(api, "configmap", namespace, name).await
 }
 
+async fn delete_secret(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    delete_resource(api, "secret", namespace, name).await
+}
+
 async fn wait_for_inception_resources_deleted(
     client: &kube::Client,
     namespace: &str,
@@ -513,6 +590,7 @@ async fn wait_for_inception_resources_deleted(
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
     let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let params = ListParams::default().labels(&format!(
         "fluidbg.io/blue-green-ref={blue_green_ref},fluidbg.io/inception-point"
@@ -522,13 +600,25 @@ async fn wait_for_inception_resources_deleted(
         let deployment_count = deployments.list(&params).await?.items.len();
         let service_count = services.list(&params).await?.items.len();
         let config_map_count = config_maps.list(&params).await?.items.len();
+        let secret_count = secrets.list(&params).await?.items.len();
         let pod_count = pods.list(&params).await?.items.len();
-        if deployment_count == 0 && service_count == 0 && config_map_count == 0 && pod_count == 0 {
+        if deployment_count == 0
+            && service_count == 0
+            && config_map_count == 0
+            && secret_count == 0
+            && pod_count == 0
+        {
             return Ok(());
         }
         info!(
-            "waiting for inception resources for BGD '{}' to disappear: deployments={} services={} configmaps={} pods={} ({}/60)",
-            blue_green_ref, deployment_count, service_count, config_map_count, pod_count, attempt
+            "waiting for inception resources for BGD '{}' to disappear: deployments={} services={} configmaps={} secrets={} pods={} ({}/60)",
+            blue_green_ref,
+            deployment_count,
+            service_count,
+            config_map_count,
+            secret_count,
+            pod_count,
+            attempt
         );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }

@@ -1,6 +1,7 @@
 use k8s_openapi::api::core::v1::EnvVar;
 use kube::api::Api;
 
+use super::super::AuthConfig;
 use super::super::ReconcileError;
 use super::super::deployments::{
     DeploymentIdentity, apply_assignments, candidate_ref, wait_for_deployments_ready,
@@ -10,7 +11,8 @@ use super::super::plugin_lifecycle::{
     invoke_plugin_lifecycle,
 };
 use super::super::resources::{
-    apply_resource, ensure_inception_point_owned_resources, test_instance_name,
+    apply_resource, ensure_inception_point_owned_resources, sign_inception_auth_token,
+    test_instance_name,
 };
 use crate::crd::blue_green::BlueGreenDeployment;
 use crate::crd::inception_plugin::InceptionPlugin;
@@ -20,6 +22,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    auth: &AuthConfig,
 ) -> std::result::Result<(), ReconcileError> {
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     let operator_url = "http://fluidbg-operator.fluidbg-system:8090";
@@ -45,6 +48,16 @@ pub(in crate::controller) async fn ensure_inception_resources(
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        let auth_token = sign_inception_auth_token(
+            client,
+            namespace,
+            &auth.signing_secret_name,
+            &auth.signing_secret_key,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            &ip.name,
+            &plugin,
+        )
+        .await?;
         ensure_inception_point_owned_resources(client, namespace, ip).await?;
         let resources = reconcile_inception_point(
             &plugin,
@@ -56,6 +69,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
                 test_data_verify_path,
                 blue_deployment_name: &candidate_ref(bgd).name,
                 blue_green_ref: bgd.metadata.name.as_deref().unwrap_or(""),
+                auth_token: &auth_token,
             },
         )
         .map_err(ReconcileError::Store)?;
@@ -113,6 +127,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
             namespace,
             ip.name.as_str(),
             &plugin,
+            auth,
             PluginLifecycleStage::Prepare,
         )
         .await?

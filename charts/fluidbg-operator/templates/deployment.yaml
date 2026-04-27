@@ -39,6 +39,10 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.operator.rustLog | quote }}
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_NAME
+              value: {{ .Values.operator.auth.signingSecretName | quote }}
+            - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
+              value: {{ .Values.operator.auth.signingSecretKey | quote }}
           livenessProbe:
             httpGet:
               path: /health
@@ -65,4 +69,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-

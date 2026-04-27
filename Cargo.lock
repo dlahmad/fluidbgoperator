@@ -1075,7 +1075,6 @@ dependencies = [
  "jsonschema",
  "k8s-openapi",
  "kube",
- "rand 0.10.1",
  "regex",
  "reqwest",
  "schemars",
@@ -1095,12 +1094,14 @@ name = "fluidbg-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.11.0",
  "tracing",
 ]
 
@@ -1114,7 +1115,6 @@ dependencies = [
  "fluidbg-plugin-sdk",
  "futures-lite",
  "lapin",
- "rand 0.10.1",
  "regex",
  "reqwest",
  "serde",
