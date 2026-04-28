@@ -60,7 +60,9 @@ just build-binaries
 just build-images dev
 ```
 
-End-to-end tests require Docker, kind, kubectl, and local images:
+End-to-end tests are implemented as a Rust `kube-rs` integration-test crate.
+The wrapper below requires Docker, kind, Helm, kubectl for port-forward/exec
+boundaries, and local images:
 
 ```sh
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh

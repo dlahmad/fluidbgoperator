@@ -46,6 +46,8 @@ impl Drop for ActiveRequestGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
+    use std::thread;
 
     #[test]
     fn active_request_guard_rejects_after_drain_starts() {
@@ -61,6 +63,40 @@ mod tests {
         assert_eq!(active.load(Ordering::SeqCst), 1);
 
         drop(guard);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn active_request_guard_cleans_up_all_concurrent_admissions_when_drain_starts() {
+        let draining = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(33));
+
+        let mut workers = Vec::new();
+        for _ in 0..32 {
+            let draining = draining.clone();
+            let active = active.clone();
+            let start = start.clone();
+            workers.push(thread::spawn(move || {
+                start.wait();
+                ActiveRequestGuard::try_new(draining, active)
+            }));
+        }
+
+        start.wait();
+        draining.store(true, Ordering::SeqCst);
+
+        let admitted = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker panicked"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            active.load(Ordering::SeqCst),
+            admitted.iter().filter(|guard| guard.is_some()).count()
+        );
+        drop(admitted);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(ActiveRequestGuard::try_new(draining, active.clone()).is_none());
         assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 }

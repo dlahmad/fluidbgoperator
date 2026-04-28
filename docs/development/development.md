@@ -40,6 +40,10 @@ Observed local arm64 dev image sizes:
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```
 
+The wrapper runs the ignored Rust integration test in `e2e/tests/e2e.rs`. The
+harness uses `kube-rs` for Kubernetes API operations and keeps shell boundaries
+to Helm, Docker, kind, and RabbitMQ/test-app port-forward or exec checks.
+
 The e2e suite covers:
 
 - hard-switch promotion

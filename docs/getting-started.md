@@ -57,6 +57,10 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
 
 ## Run E2E
 
+The e2e suite is a Rust integration-test harness using `kube-rs` for Kubernetes
+API operations. `e2e/run-test.sh` is a thin wrapper that runs the ignored full
+cluster test.
+
 ```sh
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```

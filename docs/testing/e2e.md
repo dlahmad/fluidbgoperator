@@ -4,9 +4,10 @@ title: E2E Test Flow
 
 # E2E Test Flow
 
-The e2e suite in `e2e/run-test.sh` is the executable system test for the
-operator, built-in plugins, CRDs, and example applications. It runs against a
-kind cluster and uses local dev images by default.
+The e2e suite is a Rust integration-test crate in `e2e/`. `e2e/run-test.sh` is
+only a compatibility wrapper around `cargo test -p fluidbg-e2e-tests --test e2e`.
+The suite tests the operator, built-in plugins, CRDs, and example applications
+against a kind cluster with local dev images by default.
 
 ## Suite Flow
 
@@ -83,7 +84,7 @@ specific BGD at a time.
 
 ```mermaid
 flowchart LR
-    TEST["e2e script"]
+    TEST["Rust e2e harness"]
     K8S["kind cluster"]
     OP["fbg-operator"]
     RAB["RabbitMQ"]
@@ -97,7 +98,7 @@ flowchart LR
     HP["fbg-plugin-http"]
 
     TEST -->|"helm install chart"| OP
-    TEST -->|"kubectl apply test manifests"| K8S
+    TEST -->|"kube-rs apply/read/watch"| K8S
     K8S --> OP
     K8S --> RAB
     K8S -.-> PG
@@ -121,8 +122,8 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant E as e2e script
-    participant H as Helm/kubectl manifests
+    participant E as Rust e2e harness
+    participant H as Helm/kube-rs manifests
     participant O as Operator
     participant M as RabbitMQ manager
     participant I as RabbitMQ inceptors
@@ -150,8 +151,9 @@ sequenceDiagram
 ## Success Signal
 
 The suite does not accept a rollout just because the operator status reached a
-terminal phase. The test app only returns success when every expected observation
-for a test case has been seen. For combined queue/HTTP cases this means:
+terminal phase. The Rust harness also inspects the test-app case state before
+cleanup. The test app only returns success when every expected observation for a
+test case has been seen. For combined queue/HTTP cases this means:
 
 - The expected output message was emitted.
 - The expected REST call was observed by the HTTP plugin.
@@ -178,5 +180,22 @@ operator resources are removed: operator Deployment/Service/ServiceAccount,
 manager Deployment/Service, built-in `InceptionPlugin` resources, RBAC, and the
 chart-created signing Secret. Built-in plugin CRs are applied by Helm hook after
 the CRD is established and deleted by a pre-delete hook on uninstall. CRDs are
-installed from the chart but are deleted explicitly at the beginning of the next
-e2e run because Helm intentionally does not remove CRDs on uninstall.
+managed by the chart during install; the harness only removes stale CRDs during
+test reset.
+
+## Harness Structure
+
+- `e2e/src/harness.rs` owns environment setup: CRD regeneration, image build/load,
+  infrastructure install, Helm install, and reset.
+- `e2e/src/kube.rs` uses `kube-rs` and typed Kubernetes objects for BGD,
+  InceptionPlugin, Deployment, Service, Secret, ConfigMap, Pod, RBAC, and CRD
+  operations.
+- `e2e/src/rabbitmq.rs` owns RabbitMQ management assertions and intentionally
+  checks both ready and unacknowledged queue depth before accepting drain.
+- `e2e/src/scenarios/` contains scenario tests grouped by behavior: promotion,
+  rollback/drain recovery, progressive shifting, HTTP proxy/observer, forced
+  deletion, and Helm cleanup.
+
+The harness still shells out for non-Kubernetes-API boundaries: Helm, Docker,
+kind image loading, CRD generation, RabbitMQ management port-forward, and the
+single test-app `/cases` inspection currently done through `kubectl exec`.

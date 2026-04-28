@@ -5,6 +5,7 @@ members = [
     "plugins/http",
     "plugins/rabbitmq",
     "plugins/azure_servicebus",
+    "e2e",
 ]
 resolver = "3"
 

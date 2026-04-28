@@ -29,6 +29,10 @@ The full kind-based suite is the behavioral gate:
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
 ```
 
+This runs the Rust `fluidbg-e2e-tests` integration crate. Use
+`cargo test -p fluidbg-e2e-tests --test e2e -- --ignored --test-threads=1 --nocapture`
+when you want to call the harness directly.
+
 ## Code Standards
 
 - Keep plugin wire types in `sdk/rust` and `sdk/spec` instead of duplicating them in plugins.

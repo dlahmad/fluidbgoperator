@@ -50,23 +50,12 @@ pub(crate) async fn compute_drain_status(
         let green_messages = queue_drain_message_count_with_shadow(state, green_queue).await?;
         let blue_messages = queue_drain_message_count_with_shadow(state, blue_queue).await?;
         let in_flight = state.in_flight_messages();
-        let drained = green_messages == 0 && blue_messages == 0 && in_flight == 0;
-        let message = if drained {
-            Some(
-                "temporary output queues report zero total messages and no plugin-owned locked messages remain"
-                    .to_string(),
-            )
-        } else if in_flight > 0 {
-            Some(format!(
-                "temporary output queues still have {in_flight} plugin-owned locked message(s)"
-            ))
-        } else {
-            Some(format!(
-                "temporary output queues still contain messages (green={}, blue={})",
-                green_messages, blue_messages
-            ))
-        };
-        return Ok(PluginDrainStatusResponse { drained, message });
+        return Ok(queue_drain_status(
+            "temporary output queues",
+            green_messages,
+            blue_messages,
+            in_flight,
+        ));
     }
 
     Ok(PluginDrainStatusResponse {
@@ -89,23 +78,35 @@ async fn input_drain_status(
     let green_messages = queue_drain_message_count_with_shadow(state, green_queue).await?;
     let blue_messages = queue_drain_message_count_with_shadow(state, blue_queue).await?;
     let in_flight = state.in_flight_messages();
+    Ok(queue_drain_status(
+        "temporary input queues",
+        green_messages,
+        blue_messages,
+        in_flight,
+    ))
+}
+
+fn queue_drain_status(
+    label: &str,
+    green_messages: u64,
+    blue_messages: u64,
+    in_flight: usize,
+) -> PluginDrainStatusResponse {
     let drained = green_messages == 0 && blue_messages == 0 && in_flight == 0;
     let message = if drained {
-        Some(
-                "temporary input queues report zero total messages and no plugin-owned locked messages remain"
-                    .to_string(),
-            )
+        Some(format!(
+            "{label} report zero total messages and no plugin-owned locked messages remain"
+        ))
     } else if in_flight > 0 {
         Some(format!(
-            "temporary input queues still have {in_flight} plugin-owned locked message(s)"
+            "{label} still have {in_flight} plugin-owned locked message(s)"
         ))
     } else {
         Some(format!(
-            "temporary input queues still contain messages (green={}, blue={})",
-            green_messages, blue_messages
+            "{label} still contain messages (green={green_messages}, blue={blue_messages})"
         ))
     };
-    Ok(PluginDrainStatusResponse { drained, message })
+    PluginDrainStatusResponse { drained, message }
 }
 
 pub(crate) async fn prepare_handler(
@@ -326,5 +327,43 @@ fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), Statu
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_status_waits_for_service_bus_messages_on_either_route() {
+        let status = queue_drain_status("temporary input queues", 0, 2, 0);
+
+        assert!(!status.drained);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("green=0, blue=2"))
+        );
+    }
+
+    #[test]
+    fn drain_status_waits_for_plugin_owned_locked_messages() {
+        let status = queue_drain_status("temporary output queues", 0, 0, 1);
+
+        assert!(!status.drained);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("1 plugin-owned locked message"))
+        );
+    }
+
+    #[test]
+    fn drain_status_allows_cleanup_only_when_counts_and_in_flight_are_zero() {
+        let status = queue_drain_status("temporary output queues", 0, 0, 0);
+
+        assert!(status.drained);
     }
 }

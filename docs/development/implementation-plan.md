@@ -42,7 +42,7 @@ controller/status.rs           BlueGreenDeployment status patches
 | Promotion strategies | Hard-switch and progressive strategy implementations |
 | Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
 | Operator API | `/health`, `/testcases`, `/testcase-verdicts` keyed by `blue_green_ref` plus `test_id`, `/counts/{bg_ref}` |
-| Test harness | Unit tests plus kind-based e2e assets |
+| Test harness | Unit tests plus a Rust/kube-rs kind-based e2e harness |
 | Packaging | Helm chart, consolidated GitHub Actions CI/CD workflow, docs publishing, optional e2e gate, GHCR release targets |
 
 ## Near-Term Work
@@ -59,7 +59,9 @@ controller/status.rs           BlueGreenDeployment status patches
 ```sh
 cargo fmt --all --check
 cargo test --workspace
-./e2e/run-test.sh
+cargo test -p fluidbg-e2e-tests --test e2e -- --ignored --test-threads=1 --nocapture
 ```
 
-The e2e script requires Docker, kind, kubectl, RabbitMQ/Postgres manifests from `testenv/`, and locally built images loaded into the kind cluster.
+`./e2e/run-test.sh` runs the same command. The e2e harness requires Docker,
+kind, Helm, kubeconfig access to the target cluster, and local images loaded
+into the kind cluster when `BUILD_IMAGES=0`.

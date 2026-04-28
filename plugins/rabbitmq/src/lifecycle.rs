@@ -452,4 +452,51 @@ mod tests {
 
         assert!(!status.drained);
     }
+
+    #[test]
+    fn management_drain_waits_for_ready_messages_on_either_route() {
+        let status = management_drain_status(
+            "temporary queues",
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 0,
+                consumers: 0,
+            },
+            &QueueDepth {
+                ready: 3,
+                unacknowledged: 0,
+                consumers: 0,
+            },
+        );
+
+        assert!(!status.drained);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("blue ready=3"))
+        );
+    }
+
+    #[test]
+    fn management_drain_blocks_cleanup_when_ready_and_unacked_counts_are_mixed() {
+        let status = management_drain_status(
+            "temporary queues",
+            &QueueDepth {
+                ready: 2,
+                unacknowledged: 1,
+                consumers: 4,
+            },
+            &QueueDepth {
+                ready: 0,
+                unacknowledged: 5,
+                consumers: 1,
+            },
+        );
+
+        assert!(!status.drained);
+        let message = status.message.expect("drain message");
+        assert!(message.contains("green ready=2, unacked=1"));
+        assert!(message.contains("blue ready=0, unacked=5"));
+    }
 }
