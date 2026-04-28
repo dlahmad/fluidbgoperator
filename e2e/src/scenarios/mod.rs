@@ -154,6 +154,37 @@ async fn successful_rabbitmq_promotion(
         )
         .await?;
 
+    harness
+        .kube
+        .wait_deployment_env_pair_values(EnvPairExpectation {
+            first: bootstrap_deployment,
+            second: &deployment,
+            namespace: &cfg.namespace,
+            env_name: "INPUT_QUEUE",
+            expected_a: &blue_input_queue,
+            expected_b: &green_input_queue,
+            forbidden: "orders",
+        })
+        .await?;
+    harness
+        .kube
+        .wait_deployment_env_pair_values(EnvPairExpectation {
+            first: bootstrap_deployment,
+            second: &deployment,
+            namespace: &cfg.namespace,
+            env_name: "OUTPUT_QUEUE",
+            expected_a: &blue_output_queue,
+            expected_b: &green_output_queue,
+            forbidden: "results",
+        })
+        .await?;
+    for rollout in [bootstrap_deployment, &deployment] {
+        harness
+            .kube
+            .rollout_status(rollout, &cfg.namespace, Duration::from_secs(120))
+            .await?;
+    }
+
     for i in 1..=5 {
         harness
             .rabbitmq
