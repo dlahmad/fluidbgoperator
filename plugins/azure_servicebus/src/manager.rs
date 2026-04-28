@@ -133,13 +133,7 @@ fn inceptor_env(
         && let Some(mode) = auth.mode
     {
         let value = match mode {
-            crate::config::AuthMode::ConnectionString => {
-                if runtime.connection_string.is_some() {
-                    "connectionString"
-                } else {
-                    "connectionString"
-                }
-            }
+            crate::config::AuthMode::ConnectionString => "connectionString",
             crate::config::AuthMode::WorkloadIdentity => "workloadIdentity",
         };
         push_optional_env(&mut env, "FLUIDBG_AZURE_SERVICEBUS_AUTH_MODE", Some(value));

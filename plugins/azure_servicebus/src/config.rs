@@ -311,32 +311,6 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Config;
-    use serde_json::json;
-
-    #[test]
-    fn rollout_config_rejects_runtime_credentials() {
-        let parsed = serde_json::from_value::<Config>(json!({
-            "connectionString": "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=secret",
-            "fullyQualifiedNamespace": "example.servicebus.windows.net",
-            "auth": {
-                "mode": "connectionString"
-            },
-            "management": {
-                "subscriptionId": "sub",
-                "resourceGroup": "rg"
-            },
-            "duplicator": {
-                "inputQueue": "orders"
-            }
-        }));
-
-        assert!(parsed.is_err());
-    }
-}
-
 pub(crate) fn has_role(roles: &[PluginRole], role: PluginRole) -> bool {
     fluidbg_plugin_sdk::has_role(roles, role)
 }
@@ -411,4 +385,30 @@ fn default_create_queues() -> bool {
 
 fn default_delete_queues() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use serde_json::json;
+
+    #[test]
+    fn rollout_config_rejects_runtime_credentials() {
+        let parsed = serde_json::from_value::<Config>(json!({
+            "connectionString": "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=secret",
+            "fullyQualifiedNamespace": "example.servicebus.windows.net",
+            "auth": {
+                "mode": "connectionString"
+            },
+            "management": {
+                "subscriptionId": "sub",
+                "resourceGroup": "rg"
+            },
+            "duplicator": {
+                "inputQueue": "orders"
+            }
+        }));
+
+        assert!(parsed.is_err());
+    }
 }

@@ -380,7 +380,7 @@ async fn reconcile_queues(
     if create && let Some(shadow) = &config.shadow_queue {
         let shadow_declaration = &shadow.queue_declaration;
         for queue in base_shadow_queue_names(&roles, config) {
-            if let Some(shadow_queue) = shadow_queue_name(config, &queue) {
+            if let Some(shadow_queue) = shadow_queue_name(config, queue) {
                 declare_queue(&channel, &shadow_queue, shadow_declaration)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
