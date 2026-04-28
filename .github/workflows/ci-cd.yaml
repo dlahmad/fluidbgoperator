@@ -417,12 +417,14 @@ jobs:
           Attached release files contain executable archives, checksums, and the Helm chart package.
           NOTES
           )"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          repo="${GITHUB_REPOSITORY}"
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
             gh release upload "$tag" \
               dist/release/*.tar.gz \
               dist/release/*.tgz \
               dist/release/*.sha256 \
               dist/release/SHA256SUMS \
+              --repo "$repo" \
               --clobber
           else
             gh release create "$tag" \
@@ -430,6 +432,7 @@ jobs:
               dist/release/*.tgz \
               dist/release/*.sha256 \
               dist/release/SHA256SUMS \
+              --repo "$repo" \
               --title "$tag" \
               --notes "$notes"
           fi
