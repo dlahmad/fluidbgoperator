@@ -106,7 +106,7 @@ impl ManagementClient {
             .basic_auth(&self.username, Some(&self.password))
             .json(&json!({
                 "configure": "",
-                "write": queue_regex,
+                "write": default_exchange_permission_regex(),
                 "read": queue_regex
             }))
             .send()
@@ -218,6 +218,10 @@ fn queue_permission_regex(queue_names: &[String]) -> String {
     }
 }
 
+fn default_exchange_permission_regex() -> &'static str {
+    "^(amq\\.default|)$"
+}
+
 fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.as_bytes() {
@@ -247,5 +251,10 @@ mod tests {
             queue_permission_regex(&["orders".to_string(), "orders.dlq".to_string()]),
             "^(orders|orders\\.dlq)$"
         );
+    }
+
+    #[test]
+    fn default_exchange_permission_allows_publish_via_blank_exchange() {
+        assert_eq!(default_exchange_permission_regex(), "^(amq\\.default|)$");
     }
 }

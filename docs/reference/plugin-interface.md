@@ -111,8 +111,12 @@ inceptionPoints:
 
 For queue-style built-in plugins, user-supplied temporary queue fields describe
 intent only. The operator and plugin manager rewrite temporary queue names to
-derived names scoped by namespace, BGD name, BGD UID, inception point, role, and
-logical purpose before any create/delete operation or inceptor assignment.
+derived names before any create/delete operation or inceptor assignment. Names
+use only route/purpose plus a stable hash, for example
+`fluidbg-green-in-<hash>`, `fluidbg-blue-in-<hash>`,
+`fluidbg-green-out-<hash>`, and `fluidbg-blue-out-<hash>`. The hash input
+includes namespace, BGD name, BGD UID, inception point, role, and logical
+purpose, but those values are not exposed in the queue name.
 
 ## Inceptor Discovery
 

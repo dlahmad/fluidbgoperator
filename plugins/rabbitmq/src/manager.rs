@@ -679,12 +679,12 @@ mod tests {
         assert!(
             queues
                 .iter()
-                .any(|queue| queue.starts_with("fluidbg-green-input-"))
+                .any(|queue| queue.starts_with("fluidbg-green-in-"))
         );
         assert!(
             queues
                 .iter()
-                .any(|queue| queue.starts_with("fluidbg-blue-input-"))
+                .any(|queue| queue.starts_with("fluidbg-blue-in-"))
         );
         assert!(queues.iter().any(|queue| queue.ends_with("_dlq")));
         assert!(!queues.contains("user-provided-green"));

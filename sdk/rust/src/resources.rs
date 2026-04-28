@@ -36,7 +36,7 @@ pub fn derived_temp_queue_name_with_uid(
         role,
         logical,
     ]);
-    format!("fluidbg-{}-{suffix}", sanitize(logical))
+    format!("fluidbg-{}-{suffix}", temp_queue_kind(logical))
 }
 
 pub fn derived_shadow_queue_name(temp_queue_name: &str, shadow_suffix: &str) -> String {
@@ -73,6 +73,16 @@ fn stable_suffix_from_name(name: &str) -> Option<(&str, &str)> {
         Some((prefix, suffix))
     } else {
         None
+    }
+}
+
+fn temp_queue_kind(logical: &str) -> &'static str {
+    match logical {
+        "green-input" => "green-in",
+        "blue-input" => "blue-in",
+        "green-output" => "green-out",
+        "blue-output" => "blue-out",
+        _ => "tmp",
     }
 }
 
@@ -161,8 +171,10 @@ mod tests {
 
         assert_ne!(a, b);
         assert_ne!(a, c);
-        assert!(a.starts_with("fluidbg-blue-input-"));
+        assert!(a.starts_with("fluidbg-blue-in-"));
         assert!(a.len() <= 63);
+        assert!(!a.contains("bgd"));
+        assert!(!a.contains("incoming"));
     }
 
     #[test]
@@ -177,26 +189,18 @@ mod tests {
 
     #[test]
     fn derived_shadow_names_are_suffixes_of_real_queue_names() {
-        let shadow = derived_shadow_queue_name("fluidbg-blue-input-1234567890abcdef", "_dlq");
+        let shadow = derived_shadow_queue_name("fluidbg-blue-in-1234567890abcdef", "_dlq");
 
-        assert_eq!(shadow, "fluidbg-blue-input-1234567890abcdef_dlq");
+        assert_eq!(shadow, "fluidbg-blue-in-1234567890abcdef_dlq");
     }
 
     #[test]
     fn derived_shadow_names_keep_suffix_for_max_length_temp_names() {
-        let logical = "very-long-logical-queue-name-that-will-be-truncated";
-        let temp = derived_temp_queue_name_with_uid(
-            "very-long-namespace-name",
-            "very-long-blue-green-deployment-name",
-            "uid-1234567890",
-            "very-long-inception-point-name",
-            "duplicator",
-            logical,
-        );
+        let temp = "fluidbg-green-in-this-prefix-is-intentionallyx-1234567890abcdef";
         assert_eq!(temp.len(), 63);
         let stable_suffix = temp.rsplit_once('-').unwrap().1;
 
-        let shadow = derived_shadow_queue_name(&temp, "_dlq");
+        let shadow = derived_shadow_queue_name(temp, "_dlq");
 
         assert!(shadow.ends_with(&format!("_dlq-{stable_suffix}")));
         assert_ne!(shadow, temp);

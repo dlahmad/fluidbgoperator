@@ -155,11 +155,14 @@ queues. Consumer counts are diagnostic only; if no messages remain, attached
 consumers do not block cleanup.
 
 Cleanup deletes only derived queue names recomputed from token claims and active
-roles. Derived names include namespace, BGD name, BGD UID, inception point, role,
-and logical queue purpose. User-supplied queue names are not trusted for manager
-cleanup. The manager also supports `/manager/sync`; the operator periodically
-sends the active inception inventory so the manager can remove scoped RabbitMQ
-users and FluidBG-owned temporary queues that missed normal cleanup.
+roles. Derived temporary queue names expose only route/purpose plus a stable
+hash, for example `fluidbg-green-in-<hash>` or `fluidbg-blue-out-<hash>`. The
+hash input includes namespace, BGD name, BGD UID, inception point, role, and
+logical queue purpose, but those values are not exposed in the queue name.
+User-supplied queue names are not trusted for manager cleanup. The manager also
+supports `/manager/sync`; the operator periodically sends the active inception
+inventory so the manager can remove scoped RabbitMQ users and FluidBG-owned
+temporary queues that missed normal cleanup.
 
 ## Security Boundary
 
@@ -172,8 +175,10 @@ RabbitMQ connection and management credentials are never valid BGD config.
 Configure them at plugin installation time. The manager reads
 `FLUIDBG_RABBITMQ_MANAGER_AMQP_URL` and
 `FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_*` from Secrets. On prepare it creates a
-bounded, deterministic, per-inception RabbitMQ user with permissions limited to
-the derived temporary queues, configured shadow queues, and explicitly required
-base queues for movement/writer/consumer behavior. It returns
+bounded, deterministic, per-inception RabbitMQ user with read permissions
+limited to the derived temporary queues, configured shadow queues, and
+explicitly required base queues for movement/writer/consumer behavior. Write
+permission is limited to RabbitMQ's default exchange used for queue-routed
+publishing. It returns
 `FLUIDBG_RABBITMQ_AMQP_URL` and optional `FLUIDBG_RABBITMQ_MANAGEMENT_*` values
 for that scoped user as `inceptorEnv`.

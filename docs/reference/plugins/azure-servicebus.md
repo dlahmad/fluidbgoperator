@@ -178,6 +178,11 @@ messages and the plugin has no plugin-owned locked messages in flight. With ARM
 status, `properties.messageCount` is used so locked messages still present in
 the entity keep drain pending.
 
+Temporary queue names expose only route/purpose plus a stable hash, for example
+`fluidbg-green-in-<hash>` or `fluidbg-blue-out-<hash>`. The hash input includes
+namespace, BGD name, BGD UID, inception point, role, and logical queue purpose,
+but those values are not exposed in the queue name.
+
 Cleanup deletes only derived queue names recomputed from token claims and active
 roles. Derived names include namespace, BGD name, BGD UID, inception point, role,
 and logical queue purpose. User-supplied queue names are not trusted for manager
