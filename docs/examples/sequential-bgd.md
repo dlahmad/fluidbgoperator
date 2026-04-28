@@ -49,15 +49,22 @@ docker build -t ghcr.io/dlahmad/fluidbg-example-producer:latest examples/sequent
 docker build -t ghcr.io/dlahmad/fluidbg-example-sink:latest examples/sequential-bgd/sink
 docker build -t ghcr.io/dlahmad/fluidbg-example-verifier:latest examples/sequential-bgd/verifier
 
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name <kind-cluster>
+KIND_CLUSTER="$(kind get clusters | head -n 1)"
+
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name "$KIND_CLUSTER"
 ```
 
 The operator and built-in plugin images must also be available in the cluster.
 For local development, build/load them with the repository scripts. For a
 published release, use the GHCR defaults from the Helm chart.
+
+This demo embeds local RabbitMQ credentials because it creates a disposable
+broker in the demo namespace. Production installs should keep broker and cloud
+credentials in Kubernetes Secrets and enable plugin managers so privileged
+infrastructure credentials remain in the operator namespace.
 
 ## Install Operator
 

@@ -12,18 +12,18 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::filters::{extract_test_id, has_any_filters, matches_filter, matching_filter};
-use crate::state::{ActiveRequestGuard, AppState};
+use crate::state::{ActiveRequestGuard, AppState, RuntimeMode};
 
 pub(crate) async fn proxy_handler(
     State(state): State<AppState>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
     let Some(_guard) =
-        ActiveRequestGuard::try_new(state.draining.clone(), state.active_requests.clone())
+        ActiveRequestGuard::try_new(state.mode.clone(), state.active_requests.clone())
     else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "fluidbg http plugin is draining".to_string(),
+            "fluidbg http plugin is not active".to_string(),
         );
     };
     let method = req.method().clone();
@@ -65,17 +65,30 @@ pub(crate) async fn proxy_handler(
         && let Some(sel) = &state.config.test_id
         && let Some(test_id) = extract_test_id(sel, &body_json, &path, &headers)
     {
-        if let Some(filter) = matched_filter
-            && let Some(notify_path) = &filter.notify_path
-            && let Err(err) = state
-                .runtime
-                .notify_observer(notify_path, &test_id, &body_json, route)
-                .await
-        {
-            warn!("failed to notify test container: {}", err);
+        let mut verifier_notified = true;
+        if let Some(filter) = matched_filter {
+            if let Some(notify_path) = &filter.notify_path {
+                if let Err(err) = state
+                    .runtime
+                    .notify_observer(notify_path, &test_id, &body_json, route)
+                    .await
+                {
+                    warn!("failed to notify test container: {}", err);
+                    verifier_notified = false;
+                }
+            } else {
+                warn!(
+                    "request matched test case {} but no notifyPath is configured",
+                    test_id
+                );
+                verifier_notified = false;
+            }
+        } else {
+            verifier_notified = false;
         }
 
-        if route.should_register_case()
+        if verifier_notified
+            && route.should_register_case()
             && let Err(err) = state.runtime.register_test_case(&test_id).await
         {
             warn!("failed to register case: {}", err);
@@ -129,11 +142,11 @@ pub(crate) async fn write_handler(
     axum::Json(req): axum::Json<HttpWriteRequest>,
 ) -> impl IntoResponse {
     let Some(_guard) =
-        ActiveRequestGuard::try_new(state.draining.clone(), state.active_requests.clone())
+        ActiveRequestGuard::try_new(state.mode.clone(), state.active_requests.clone())
     else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "fluidbg http plugin is draining".to_string(),
+            "fluidbg http plugin is not active".to_string(),
         );
     };
     let Some(target_url) = state.config.write_target() else {
@@ -191,7 +204,16 @@ pub(crate) async fn prepare_handler(
     headers: HeaderMap,
 ) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
-    state.draining.store(false, Ordering::SeqCst);
+    state.set_runtime_mode(RuntimeMode::Idle);
+    Ok(axum::Json(PluginLifecycleResponse::default()))
+}
+
+pub(crate) async fn activate_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Active);
     Ok(axum::Json(PluginLifecycleResponse::default()))
 }
 
@@ -200,7 +222,7 @@ pub(crate) async fn drain_handler(
     headers: HeaderMap,
 ) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
-    state.draining.store(true, Ordering::SeqCst);
+    state.set_runtime_mode(RuntimeMode::Draining);
     Ok(axum::Json(PluginLifecycleResponse::default()))
 }
 
@@ -209,7 +231,7 @@ pub(crate) async fn cleanup_handler(
     headers: HeaderMap,
 ) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
-    state.draining.store(true, Ordering::SeqCst);
+    state.set_runtime_mode(RuntimeMode::Draining);
     Ok(axum::Json(PluginLifecycleResponse::default()))
 }
 
@@ -219,11 +241,14 @@ pub(crate) async fn drain_status(
 ) -> Result<axum::Json<PluginDrainStatusResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     let active = state.active_requests.load(Ordering::SeqCst);
-    let drained = state.draining.load(Ordering::SeqCst) && active == 0;
+    let mode = state.runtime_mode();
+    let drained = mode == RuntimeMode::Draining && active == 0;
     let message = if drained {
         "http plugin is draining and has no admitted proxy/write requests".to_string()
-    } else if !state.draining.load(Ordering::SeqCst) {
-        "http plugin has not entered drain mode".to_string()
+    } else if mode == RuntimeMode::Idle {
+        "http plugin is idle and has not been activated".to_string()
+    } else if mode == RuntimeMode::Active {
+        "http plugin is active and has not entered drain mode".to_string()
     } else {
         format!("http plugin still has {active} active proxy/write request(s)")
     };

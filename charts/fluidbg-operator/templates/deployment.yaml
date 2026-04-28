@@ -1,6 +1,15 @@
 {{- if and (eq .Values.stateStore.type "memory") (gt (int .Values.operator.replicaCount) 1) }}
 {{- fail "operator.replicaCount > 1 requires stateStore.type=postgres or stateStore.type=cosmosdb; memory is per-pod and not HA-safe" }}
 {{- end }}
+{{- if and (eq .Values.stateStore.type "postgres") (ne .Values.stateStore.postgres.authMode "workloadIdentity") (not .Values.stateStore.postgres.urlSecretName) (not .Values.stateStore.postgres.url) }}
+{{- fail "stateStore.postgres.url or stateStore.postgres.urlSecretName is required when stateStore.type=postgres" }}
+{{- end }}
+{{- if and (eq .Values.stateStore.type "cosmosdb") (eq .Values.stateStore.cosmos.authMode "connectionString") (not .Values.stateStore.cosmos.connectionStringSecretName) (not .Values.stateStore.cosmos.connectionString) }}
+{{- fail "stateStore.cosmos.connectionString or stateStore.cosmos.connectionStringSecretName is required when stateStore.type=cosmosdb and authMode=connectionString" }}
+{{- end }}
+{{- if and (eq .Values.stateStore.type "cosmosdb") (eq .Values.stateStore.cosmos.authMode "accountKey") (not .Values.stateStore.cosmos.accountKeySecretName) (not .Values.stateStore.cosmos.accountKey) }}
+{{- fail "stateStore.cosmos.accountKey or stateStore.cosmos.accountKeySecretName is required when stateStore.type=cosmosdb and authMode=accountKey" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,8 +54,6 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.operator.rustLog | quote }}
-            - name: FLUIDBG_NAMESPACE
-              value: {{ .Values.operator.watchNamespace | default .Release.Namespace | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAME
               value: {{ .Values.operator.auth.signingSecretName | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY
@@ -93,14 +100,10 @@ spec:
             {{- end }}
             {{- else }}
             - name: FLUIDBG_POSTGRES_URL
-              {{- if .Values.stateStore.postgres.urlSecretName }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.stateStore.postgres.urlSecretName | quote }}
+                  name: {{ include "fluidbg.postgresSecretName" . | quote }}
                   key: {{ .Values.stateStore.postgres.urlSecretKey | quote }}
-              {{- else }}
-              value: {{ required "stateStore.postgres.url or stateStore.postgres.urlSecretName is required when stateStore.type=postgres" .Values.stateStore.postgres.url | quote }}
-              {{- end }}
             {{- end }}
             - name: FLUIDBG_POSTGRES_TABLE
               value: {{ .Values.stateStore.postgres.tableName | quote }}
@@ -135,23 +138,22 @@ spec:
             - name: FLUIDBG_COSMOS_CONNECTION_STRING
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.stateStore.cosmos.connectionStringSecretName | quote }}
+                  name: {{ include "fluidbg.cosmosConnectionStringSecretName" . | quote }}
                   key: {{ .Values.stateStore.cosmos.connectionStringSecretKey | quote }}
             {{- else if .Values.stateStore.cosmos.connectionString }}
             - name: FLUIDBG_COSMOS_CONNECTION_STRING
-              value: {{ .Values.stateStore.cosmos.connectionString | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.cosmosConnectionStringSecretName" . | quote }}
+                  key: {{ .Values.stateStore.cosmos.connectionStringSecretKey | quote }}
             {{- else }}
             - name: FLUIDBG_COSMOS_ENDPOINT
               value: {{ required "stateStore.cosmos.endpoint is required when using account key auth" .Values.stateStore.cosmos.endpoint | quote }}
             - name: FLUIDBG_COSMOS_ACCOUNT_KEY
-              {{- if .Values.stateStore.cosmos.accountKeySecretName }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.stateStore.cosmos.accountKeySecretName | quote }}
+                  name: {{ include "fluidbg.cosmosAccountKeySecretName" . | quote }}
                   key: {{ .Values.stateStore.cosmos.accountKeySecretKey | quote }}
-              {{- else }}
-              value: {{ required "stateStore.cosmos.accountKey or stateStore.cosmos.accountKeySecretName is required when using account key auth" .Values.stateStore.cosmos.accountKey | quote }}
-              {{- end }}
             {{- end }}
             {{- end }}
           livenessProbe:

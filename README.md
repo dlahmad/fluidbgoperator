@@ -23,7 +23,7 @@ sdk/                   Versioned plugin SDK models and language-neutral OpenAPI 
 charts/                Helm chart for CRDs, operator, and built-in plugin CRs
 docs/                  GitHub Pages/Jekyll documentation source
 crds/                  Generated CRD manifests
-builtin-plugins/       InceptionPlugin manifests for shipped plugins
+builtin-plugins/       Standalone InceptionPlugin manifest examples
 deploy/                Operator deployment and RBAC
 e2e/                   Kind-based end-to-end scenario assets
 testenv/               Local RabbitMQ/Postgres/kind manifests
@@ -82,7 +82,9 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --create-namespace
 ```
 
-If application `BlueGreenDeployment` resources live outside the operator namespace, install built-in plugin CRs into those namespaces:
+The operator watches `BlueGreenDeployment` resources cluster-wide by default.
+Because `InceptionPlugin` resources are namespaced, install built-in plugin CRs
+into every application namespace that should use the chart-provided plugins:
 
 ```sh
 helm upgrade --install fluidbg charts/fluidbg-operator \
@@ -122,6 +124,7 @@ Observed arm64 image sizes:
 - [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
 - [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.
 - [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
+- [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, and Azure Service Bus.
 - [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
 - [docs/reference/sdk.md](docs/reference/sdk.md) documents the SDK layout and language-neutral spec.

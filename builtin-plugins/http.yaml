@@ -9,6 +9,7 @@ spec:
   topology: standalone
   lifecycle:
     preparePath: /prepare
+    activatePath: /activate
     drainPath: /drain
     drainStatusPath: /drain-status
     cleanupPath: /cleanup

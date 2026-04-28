@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
+use kube::ResourceExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::{Controller, watcher};
@@ -29,9 +30,9 @@ mod tests;
 #[cfg(test)]
 use crate::crd::blue_green::ManagedDeploymentSpec;
 use deployments::{
-    apply_assignments, apply_family_labels_to_deployment, apply_rollout_candidate_labels,
-    candidate_ref, clear_rollout_candidate_labels, deployment_namespace_spec,
-    resolve_current_green, set_green_label, wait_for_deployments_ready,
+    apply_family_labels_to_deployment, apply_rollout_candidate_labels, candidate_ref,
+    clear_rollout_candidate_labels, deployment_namespace_spec, resolve_current_green,
+    set_green_label,
 };
 #[cfg(test)]
 use deployments::{
@@ -46,14 +47,12 @@ use deployments::ensure_generated_candidate_name;
 use lease::{LeaseConfig, run_with_bgd_lease, run_with_orphan_lease};
 use phases::{
     apply_splitter_traffic_percent, begin_draining_after_promotion, begin_draining_after_rollback,
-    bootstrap_initial_green_if_empty, ensure_declared_deployments, ensure_inception_resources,
-    initialize_splitter_traffic, promote, reconcile_draining,
-    validate_progressive_shifting_support,
+    bootstrap_initial_green_if_empty, ensure_inception_resources, initialize_splitter_traffic,
+    promote, reconcile_draining, validate_progressive_shifting_support,
 };
 use promotion::{decide_promotion_action, validate_test_configuration};
 use resources::{
-    blue_green_refs_from_owned_resources, cleanup_inception_resources,
-    cleanup_orphaned_blue_green_resources, cleanup_test_resources, ensure_test_resources,
+    cleanup_inception_resources, cleanup_orphaned_blue_green_resources, cleanup_test_resources,
 };
 use status::{
     ensure_rollout_generation, reset_status_for_new_rollout, update_drain_started_at,
@@ -64,7 +63,6 @@ const BGD_FINALIZER: &str = "fluidbg.io/cleanup";
 
 struct Ctx {
     client: kube::Client,
-    namespace: String,
     auth: AuthConfig,
     store: Arc<dyn StateStore>,
     lease: LeaseConfig,
@@ -86,17 +84,11 @@ pub(super) enum ReconcileError {
     K8s(#[from] kube::Error),
 }
 
-pub async fn run_controller(
-    client: kube::Client,
-    namespace: String,
-    auth: AuthConfig,
-    store: Arc<dyn StateStore>,
-) {
-    let bgd_api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), &namespace);
+pub async fn run_controller(client: kube::Client, auth: AuthConfig, store: Arc<dyn StateStore>) {
+    let bgd_api: Api<BlueGreenDeployment> = Api::all(client.clone());
 
     let ctx = Arc::new(Ctx {
         client,
-        namespace,
         auth,
         store,
         lease: lease_config_from_env(),
@@ -120,7 +112,6 @@ pub async fn run_controller(
 
 pub async fn run_orphan_cleanup(
     client: kube::Client,
-    namespace: String,
     store: Arc<dyn StateStore>,
     interval: Duration,
 ) {
@@ -128,9 +119,7 @@ pub async fn run_orphan_cleanup(
     loop {
         tick.tick().await;
         let lease = lease_config_from_env();
-        if let Err(err) =
-            cleanup_orphaned_blue_green_refs(&client, &namespace, &store, &lease).await
-        {
+        if let Err(err) = cleanup_orphaned_blue_green_refs(&client, &store, &lease).await {
             error!("orphan cleanup failed: {}", err);
         }
     }
@@ -165,11 +154,10 @@ fn env_u64(name: &str, default: u64) -> u64 {
 
 pub(crate) async fn validate_plugin_auth(
     client: &kube::Client,
-    namespace: &str,
     auth: &AuthConfig,
     header_value: Option<&str>,
 ) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, String> {
-    resources::validate_inception_auth_token(client, namespace, auth, header_value)
+    resources::validate_inception_auth_token(client, auth, header_value)
         .await
         .map_err(|err| err.to_string())
 }
@@ -182,7 +170,9 @@ async fn reconcile(
     bgd: Arc<BlueGreenDeployment>,
     ctx: Arc<Ctx>,
 ) -> std::result::Result<Action, ReconcileError> {
-    let namespace = ctx.namespace.clone();
+    let Some(namespace) = bgd.namespace() else {
+        return Ok(Action::await_change());
+    };
     let reconcile_namespace = namespace.clone();
     let client = ctx.client.clone();
     let name = bgd.metadata.name.clone();
@@ -234,12 +224,19 @@ fn try_acquire_local_reconcile_lock(
     bgd: &BlueGreenDeployment,
     ctx: &Arc<Ctx>,
 ) -> Option<LocalReconcileLock> {
+    let namespace = bgd.namespace().unwrap_or_else(|| "unknown".to_string());
+    let name = bgd
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
     let key = bgd
         .metadata
         .uid
-        .clone()
-        .or_else(|| bgd.metadata.name.clone())
-        .unwrap_or_else(|| "unknown".to_string());
+        .as_deref()
+        .map(|uid| format!("{namespace}/{uid}"))
+        .unwrap_or_else(|| blue_green_state_key(&namespace, &name));
     let mut locks = ctx.local_locks.lock().ok()?;
     if !locks.insert(key.clone()) {
         return None;
@@ -260,8 +257,14 @@ async fn reconcile_locked(
         .as_deref()
         .unwrap_or("unknown")
         .to_string();
-    let namespace = ctx.namespace.clone();
+    let namespace = bgd.namespace().ok_or_else(|| {
+        ReconcileError::Store(format!(
+            "BlueGreenDeployment '{}' is missing metadata.namespace",
+            name
+        ))
+    })?;
     let client = ctx.client.clone();
+    let state_key = blue_green_state_key(&namespace, &name);
 
     let phase = bgd
         .status
@@ -310,9 +313,6 @@ async fn reconcile_locked(
             }
             resolve_current_green(&client, &namespace, &bgd.spec.selector).await?;
             validate_progressive_shifting_support(&bgd, &client, &namespace).await?;
-            ensure_declared_deployments(&bgd, &client, &namespace).await?;
-            let test_deployments = ensure_test_resources(&bgd, &client, &namespace).await?;
-            wait_for_deployments_ready(&client, &test_deployments).await?;
             ensure_inception_resources(&bgd, &client, &namespace, &ctx.auth).await?;
             initialize_splitter_traffic(&bgd, &client, &namespace, &ctx.auth).await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Observing).await;
@@ -323,22 +323,22 @@ async fn reconcile_locked(
 
             let counts = ctx
                 .store
-                .counts(&name)
+                .counts(&state_key)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
             let data_counts = ctx
                 .store
-                .counts_for_mode(&name, VerificationMode::Data)
+                .counts_for_mode(&state_key, VerificationMode::Data)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
             let custom_counts = ctx
                 .store
-                .counts_for_mode(&name, VerificationMode::Custom)
+                .counts_for_mode(&state_key, VerificationMode::Custom)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
             let latest_failure_message = ctx
                 .store
-                .latest_failure_message(&name)
+                .latest_failure_message(&state_key)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
 
@@ -426,7 +426,7 @@ async fn reconcile_locked(
             cleanup_test_resources(&bgd, &client, &namespace).await?;
             let removed = ctx
                 .store
-                .cleanup_blue_green(&name)
+                .cleanup_blue_green(&state_key)
                 .await
                 .map_err(|e| ReconcileError::Store(e.to_string()))?;
             if removed > 0 {
@@ -448,7 +448,7 @@ async fn cleanup_deleted_bgd(
     cleanup_test_resources(bgd, &ctx.client, namespace).await?;
     let removed = ctx
         .store
-        .cleanup_blue_green(name)
+        .cleanup_blue_green(&blue_green_state_key(namespace, name))
         .await
         .map_err(|e| ReconcileError::Store(e.to_string()))?;
     if removed > 0 {
@@ -463,16 +463,15 @@ async fn cleanup_deleted_bgd(
 
 async fn cleanup_orphaned_blue_green_refs(
     client: &kube::Client,
-    namespace: &str,
     store: &Arc<dyn StateStore>,
     lease: &LeaseConfig,
 ) -> std::result::Result<usize, ReconcileError> {
-    let existing = existing_blue_green_names(client, namespace).await?;
+    let existing = existing_blue_green_keys(client).await?;
     let mut refs = store
         .list_blue_green_refs()
         .await
         .map_err(|e| ReconcileError::Store(e.to_string()))?;
-    refs.extend(blue_green_refs_from_owned_resources(client, namespace).await?);
+    refs.extend(resources::blue_green_refs_from_owned_resources_all(client).await?);
 
     let mut cleaned = 0;
     for blue_green_ref in refs {
@@ -486,14 +485,9 @@ async fn cleanup_orphaned_blue_green_refs(
         let cleanup_result = run_with_orphan_lease(
             &blue_green_ref,
             client.clone(),
-            namespace,
+            orphan_namespace(&blue_green_ref).unwrap_or("default"),
             lease,
-            cleanup_single_orphaned_blue_green_ref(
-                client,
-                namespace,
-                store,
-                blue_green_ref.clone(),
-            ),
+            cleanup_single_orphaned_blue_green_ref(client, store, blue_green_ref.clone()),
         )
         .await?;
         if cleanup_result.is_some() {
@@ -505,36 +499,56 @@ async fn cleanup_orphaned_blue_green_refs(
 
 async fn cleanup_single_orphaned_blue_green_ref(
     client: &kube::Client,
-    namespace: &str,
     store: &Arc<dyn StateStore>,
-    blue_green_ref: String,
+    blue_green_key: String,
 ) -> std::result::Result<(), ReconcileError> {
-    cleanup_orphaned_blue_green_resources(client, namespace, &blue_green_ref).await?;
+    let (namespace, blue_green_ref) = split_blue_green_state_key(&blue_green_key)?;
+    cleanup_orphaned_blue_green_resources(client, &namespace, &blue_green_ref).await?;
     let removed = store
-        .cleanup_blue_green(&blue_green_ref)
+        .cleanup_blue_green(&blue_green_key)
         .await
         .map_err(|e| ReconcileError::Store(e.to_string()))?;
     if removed > 0 {
         info!(
             "cleaned {} store records for orphaned BGD '{}'",
-            removed, blue_green_ref
+            removed, blue_green_key
         );
     }
     Ok(())
 }
 
-async fn existing_blue_green_names(
+async fn existing_blue_green_keys(
     client: &kube::Client,
-    namespace: &str,
 ) -> std::result::Result<BTreeSet<String>, ReconcileError> {
-    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let api: Api<BlueGreenDeployment> = Api::all(client.clone());
     Ok(api
         .list(&Default::default())
         .await?
         .items
         .into_iter()
-        .filter_map(|bgd| bgd.metadata.name)
+        .filter_map(|bgd| {
+            let namespace = bgd.namespace()?;
+            let name = bgd.metadata.name?;
+            Some(blue_green_state_key(&namespace, &name))
+        })
         .collect())
+}
+
+pub(crate) fn blue_green_state_key(namespace: &str, name: &str) -> String {
+    format!("{namespace}/{name}")
+}
+
+fn split_blue_green_state_key(key: &str) -> std::result::Result<(String, String), ReconcileError> {
+    let Some((namespace, name)) = key.split_once('/') else {
+        return Err(ReconcileError::Store(format!(
+            "state key '{key}' is not namespace-qualified"
+        )));
+    };
+    Ok((namespace.to_string(), name.to_string()))
+}
+
+fn orphan_namespace(key: &str) -> Option<&str> {
+    key.split_once('/').map(|(namespace, _)| namespace)
 }
 
 fn has_finalizer(bgd: &BlueGreenDeployment, finalizer: &str) -> bool {

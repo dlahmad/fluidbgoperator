@@ -19,6 +19,10 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --create-namespace
 ```
 
+The operator always watches `BlueGreenDeployment` resources cluster-wide,
+limited only by the permissions granted to its ServiceAccount. Per-BGD work is
+still performed in the namespace of the BGD object.
+
 ## Production Image Values
 
 The checked-in chart defaults point at this repository's GHCR packages. For a
@@ -73,11 +77,13 @@ different in-process store. The chart blocks `operator.replicaCount > 1` when
 `stateStore.type=memory`.
 
 For HA, use Postgres or Azure Cosmos DB. The operator also uses a per-BGD
-Kubernetes `Lease` in the watched namespace before it performs any
+Kubernetes `Lease` in the BGD namespace before it performs any
 side-effecting reconcile work. That lease serializes database reads/writes,
 plugin manager calls, inceptor lifecycle calls, Deployment updates, and cleanup
-for a single `BlueGreenDeployment`. Different BGD names get different leases and
-can still progress concurrently.
+for a single `BlueGreenDeployment`. The operator's internal state key is
+namespace-qualified, so two BGDs with the same name in different namespaces do
+not share test cases or cleanup state. Different BGD resources can still
+progress concurrently.
 
 Lease timing is configurable:
 
@@ -165,9 +171,16 @@ stateStore:
 The Cosmos DB container must already exist and use `/blue_green_ref` as the
 partition key. For workload identity, grant the managed identity a Cosmos DB
 data-plane RBAC role that can read, create, replace, query, and delete items in
-that container. For local experiments, direct `stateStore.postgres.url`,
-`stateStore.cosmos.connectionString`, or `stateStore.cosmos.accountKey` values
-can be set, but production installs should reference Kubernetes Secrets.
+that container.
+
+Credential handling:
+
+- Existing Secret references are preferred for production.
+- If `stateStore.postgres.url`, `stateStore.cosmos.connectionString`, or
+  `stateStore.cosmos.accountKey` is set directly in Helm values, the chart
+  writes that value into a Kubernetes Secret and the Deployment consumes it via
+  `secretKeyRef`.
+- Sensitive values are not rendered directly into operator container env vars.
 
 Store cleanup is automatic. Pending cases are kept while a rollout CR still
 exists and can need them. When a `BlueGreenDeployment` reaches a terminal state
@@ -222,6 +235,10 @@ builtinPlugins:
       amqpUrlSecretName: rabbitmq-admin
       amqpUrlSecretKey: amqp-url
 ```
+
+For local-only installs, `builtinPlugins.rabbitmq.manager.amqpUrl` may be set
+directly. The chart still stores it in a Kubernetes Secret first and mounts it
+into the manager through `secretKeyRef`.
 
 For Azure Service Bus workload identity, create a manager ServiceAccount in the
 operator namespace and annotate it for Microsoft Entra Workload ID. Privileged

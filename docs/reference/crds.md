@@ -31,5 +31,6 @@ Regenerate CRDs after changing Rust CRD models:
 
 ```sh
 cargo run --locked --bin gen-crds
-cp crds/*.yaml charts/fluidbg-operator/crds/
+cp crds/blue_green_deployment.yaml charts/fluidbg-operator/crds/blue_green_deployment.yaml
+cp crds/inception_plugin.yaml charts/fluidbg-operator/crds/inception_plugin.yaml
 ```

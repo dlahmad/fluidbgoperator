@@ -15,10 +15,8 @@ use crate::servicebus::LockedMessage;
 async fn process_input_message(state: &AppState, message: &LockedMessage) -> Result<TrafficRoute> {
     let body_json: Value = serde_json::from_slice(&message.body).unwrap_or(Value::Null);
     let observer = observer_config(&state.config);
-    let filters = observer.map(|o| o.r#match.as_slice()).unwrap_or(&[]);
-    if !matches_filter(filters, &body_json, &message.properties) {
-        return Ok(TrafficRoute::Unknown);
-    }
+    let observer_matches =
+        observer.is_some_and(|o| matches_filter(&o.r#match, &body_json, &message.properties));
 
     let mut route = TrafficRoute::Unknown;
 
@@ -57,22 +55,25 @@ async fn process_input_message(state: &AppState, message: &LockedMessage) -> Res
     }
 
     if has_role(&state.roles, PluginRole::Observer)
+        && observer_matches
         && let Some(observer) = observer
         && let Some(selector) = &observer.test_id
         && let Some(test_id) = extract_test_id(selector, &body_json, &message.properties)
     {
-        if route.should_register_case()
-            && let Err(err) = state.runtime.register_test_case(&test_id).await
-        {
-            warn!("failed to register test case {}: {}", test_id, err);
-        } else if route.should_register_case() {
-            info!(
-                "registered testCase '{}' for blueGreenRef '{}'",
-                test_id,
-                state.runtime.blue_green_ref()
-            );
+        let notified = notify_observer(state, observer, &test_id, &body_json, route).await;
+        if notified {
+            if route.should_register_case()
+                && let Err(err) = state.runtime.register_test_case(&test_id).await
+            {
+                warn!("failed to register test case {}: {}", test_id, err);
+            } else if route.should_register_case() {
+                info!(
+                    "registered testCase '{}' for blueGreenRef '{}'",
+                    test_id,
+                    state.runtime.blue_green_ref()
+                );
+            }
         }
-        notify_observer(state, observer, &test_id, &body_json, route).await;
     }
 
     Ok(route)

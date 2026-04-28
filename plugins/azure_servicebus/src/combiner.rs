@@ -79,18 +79,20 @@ async fn run_combine_loop(
                 && let Some(selector) = &observer.test_id
                 && let Some(test_id) = extract_test_id(selector, &body_json, &message.properties)
             {
-                if route.should_register_case()
-                    && let Err(err) = state.runtime.register_test_case(&test_id).await
-                {
-                    warn!("failed to register test case {}: {}", test_id, err);
-                } else if route.should_register_case() {
-                    info!(
-                        "registered testCase '{}' for blueGreenRef '{}'",
-                        test_id,
-                        state.runtime.blue_green_ref()
-                    );
+                let notified = notify_observer(&state, observer, &test_id, &body_json, route).await;
+                if notified {
+                    if route.should_register_case()
+                        && let Err(err) = state.runtime.register_test_case(&test_id).await
+                    {
+                        warn!("failed to register test case {}: {}", test_id, err);
+                    } else if route.should_register_case() {
+                        info!(
+                            "registered testCase '{}' for blueGreenRef '{}'",
+                            test_id,
+                            state.runtime.blue_green_ref()
+                        );
+                    }
                 }
-                notify_observer(&state, observer, &test_id, &body_json, route).await;
             }
 
             Ok::<(), anyhow::Error>(())

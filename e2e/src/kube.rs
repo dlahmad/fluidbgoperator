@@ -485,6 +485,13 @@ impl Kube {
                 )
                 .await
             }
+            "configmap" => {
+                delete_if_exists(
+                    &Api::<ConfigMap>::namespaced(self.client.clone(), namespace),
+                    name,
+                )
+                .await
+            }
             "inceptionplugin" => {
                 delete_if_exists(
                     &Api::<InceptionPlugin>::namespaced(self.client.clone(), namespace),
@@ -707,7 +714,12 @@ impl Kube {
         install_operator_chart(config)
     }
 
-    pub async fn postgres_case_rows(&self, system_namespace: &str, bgd: &str) -> Result<String> {
+    pub async fn postgres_case_rows(
+        &self,
+        system_namespace: &str,
+        bgd_namespace: &str,
+        bgd: &str,
+    ) -> Result<String> {
         command::output(
             "kubectl",
             [
@@ -724,7 +736,10 @@ impl Kube {
                 "-d",
                 "fluidbg",
                 "-tAc",
-                &format!("select count(*) from fluidbg_cases where blue_green_ref='{bgd}';"),
+                &format!(
+                    "select count(*) from fluidbg_cases where blue_green_ref='{}/{}';",
+                    bgd_namespace, bgd
+                ),
             ],
         )
         .map(|value| value.chars().filter(|ch| !ch.is_whitespace()).collect())
@@ -875,8 +890,6 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "operator.image.tag=dev".to_string(),
         "--set".to_string(),
         "operator.image.pullPolicy=Never".to_string(),
-        "--set".to_string(),
-        format!("operator.watchNamespace={}", config.namespace),
         "--set".to_string(),
         "operator.orphanCleanup.intervalSeconds=5".to_string(),
         "--set".to_string(),

@@ -158,7 +158,7 @@ spec:
         timeoutSeconds: 120
   promotion:
     data:
-      minTestCases: 1
+      minTestCases: 2
       successRate: 1.0
       timeoutSeconds: 300
     strategy:

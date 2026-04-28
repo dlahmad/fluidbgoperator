@@ -13,7 +13,6 @@ crds:
     cargo run --locked --bin gen-crds
     cp crds/blue_green_deployment.yaml charts/fluidbg-operator/crds/blue_green_deployment.yaml
     cp crds/inception_plugin.yaml charts/fluidbg-operator/crds/inception_plugin.yaml
-    cp crds/state_store.yaml charts/fluidbg-operator/crds/state_store.yaml
 
 build-binaries:
     ./scripts/build-linux-binaries.sh

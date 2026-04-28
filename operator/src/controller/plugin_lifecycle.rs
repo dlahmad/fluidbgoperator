@@ -8,8 +8,9 @@ use crate::plugins::reconciler::{
     render_container_env_injections, secured_inception_config,
 };
 
+use super::deployments::{apply_assignments, wait_for_deployments_ready};
 use super::resources::sign_inception_auth_token;
-use super::{AuthConfig, ReconcileError, apply_assignments, wait_for_deployments_ready};
+use super::{AuthConfig, ReconcileError};
 
 pub(super) use fluidbg_plugin_sdk::{
     AUTHORIZATION_HEADER, AssignmentKind, AssignmentTarget, PluginDrainStatusResponse,
@@ -19,6 +20,7 @@ pub(super) use fluidbg_plugin_sdk::{
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PluginLifecycleStage {
     Prepare,
+    Activate,
     Drain,
     Cleanup,
 }
@@ -37,6 +39,7 @@ pub(super) async fn invoke_inceptor_lifecycle(
     };
     let path = match stage {
         PluginLifecycleStage::Prepare => lifecycle.prepare_path.as_deref(),
+        PluginLifecycleStage::Activate => lifecycle.activate_path.as_deref(),
         PluginLifecycleStage::Drain => lifecycle.drain_path.as_deref(),
         PluginLifecycleStage::Cleanup => lifecycle.cleanup_path.as_deref(),
     };
@@ -112,20 +115,21 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
     plugin: &InceptionPlugin,
     auth: &AuthConfig,
     stage: PluginLifecycleStage,
-) -> std::result::Result<(), ReconcileError> {
+) -> std::result::Result<Option<PluginLifecycleResponse>, ReconcileError> {
     let Some(manager) = &plugin.spec.manager else {
-        return Ok(());
+        return Ok(None);
     };
     let path = match stage {
         PluginLifecycleStage::Prepare => manager
             .prepare_path
             .as_deref()
             .unwrap_or("/manager/prepare"),
+        PluginLifecycleStage::Activate => return Ok(None),
         PluginLifecycleStage::Cleanup => manager
             .cleanup_path
             .as_deref()
             .unwrap_or("/manager/cleanup"),
-        PluginLifecycleStage::Drain => return Ok(()),
+        PluginLifecycleStage::Drain => return Ok(None),
     };
     let manager_namespace = manager.namespace.as_deref().unwrap_or("fluidbg-system");
     let port = manager.port.unwrap_or(9090);
@@ -149,6 +153,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
         test_data_verify_path: None,
         blue_deployment_name: "",
         blue_green_ref,
+        blue_green_uid: "",
         auth_token: &auth_token,
     };
     let payload = PluginManagerLifecycleRequest {
@@ -170,10 +175,17 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
             .await
         {
             Ok(response) => {
-                response.error_for_status().map_err(|e| {
+                let response = response.error_for_status().map_err(|e| {
                     ReconcileError::Store(format!("plugin manager call failed for {url}: {e}"))
                 })?;
-                return Ok(());
+                let value = response.json::<serde_json::Value>().await.map_err(|e| {
+                    ReconcileError::Store(format!(
+                        "plugin manager response deserialization failed for {url}: {e}"
+                    ))
+                })?;
+                let payload =
+                    serde_json::from_value::<PluginLifecycleResponse>(value).unwrap_or_default();
+                return Ok(Some(payload));
             }
             Err(err) if attempt < 10 => {
                 warn!(
@@ -189,7 +201,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) async fn invoke_inceptor_drain_status(

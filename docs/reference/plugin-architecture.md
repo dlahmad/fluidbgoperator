@@ -93,13 +93,18 @@ Manager rules:
 - Trust `namespace`, `blueGreenRef`, `inceptionPoint`, and `plugin` only from
   token claims.
 - Recompute derived temporary resource names from claims and active role names.
+  Queue-style names include namespace, BGD name, BGD UID, inception point, role,
+  and logical purpose so recreated BGDs and concurrent BGDs cannot collide.
 - Never trust BGD-provided temporary queue names for create/delete authority.
 
 Inceptor rules:
 
 - Receive `FLUIDBG_PLUGIN_AUTH_TOKEN`, not the signing key.
 - Require incoming operator calls to use the same bearer token value.
-- Start idle and do not move traffic until the operator calls `preparePath`.
+- Start idle and do not move traffic until the operator calls `activatePath`.
+- Treat `preparePath` as setup and assignment discovery only. It must not
+  consume from base queues, proxy HTTP calls, notify verifiers, register cases,
+  or write output.
 - Use `FLUIDBG_INCEPTOR_INFRA_DISABLED=true` to skip privileged create/delete
   operations when a manager is configured.
 - Move traffic and perform observation using the secured config emitted by the
@@ -126,16 +131,23 @@ sequenceDiagram
         M->>M: verify JWT signature
         M->>T: create derived temporary resources
         O->>I: POST /prepare + Bearer same JWT
-        I->>I: exact token match, activate traffic work
-        I-->>O: assignments for app/test containers
+        I->>I: exact token match, setup only, remain idle
+        I-->>O: assignments for app containers
     end
+    O->>A: create candidate with blue assignments in initial pod template
+    O->>O: create verifier with final test env and wait for readiness
     O->>A: patch all env assignments in one batch
+    O->>O: wait for app rollouts
+    loop each inception point
+        O->>I: POST /activate + Bearer same JWT
+        I->>I: start traffic work
+    end
 ```
 
-The operator intentionally batches app/test assignment patches after all
-inception points have been prepared. This avoids partial wiring such as input
-traffic being redirected while the same app still publishes to an old output
-queue.
+The operator intentionally batches app assignment patches after all inception
+points have been prepared, then activates inceptors only after the app rollouts
+are ready. This avoids partial wiring such as input traffic being redirected
+while the same app still publishes to an old output queue.
 
 ## Traffic Flow
 
@@ -191,33 +203,9 @@ sequenceDiagram
     O->>O: delete inceptor Deployments/Services/ConfigMaps/Pods
 ```
 
-RabbitMQ drain is lifecycle-driven. `POST /drain` and every `GET
-/drain-status` call actively retry idempotent movement of temporary regular and
-shadow queues back to their base queues before status is calculated. Drain then
-waits for temporary queues to have zero ready messages and zero unacknowledged
-messages when the management API is configured. Attached consumers are
-diagnostic only; they do not block drain if no messages are ready or locked.
-Without management API access, the fallback AMQP signal can only observe ready
-message count plus consumer count and the drain message states that limitation.
-Optional RabbitMQ shadow queues are configured per inception point; temporary
-shadow queues drain back to matching base shadow queues, not to the regular
-base queue.
-
-Azure Service Bus drain stops plugin admission, abandons any plugin-owned
-message that was peek-locked after drain started, and actively retries the same
-idempotent drain work from `POST /drain` and `GET /drain-status`. It waits for
-temporary queues to report zero total messages plus zero plugin-owned in-flight
-locks. During drain it also moves messages from temporary `$deadletterqueue`
-subqueues back to the corresponding base queue before temporary queues are
-deleted. If an optional shadow queue is configured, temporary shadow queue
-messages and their dead-letter subqueue messages are moved back to the matching
-base shadow queue. If the configured drain timeout is exceeded, the operator
-records `TimedOutMaybeSuccessful` instead of silently treating the drain as
-safe.
-Service Bus message moves preserve message body, custom application properties,
-and sendable `BrokerProperties`. Runtime-only broker fields from a received
-message, including lock tokens and delivery counters, are not replayed into the
-new message.
+Plugin-specific drain and failure details are intentionally documented once in
+the built-in plugin references: [RabbitMQ](plugins/rabbitmq.md), [Azure Service
+Bus](plugins/azure-servicebus.md), and [HTTP](plugins/http.md).
 
 ## Built-In Plugin Matrix
 

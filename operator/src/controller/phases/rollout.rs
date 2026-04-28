@@ -6,6 +6,7 @@ use super::super::deployments::{
     candidate_ref, delete_current_green, deployment_namespace, deployment_namespace_spec,
     label_selector, wait_for_deployments_ready,
 };
+use super::super::plugin_lifecycle::PropertyAssignment;
 use super::super::plugin_lifecycle::{AssignmentTarget, start_plugin_draining};
 use super::super::resources::{apply_deployment_manifest, delete_deployment};
 use super::super::{AuthConfig, ReconcileError};
@@ -27,6 +28,7 @@ pub(in crate::controller) async fn promote(
         &bgd.spec.deployment,
         &bgd.spec.selector.match_labels,
         true,
+        &[],
     )
     .await?;
     wait_for_deployments_ready(client, &[candidate_identity]).await?;
@@ -115,6 +117,7 @@ pub(in crate::controller) async fn ensure_declared_deployments(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    initial_assignments: &[PropertyAssignment],
 ) -> std::result::Result<(), ReconcileError> {
     apply_deployment_manifest(
         client,
@@ -123,6 +126,7 @@ pub(in crate::controller) async fn ensure_declared_deployments(
         &bgd.spec.deployment,
         &bgd.spec.selector.match_labels,
         false,
+        initial_assignments,
     )
     .await?;
     Ok(())
@@ -161,6 +165,7 @@ pub(in crate::controller) async fn bootstrap_initial_green_if_empty(
         &bgd.spec.deployment,
         &bgd.spec.selector.match_labels,
         true,
+        &[],
     )
     .await?;
 

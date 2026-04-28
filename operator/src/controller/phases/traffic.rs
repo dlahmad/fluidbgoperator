@@ -5,7 +5,7 @@ use super::super::promotion::initial_splitter_traffic_percent;
 use super::super::status::update_status_progress;
 use super::super::{AuthConfig, ReconcileError};
 use crate::crd::blue_green::{BlueGreenDeployment, StrategyType};
-use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
+use crate::crd::inception_plugin::{InceptionPlugin, PluginRole};
 
 pub(in crate::controller) async fn validate_progressive_shifting_support(
     bgd: &BlueGreenDeployment,
@@ -60,12 +60,6 @@ pub(in crate::controller) fn validate_progressive_splitter_plugin(
             inception_point_name, plugin_name
         )));
     }
-    if !matches!(plugin.spec.topology, Topology::Standalone) {
-        return Err(ReconcileError::Store(format!(
-            "progressive strategy requires standalone splitter plugin '{}'",
-            plugin_name
-        )));
-    }
     Ok(())
 }
 
@@ -101,9 +95,6 @@ pub(in crate::controller) async fn apply_splitter_traffic_percent(
             continue;
         }
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
-        if !matches!(plugin.spec.topology, Topology::Standalone) {
-            continue;
-        }
         invoke_inceptor_traffic_shift(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),

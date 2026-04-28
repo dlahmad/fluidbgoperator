@@ -147,6 +147,9 @@ spec:
               lifecycle:
                 nullable: true
                 properties:
+                  activatePath:
+                    nullable: true
+                    type: string
                   cleanupPath:
                     nullable: true
                     type: string
@@ -198,8 +201,6 @@ spec:
                 type: array
               topology:
                 enum:
-                - sidecar-blue
-                - sidecar-test
                 - standalone
                 type: string
             required:

@@ -128,6 +128,33 @@ impl RabbitMq {
         }
     }
 
+    pub async fn wait_for_consumers(
+        &mut self,
+        queue: &str,
+        min_consumers: u64,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(depth) = self.queue_depth(queue).await?
+                && depth.consumers >= min_consumers
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let consumers = self
+                    .queue_depth(queue)
+                    .await?
+                    .map(|depth| depth.consumers)
+                    .unwrap_or(0);
+                bail!(
+                    "queue {queue} did not reach {min_consumers} consumer(s) before timeout; current consumers={consumers}"
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     pub async fn queue_contains_processed_message(
         &mut self,
         queue: &str,

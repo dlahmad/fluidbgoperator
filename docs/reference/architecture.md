@@ -27,7 +27,7 @@ flowchart LR
     CTRL["controller<br/>phase machine"]
     VAL["validation<br/>roles, schemas, namespaces"]
     PLUGREC["inceptor reconciler<br/>ConfigMap, Deployment, Service"]
-    LIFE["manager/inceptor lifecycle client<br/>prepare, traffic, drain, cleanup"]
+    LIFE["manager/inceptor lifecycle client<br/>prepare, activate, traffic, drain, cleanup"]
     AUTH["operator auth Secret<br/>JWT signing key"]
     API["operator HTTP API<br/>testcases, verdicts, counts"]
     STORE["state store<br/>memory, postgres,<br/>or cosmosdb"]
@@ -61,7 +61,7 @@ flowchart TD
     SRC["Production source<br/>Queue or HTTP client"]
     SPLIT["Splitter / duplicator plugin"]
     GREEN["Current green deployment"]
-    BLUE["Candidate blue deployment"]
+    BLUE["Candidate deployment"]
     OBS["Observer / combiner / mock plugin"]
     TEST["Verifier test container"]
     OP["FluidBG operator"]
@@ -70,8 +70,8 @@ flowchart TD
     SRC --> SPLIT
     SPLIT -->|"green route"| GREEN
     SPLIT -->|"blue route"| BLUE
-    SPLIT -->|"register test case"| OP
     SPLIT -->|"notify observation"| TEST
+    SPLIT -->|"register after notify"| OP
     GREEN --> OBS
     BLUE --> OBS
     OBS -->|"route metadata + payload"| TEST
@@ -86,7 +86,7 @@ flowchart TD
 
 | Term | Current Meaning |
 |---|---|
-| `BlueGreenDeployment` | Names the green deployment, candidate blue template, inception points, verifier containers, and promotion strategy. |
+| `BlueGreenDeployment` | Names the green deployment, candidate deployment template, inception points, verifier containers, and promotion strategy. |
 | `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
 | `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
 | Plugin manager | Long-running privileged control-plane component in the operator namespace. It creates and deletes derived infrastructure after verifying the per-inception JWT. |
@@ -151,6 +151,7 @@ spec:
   topology: standalone
   lifecycle:
     preparePath: /prepare
+    activatePath: /activate
     drainPath: /drain
     drainStatusPath: /drain-status
     cleanupPath: /cleanup
@@ -171,14 +172,14 @@ Important fields:
 | Field | Meaning |
 |---|---|
 | `supportedRoles` | Roles this plugin can run for an inception point. |
-| `topology` | `standalone`, `sidecar-blue`, or `sidecar-test`. Built-in plugins currently run as `standalone`. |
+| `topology` | `standalone`. |
 | `fieldNamespaces` | Filter/selector namespaces supported by the plugin, for example `http` or `queue`. |
 | `configSchema` | JSON Schema used by the operator to validate the inception point config. |
 | `inceptor` | Pod ports, volume mounts, labels, annotations, and service account for the per-inception traffic component. |
 | `manager` | Optional Service endpoint for the privileged manager in the operator namespace. |
-| `lifecycle` | HTTP endpoints called by the operator for prepare, drain, cleanup, and traffic shifting. |
+| `lifecycle` | HTTP endpoints called by the operator for prepare, activate, drain, cleanup, and traffic shifting. |
 | `injects` | Env vars the operator patches into green, blue, or test containers from plugin config/template values. |
-| `features.supportsProgressiveShifting` | Required for progressive strategies that use standalone splitter plugins. |
+| `features.supportsProgressiveShifting` | Required for progressive strategies that use splitter plugins. |
 
 ### `BlueGreenDeployment`
 
@@ -268,13 +269,18 @@ chart is configured with more than one operator replica. HA deployments must use
 a shared backend: Postgres or Azure Cosmos DB. Both persistent backends support
 secret-based credentials and AKS workload identity.
 
+The operator watches BGDs cluster-wide, limited by its Kubernetes RBAC.
+Internally, test case state is keyed as `namespace/name`, not just by BGD name,
+so two teams can use the same BGD name in different namespaces without sharing
+verdicts, counts, or cleanup state.
+
 With multiple operator replicas, one BGD is reconciled under one short-lived
 Kubernetes `Lease`. The lease is keyed by BGD identity, renewed while reconcile
 work is in progress, and blocks other replicas from touching that BGD's store
 records, plugin manager resources, inceptor pods, Deployments, or cleanup state.
 If the holder pod dies, renewal stops and another replica can take over after
-the lease duration. Different BGD names use different leases and can reconcile
-concurrently.
+the lease duration. Different BGD resources use different leases and can
+reconcile concurrently.
 
 Status phase updates use optimistic concurrency on the status subresource:
 the operator reads the latest status object and replaces it with the observed
@@ -303,40 +309,66 @@ For one `BlueGreenDeployment`, reconciliation does the following:
 
 1. Validate tests, promotion settings, plugin references, supported roles,
    supported field namespaces, plugin config schemas, and progressive capability.
-2. Render the candidate Deployment from `deployment.spec`, applying
-   `testDeploymentPatch` only for the test-time candidate when present.
-3. Render verifier test resources from native Kubernetes `DeploymentSpec` and
-   `ServiceSpec`, then wait for verifier Deployment availability before any
-   inceptor can send observations to it. If a verifier needs application-level
+2. Resolve the current green Deployment and validate that progressive strategy,
+   if configured, is supported by the selected splitter plugin.
+3. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
+4. Start plugin inceptors idle with only their secured config and per-inception
+   bearer token.
+5. Call manager `preparePath` endpoints so privileged infrastructure exists
+   before any inceptor moves traffic.
+6. Call inceptor `preparePath` endpoints for non-traffic setup and assignment
+   discovery. Inceptors must stay idle after `preparePath`; they may create
+   non-privileged local resources and return green/blue assignments, but they
+   must not consume, proxy, observe, or write traffic yet.
+7. Create/update the candidate Deployment from `deployment.spec`, applying
+   `testDeploymentPatch` and blue-targeted assignments directly into the initial
+   pod template. This prevents the candidate from starting with production or
+   default transport wiring.
+8. Render verifier test resources from native Kubernetes `DeploymentSpec` and
+   `ServiceSpec`, with test-targeted template assignments already included in
+   the initial pod template. The operator then waits for verifier Deployment
+   availability and Service endpoints. If a verifier needs application-level
    startup checks, define a normal Kubernetes `readinessProbe` in the test
    Deployment.
-4. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
-5. Start plugin inceptors idle with only their secured config and per-inception
-   bearer token.
-6. Call manager `preparePath` endpoints so privileged infrastructure exists
-   before any inceptor moves traffic.
-7. Call inceptor `preparePath` endpoints to activate traffic work and collect
-   returned assignments.
-8. Patch all returned/template assignments into green, blue, and test
-   deployments in one batch, then wait for those rollouts. Test deployments are
-   already available before plugin preparation. Test-targeted template
-   assignments are applied and waited before any inceptor `preparePath`; runtime
-   `preparePath` responses are not allowed to patch test deployments because an
-   inceptor may be active immediately after prepare.
-9. Register and poll test cases through the operator HTTP API and verifier
+9. Patch green/blue application assignments, then wait for those rollouts.
+10. Call inceptor `activatePath`. Only this transition may start queue
+   consumption, HTTP proxying, observation callbacks, writer traffic, or
+   combiner movement.
+11. Register and poll test cases through the operator HTTP API and verifier
    `verifyPath`.
-10. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
-11. On promotion, reapply canonical `deployment.spec` to the candidate and wait
+12. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
+13. On promotion, reapply canonical `deployment.spec` to the candidate and wait
    until it is ready before marking it green.
-12. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
+14. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
    `drainStatusPath`, then call inceptor and manager `cleanupPath`.
-13. Remove temporary test/inceptor resources and restore direct assignment values
+15. Remove temporary test/inceptor resources and restore direct assignment values
    where plugins declared restore templates.
 
 The operator also prevents two rollouts of the same `BlueGreenDeployment` from
 colliding while the previous rollout's temporary inception resources still
 exist. Different `BlueGreenDeployment` names can run concurrently because
-generated resource names include the BGD name and inception point.
+generated resource names include namespace, BGD name, BGD UID, inception point,
+role, and logical resource purpose.
+
+Pending setup uses this state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> InceptorsIdle: inceptor resources created
+    InceptorsIdle --> ManagerPrepared: manager prepare creates derived infra
+    ManagerPrepared --> InceptorsPrepared: inceptor prepare discovers assignments only
+    InceptorsPrepared --> CandidateReady: candidate created with blue assignments in initial pod template
+    CandidateReady --> VerifierReady: verifier created with final test env and Service endpoints ready
+    VerifierReady --> AppsPatched: green/blue assignments applied and rolled out
+    AppsPatched --> InceptorsActive: inceptor activate starts traffic work
+    InceptorsActive --> Observing: initial traffic percentage set
+```
+
+During `InceptorsIdle`, `ManagerPrepared`, `InceptorsPrepared`,
+`CandidateReady`, `VerifierReady`, and `AppsPatched`, inceptors do not move
+application traffic. The old green workload remains live until the rolling
+update has completed. Test verifier readiness cannot receive observer callbacks
+until after `InceptorsActive`.
 
 ## GitOps Status
 
@@ -381,7 +413,8 @@ The operator calls lifecycle endpoints declared by the plugin CRD:
 
 | Endpoint | Called When | Expected Behavior |
 |---|---|---|
-| `POST /prepare` | Before observation starts | Create derived transport resources and return assignments to patch into green/blue/test containers. |
+| `POST /prepare` | Before candidate/test traffic setup | Perform setup and return green/blue assignments; must not move traffic. |
+| `POST /activate` | After candidate, verifier, and app assignment rollouts are ready | Start consuming, proxying, observing, writing, or combining traffic. |
 | `POST /drain` | After promotion or rollback decision | Stop accepting new temporary work and return assignments that move the surviving deployment toward direct production wiring. |
 | `GET /drain-status` | While phase is `Draining` | Return whether temporary resources are drained. Missing endpoint means drain-complete. |
 | `POST /cleanup` | After drain completion or timeout | Delete derived transport resources and leave plugin safe to terminate. |
@@ -399,25 +432,43 @@ progressive operation does not patch env vars or restart plugin pods.
 
 ## Progressive Shifting
 
-Progressive strategy is allowed only when a referenced standalone splitter plugin
-advertises `features.supportsProgressiveShifting: true`. The operator enforces
-that requirement before rollout.
+Progressive strategy is allowed only when a referenced splitter plugin advertises
+`features.supportsProgressiveShifting: true`. The operator enforces that
+requirement before rollout.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending
     Pending --> Observing: resources prepared and initial traffic set
     Observing --> Observing: step passed, POST /traffic with next percentage
-    Observing --> Draining: final step passed or rollback needed
+    Observing --> Draining: final step passed
+    Observing --> Draining: rollback needed
     Draining --> Completed: promoted and cleanup done
     Draining --> RolledBack: rollback cleanup done
 ```
+
+## Failure Behavior
+
+The operator is conservative about promotion. It does not promote from green
+readiness alone; it promotes only from registered verification cases that the
+verifier resolved successfully.
+
+| Situation | Operator behavior |
+|---|---|
+| Test Deployment or Service endpoint never becomes ready | The BGD stays before `Observing`; inceptors are not activated and no traffic is intentionally routed to them. Reconciliation retries until the resources become ready or the user changes/deletes the BGD. |
+| Plugin cannot deliver `observer.notifyPath` | The plugin must not register the test case. The operator sees no false pass and keeps waiting for valid cases until promotion timeout or rollback criteria apply. |
+| Registered case stays pending | The tracker polls `verifyPath` until the case timeout, then marks it timed out. Timed-out cases count against the success rate. |
+| Verifier returns failure | The case is failed. Hard-switch and progressive strategies roll back once the configured success threshold cannot be recovered. |
+| Minimum case count or success threshold is not met before promotion timeout | The rollout rolls back and then drains/cleans temporary resources. |
+| Final hard-switch or progressive step passes | The rollout enters `Draining`, promotes the candidate wiring, waits for plugin drain status, then cleans inception/test resources and marks `Completed`. |
+| Drain does not finish before the inception point drain timeout | The operator records `TimedOutMaybeSuccessful` for that drain and proceeds to cleanup. This is explicit risk reporting, not a zero-loss guarantee. |
+| BGD is force-deleted without finalizers | Orphan cleanup uses store references and `fluidbg.io/blue-green-ref` labels to remove remaining plugin, test, secret, and store records when the operator runs again. |
 
 Traffic route semantics are plugin-owned:
 
 | Route | Meaning |
 |---|---|
-| `blue` | Resource was routed only to candidate blue. |
+| `blue` | Resource was routed only to the candidate path. |
 | `green` | Resource was routed only to current green. |
 | `both` | Resource was duplicated to green and blue. |
 | `unknown` | Plugin cannot determine the route. |
@@ -425,6 +476,9 @@ Traffic route semantics are plugin-owned:
 RabbitMQ and HTTP both support progressive splitting where it makes transport
 sense. RabbitMQ uses stable hashing to decide whether a message goes to blue at
 the current percentage. HTTP uses the same route decision for proxy traffic.
+Observer filters select which messages or requests become verification signals;
+they must not be used as transport-routing filters for normal application
+traffic.
 
 ## Built-In Plugins
 
@@ -432,9 +486,11 @@ the current percentage. HTTP uses the same route decision for proxy traffic.
 |---|---|---|---|---|
 | `http` | `splitter`, `observer`, `mock`, `writer` | `standalone` | yes | One combined HTTP service exposes proxy/splitter, observer/mock behavior, and `/write`. |
 | `rabbitmq` | `duplicator`, `splitter`, `observer`, `writer`, `consumer`, `combiner` | `standalone` | yes | Handles queue fanout, weighted split, observer notifications, writes, consumption, and output combining. |
+| `azure-servicebus` | `duplicator`, `splitter`, `observer`, `writer`, `consumer`, `combiner` | `standalone` | yes | Mirrors the RabbitMQ queue model for Azure Service Bus with connection-string and workload-identity auth. |
 
-Built-in plugin manifests live in `builtin-plugins/` and are also templated by
-the Helm chart for each configured namespace.
+Standalone plugin manifest examples live in `builtin-plugins/`. The Helm chart
+templates the installable built-in plugin registrations for each configured
+namespace.
 
 ## Filtering, Selectors, and Field Namespaces
 
@@ -512,7 +568,7 @@ plugins/http/          Combined HTTP splitter/observer/mock/writer plugin
 plugins/rabbitmq/      Combined RabbitMQ duplicator/splitter/combiner/writer/observer plugin
 sdk/                   Versioned Rust SDK and language-neutral OpenAPI specs
 crds/                  Generated CRD manifests
-builtin-plugins/       Built-in InceptionPlugin manifests
+builtin-plugins/       Standalone InceptionPlugin manifest examples
 charts/                Helm chart with CRDs and hook-managed built-in plugin CRs
 deploy/                Raw operator deployment and RBAC
 e2e/                   Kind-based end-to-end suite
@@ -537,6 +593,8 @@ Important implementation boundaries:
   `fluidbg.io/blue-green-ref` labels.
 - Draining gives plugins a chance to move or consume temporary work before
   cleanup; drain timeout is explicit and reflected in status.
+- Plugins notify verifiers before operator registration, so a registered pass
+  implies the verifier endpoint accepted the observation first.
 - Progressive shifting changes plugin state through lifecycle HTTP calls, so it
   does not require plugin pod restarts.
 - The test container owns semantic correctness; application payload formats are

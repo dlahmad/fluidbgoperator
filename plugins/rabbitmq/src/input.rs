@@ -25,11 +25,8 @@ async fn process_input_delivery(
     let headers = delivery.properties.headers().clone().unwrap_or_default();
 
     let observer = observer_config(&state.config);
-    let filters = observer.map(|o| o.r#match.as_slice()).unwrap_or(&[]);
-    if !matches_filter(filters, &body_json, &headers) {
-        delivery.ack(BasicAckOptions::default()).await?;
-        return Ok(());
-    }
+    let observer_matches =
+        observer.is_some_and(|o| matches_filter(&o.r#match, &body_json, &headers));
 
     let mut route = TrafficRoute::Unknown;
 
@@ -70,22 +67,25 @@ async fn process_input_delivery(
     }
 
     if has_role(&state.roles, PluginRole::Observer)
+        && observer_matches
         && let Some(observer) = observer
         && let Some(selector) = &observer.test_id
         && let Some(test_id) = extract_test_id(selector, &body_json, &headers)
     {
-        if route.should_register_case()
-            && let Err(err) = state.runtime.register_test_case(&test_id).await
-        {
-            warn!("failed to register test case {}: {}", test_id, err);
-        } else if route.should_register_case() {
-            info!(
-                "registered testCase '{}' for blueGreenRef '{}'",
-                test_id,
-                state.runtime.blue_green_ref()
-            );
+        let notified = notify_observer(state, observer, &test_id, &body_json, route).await;
+        if notified {
+            if route.should_register_case()
+                && let Err(err) = state.runtime.register_test_case(&test_id).await
+            {
+                warn!("failed to register test case {}: {}", test_id, err);
+            } else if route.should_register_case() {
+                info!(
+                    "registered testCase '{}' for blueGreenRef '{}'",
+                    test_id,
+                    state.runtime.blue_green_ref()
+                );
+            }
         }
-        notify_observer(state, observer, &test_id, &body_json, route).await;
     }
 
     delivery.ack(BasicAckOptions::default()).await?;

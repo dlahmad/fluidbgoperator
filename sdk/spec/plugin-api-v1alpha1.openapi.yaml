@@ -40,11 +40,25 @@ paths:
   /prepare:
     post:
       operationId: prepare
+      description: Non-traffic setup and assignment discovery. Must not start consuming, proxying, observing, writing, or combining traffic.
       security:
         - pluginAuth: []
       responses:
         "200":
-          description: Property assignments to apply before traffic starts.
+          description: Property assignments to apply before activation. Runtime prepare responses may target green and blue only.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginLifecycleResponse"
+  /activate:
+    post:
+      operationId: activate
+      description: Start traffic work after candidate, verifier, and application rollouts are ready. Must not return assignments.
+      security:
+        - pluginAuth: []
+      responses:
+        "200":
+          description: Inceptor activated.
           content:
             application/json:
               schema:

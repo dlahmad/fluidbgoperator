@@ -244,6 +244,18 @@ async fn reset_previous_resources(config: &E2eConfig, kube: &Kube) -> Result<()>
     );
     kube.delete_labeled_resources(&config.namespace, "fluidbg.io/name=order-processor")
         .await?;
+    kube.delete_named(
+        "configmap",
+        "fluidbg-config-incoming-orders",
+        &config.namespace,
+    )
+    .await?;
+    kube.delete_named(
+        "configmap",
+        "fluidbg-config-outgoing-results",
+        &config.namespace,
+    )
+    .await?;
     kube.delete_named("deployment", "test-container", &config.namespace)
         .await?;
     kube.delete_named("service", "test-container", &config.namespace)

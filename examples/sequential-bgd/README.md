@@ -27,10 +27,12 @@ docker build -t ghcr.io/dlahmad/fluidbg-example-producer:latest examples/sequent
 docker build -t ghcr.io/dlahmad/fluidbg-example-sink:latest examples/sequential-bgd/sink
 docker build -t ghcr.io/dlahmad/fluidbg-example-verifier:latest examples/sequential-bgd/verifier
 
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name <kind-cluster>
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name <kind-cluster>
+KIND_CLUSTER="$(kind get clusters | head -n 1)"
+
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name "$KIND_CLUSTER"
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name "$KIND_CLUSTER"
 ```
 
 The sink is intentionally not the test container. It simulates a downstream
@@ -41,7 +43,30 @@ decide whether candidate traffic is safe to promote.
 
 The operator and built-in plugin images must also be available in the cluster.
 For local development, build/load them with the repository scripts. For a
-published release, use the GHCR defaults in the Helm chart.
+published release, use the GHCR defaults in the Helm chart. If you are testing
+local `:dev` operator/plugin images, set the chart image values explicitly:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set operator.image.repository=fluidbg/fbg-operator \
+  --set operator.image.tag=dev \
+  --set operator.image.pullPolicy=Never \
+  --set builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http \
+  --set builtinPlugins.http.image.tag=dev \
+  --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
+  --set builtinPlugins.rabbitmq.image.tag=dev \
+  --set operator.auth.createSigningSecret=true \
+  --set operator.auth.signingSecretName=fluidbg-operator-auth \
+  --set operator.auth.signingSecretValue=dev-signing-key-change-me \
+  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
+```
+
+This demo embeds local RabbitMQ credentials in the example manifests because it
+creates its own disposable broker in `fluidbg-demo`. Production installs should
+put broker and cloud credentials in Kubernetes Secrets and use plugin managers
+so privileged infrastructure credentials stay in the operator namespace.
 
 ## Run
 
@@ -49,33 +74,35 @@ Install the operator chart into the system namespace and register built-in
 plugins in the demo namespace:
 
 ```sh
+kubectl create namespace fluidbg-demo --dry-run=client -o yaml | kubectl apply -f -
+
 helm upgrade --install fluidbg charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
   --set operator.auth.createSigningSecret=true \
   --set operator.auth.signingSecretName=fluidbg-operator-auth \
   --set operator.auth.signingSecretValue=dev-signing-key-change-me \
-  --set builtinPlugins.namespaces[0]=fluidbg-demo
+  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
 ```
 
 Apply the initial version:
 
 ```sh
 kubectl apply -f examples/sequential-bgd/01-base.yaml
-kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow -n fluidbg-demo --timeout=180s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bluegreendeployment/order-flow -n fluidbg-demo --timeout=180s
 ```
 
 Apply the upgraded version:
 
 ```sh
 kubectl apply -f examples/sequential-bgd/02-upgrade.yaml
-kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow -n fluidbg-demo --timeout=300s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bluegreendeployment/order-flow -n fluidbg-demo --timeout=300s
 ```
 
 Watch what happened:
 
 ```sh
-kubectl get bgd order-flow -n fluidbg-demo -o wide
+kubectl get bluegreendeployment order-flow -n fluidbg-demo -o wide
 kubectl logs -n fluidbg-demo deploy/order-flow-producer
 kubectl logs -n fluidbg-demo deploy/order-flow-sink --tail=300
 kubectl logs -n fluidbg-demo -l fluidbg.io/test-name=verifier --tail=100
@@ -92,3 +119,16 @@ The base version emits `v1-*` results. The upgraded candidate emits `v2-*`
 results. The verifier passes a test case only after the separate sink service
 has logged both the HTTP audit call and the output message for that `v2`
 candidate sequence.
+
+## Cleanup
+
+Delete the `BlueGreenDeployment` while the operator is still installed, and wait
+until the CR disappears so the finalizer can clean inceptors, verifier
+resources, and plugin state before Helm removes the operator:
+
+```sh
+kubectl delete bluegreendeployment order-flow -n fluidbg-demo --ignore-not-found
+kubectl wait --for=delete bluegreendeployment/order-flow -n fluidbg-demo --timeout=180s
+helm uninstall fluidbg -n fluidbg-system --ignore-not-found --wait
+kubectl delete namespace fluidbg-demo --ignore-not-found
+```

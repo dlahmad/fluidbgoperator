@@ -20,8 +20,8 @@ use combiner::run_combiner;
 use config::{AppState, has_role, load_config};
 use input::run_input_pipeline;
 use lifecycle::{
-    cleanup_handler, drain_handler, drain_status_handler, health, prepare_handler,
-    traffic_shift_handler,
+    activate_handler, cleanup_handler, drain_handler, drain_status_handler, health,
+    prepare_handler, traffic_shift_handler,
 };
 use servicebus::ServiceBusClient;
 use writer::write_handler;
@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/prepare", post(prepare_handler))
+        .route("/activate", post(activate_handler))
         .route("/drain", post(drain_handler))
         .route("/drain-status", get(drain_status_handler))
         .route("/traffic", post(traffic_shift_handler))

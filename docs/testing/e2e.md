@@ -37,10 +37,11 @@ flowchart TD
 - Rejection of progressive strategy when the splitter plugin does not advertise `supportsProgressiveShifting`.
 - Combined HTTP plugin proxy, observer, mock, and writer behavior.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.
-- Test verifier readiness before plugin preparation, so inceptors cannot send
-  observations to a test Service without ready endpoints. The e2e verifier uses
-  a native Kubernetes `readinessProbe`; there is no FluidBG-specific readiness
-  abstraction.
+- Test verifier readiness and app rollout readiness before plugin activation,
+  so inceptors cannot send observations to a test Service without ready
+  endpoints or steal base-queue work before the candidate has the test wiring.
+  The e2e verifier uses a native Kubernetes `readinessProbe`; there is no
+  FluidBG-specific readiness abstraction.
 - Promotion and rollback drain safety for RabbitMQ temporary queues, including
   messages in regular and shadow queues, and verification that promoted output
   messages are present on the restored base queue.
@@ -144,8 +145,13 @@ sequenceDiagram
     O->>I: create idle per-inception Deployments with token only
     O->>M: POST /manager/prepare with signed JWT
     M->>R: create derived temp queues and optional shadow queues
-    O->>I: POST /prepare with same JWT
-    O->>O: batch all app/test env assignments
+    O->>I: POST /prepare with same JWT, inceptors remain idle
+    O->>O: create candidate Deployment with blue env assignments
+    O->>T: create verifier Deployment with final test env
+    O->>T: wait for readiness and Service endpoints
+    O->>O: apply app env assignments
+    O->>O: wait for app rollouts
+    O->>I: POST /activate with same JWT
     I->>R: duplicate/split/combine messages
     I->>T: notify observations
     I->>O: register test cases
@@ -165,6 +171,11 @@ test case has been seen. For combined queue/HTTP cases this means:
 - The expected output message was emitted.
 - The expected REST call was observed by the HTTP plugin.
 - The observed events use plugin-supplied route metadata, not application-owned payload fields.
+- Queue plugins notify the verifier before registering the case with the
+  operator. The HTTP scenario holds promotion open until the harness has
+  observed both verifier flags for an exact case, then sends the additional
+  promotion case. This catches false-positive operator counts where a callback
+  was never accepted by the verifier.
 - The rollback path publishes messages into RabbitMQ temporary shadow queues and
   verifies they are moved back to matching base shadow queues such as
   `orders_dlq` and `results_dlq`.

@@ -9,6 +9,16 @@ use crate::harness::E2eHarness;
 use crate::kube::EnvPairExpectation;
 use crate::status::{bgd_status, condition_status, ensure_no_drain_timeouts, testcase_flags};
 
+const E2E_BGDS: &[&str] = &[
+    "order-processor-bootstrap",
+    "order-processor-upgrade",
+    "order-processor-failing-upgrade",
+    "order-processor-progressive-unsupported",
+    "order-processor-progressive-upgrade",
+    "order-processor-http-upgrade",
+    "order-processor-force-delete",
+];
+
 pub async fn run_full_suite(harness: &mut E2eHarness) -> Result<()> {
     let bootstrap = bootstrap_initial_green(harness).await?;
     let promoted = successful_rabbitmq_promotion(harness, &bootstrap).await?;
@@ -755,60 +765,68 @@ async fn http_proxy_observer_promotion(
         .kube
         .wait_deployment_replicas(&deployment, &cfg.namespace, 1)
         .await?;
-    let mut published_test_ids = Vec::new();
-    for attempt in 1..=30 {
-        let test_id = format!("http-proxy-{}-{attempt}", unique_token("case"));
-        harness
-            .rabbitmq
-            .publish(
-                "orders",
-                &format!(r#"{{"orderId":"{test_id}","type":"order","action":"http-proxy-check"}}"#),
-            )
-            .await?;
-        published_test_ids.push(test_id);
+    let green_input_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-http-upgrade",
+            "incoming-orders",
+            &cfg.namespace,
+            "duplicator.greenInputQueue",
+        )
+        .await?;
+    let blue_input_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-http-upgrade",
+            "incoming-orders",
+            &cfg.namespace,
+            "duplicator.blueInputQueue",
+        )
+        .await?;
+    harness
+        .rabbitmq
+        .wait_for_consumers(&green_input_queue, 1, Duration::from_secs(60))
+        .await?;
+    harness
+        .rabbitmq
+        .wait_for_consumers(&blue_input_queue, 1, Duration::from_secs(60))
+        .await?;
+    let verified_test_id = format!("http-proxy-{}", unique_token("case"));
+    harness
+        .rabbitmq
+        .publish(
+            "orders",
+            &format!(
+                r#"{{"orderId":"{verified_test_id}","type":"order","action":"http-proxy-check"}}"#
+            ),
+        )
+        .await?;
+    wait_http_case_verified(&cfg.namespace, &test_deployment, &verified_test_id, 120).await?;
 
-        let status = bgd_status(
-            &harness
-                .kube
-                .bgd_json("order-processor-http-upgrade", &cfg.namespace)
-                .await?,
-        );
-        if status.tracked_cases() >= 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+    let promotion_test_id = format!("http-proxy-{}", unique_token("case"));
+    harness
+        .rabbitmq
+        .publish(
+            "orders",
+            &format!(
+                r#"{{"orderId":"{promotion_test_id}","type":"order","action":"http-proxy-check"}}"#
+            ),
+        )
+        .await?;
 
-    let mut verified = false;
-    for _ in 1..=60 {
+    for _ in 1..=120 {
         let status_json = harness
             .kube
             .bgd_json("order-processor-http-upgrade", &cfg.namespace)
             .await?;
         let status = bgd_status(&status_json);
-        if status.test_cases_passed >= 1 && !verified {
-            for test_id in &published_test_ids {
-                let Ok(flags) = http_case_flags(&cfg.namespace, &test_deployment, test_id) else {
-                    continue;
-                };
-                if flags.status == "passed" && flags.output_message_seen && flags.http_call_seen {
-                    verified = true;
-                    break;
-                }
-            }
-            if status.test_cases_passed >= 1 && !verified {
-                bail!(
-                    "HTTP proxy case passed but none of the published cases had both output and HTTP observations"
-                );
-            }
-        }
-        if status.phase == "Completed" && status.test_cases_passed >= 1 {
+        if status.phase == "Completed" && status.test_cases_passed >= 2 {
             break;
         }
         if status.phase == "RolledBack" {
             bail!("HTTP plugin BGD rolled back");
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
     let status = bgd_status(
         &harness
@@ -816,15 +834,12 @@ async fn http_proxy_observer_promotion(
             .bgd_json("order-processor-http-upgrade", &cfg.namespace)
             .await?,
     );
-    if status.phase != "Completed" || status.test_cases_passed < 1 {
+    if status.phase != "Completed" || status.test_cases_passed < 2 {
         bail!(
-            "expected HTTP plugin BGD Completed with at least one passed test, got phase={} passed={}",
+            "expected HTTP plugin BGD Completed with at least two passed tests, got phase={} passed={}",
             status.phase,
             status.test_cases_passed
         );
-    }
-    if !verified {
-        bail!("expected to verify HTTP proxy case before test deployment cleanup");
     }
     harness
         .kube
@@ -1032,7 +1047,11 @@ async fn force_deleted_bgd_is_cleaned_as_orphan(
     if cfg.state_store == StateStore::Postgres {
         let rows = harness
             .kube
-            .postgres_case_rows(&cfg.system_namespace, "order-processor-force-delete")
+            .postgres_case_rows(
+                &cfg.system_namespace,
+                &cfg.namespace,
+                "order-processor-force-delete",
+            )
             .await?;
         if rows != "0" {
             bail!("expected Postgres rows for force-deleted BGD to be cleaned, got {rows}");
@@ -1046,6 +1065,7 @@ async fn force_deleted_bgd_is_cleaned_as_orphan(
 
 async fn helm_uninstall_cleans_operator_resources(harness: &E2eHarness) -> Result<()> {
     let cfg = harness.config.clone();
+    cleanup_blue_green_deployments_created_by_suite(harness).await?;
     command::run(
         "helm",
         [
@@ -1102,6 +1122,44 @@ async fn helm_uninstall_cleans_operator_resources(harness: &E2eHarness) -> Resul
         bail!("clusterrolebinding/fluidbg-operator was not removed by Helm uninstall");
     }
     Ok(())
+}
+
+async fn cleanup_blue_green_deployments_created_by_suite(harness: &E2eHarness) -> Result<()> {
+    let cfg = harness.config.clone();
+    for bgd in E2E_BGDS {
+        harness
+            .kube
+            .delete_named("bluegreendeployment", bgd, &cfg.namespace)
+            .await?;
+    }
+    for bgd in E2E_BGDS {
+        harness
+            .kube
+            .wait_deleted(
+                "bluegreendeployment",
+                bgd,
+                &cfg.namespace,
+                Duration::from_secs(90),
+            )
+            .await?;
+    }
+    harness
+        .kube
+        .wait_no_inception_resources(&cfg.namespace)
+        .await?;
+    harness
+        .kube
+        .delete_labeled_resources(&cfg.namespace, "fluidbg.io/name=order-processor")
+        .await?;
+    harness
+        .kube
+        .wait_label_resource_count(
+            &cfg.namespace,
+            "fluidbg.io/name=order-processor",
+            0,
+            Duration::from_secs(90),
+        )
+        .await
 }
 
 async fn wait_for_tracked_cases(
@@ -1206,6 +1264,26 @@ fn http_case_flags(
     )?;
     let document: Value = serde_json::from_str(&format!(r#"{{"{test_id}":{output}}}"#))?;
     testcase_flags(&document, test_id)
+}
+
+async fn wait_http_case_verified(
+    namespace: &str,
+    test_deployment: &str,
+    test_id: &str,
+    attempts: u64,
+) -> Result<()> {
+    for _ in 1..=attempts {
+        if let Ok(flags) = http_case_flags(namespace, test_deployment, test_id) {
+            if flags.status == "failed" {
+                bail!("HTTP proxy case {test_id} failed in verifier");
+            }
+            if flags.status == "passed" && flags.output_message_seen && flags.http_call_seen {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    bail!("expected HTTP proxy case {test_id} to observe both the HTTP call and output message")
 }
 
 fn assert_condition(document: &Value, bgd: &str, condition: &str, expected: &str) -> Result<()> {

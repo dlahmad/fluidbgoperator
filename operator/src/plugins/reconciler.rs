@@ -9,13 +9,12 @@ use kube::core::ObjectMeta;
 use sha2::{Digest, Sha256};
 
 use crate::crd::blue_green::InceptionPoint;
-use crate::crd::inception_plugin::{InceptionPlugin, PluginRole, Topology};
+use crate::crd::inception_plugin::{InceptionPlugin, PluginRole};
 
 pub struct ReconciledResources {
     pub config_maps: Vec<ConfigMap>,
     pub deployments: Vec<Deployment>,
     pub services: Vec<Service>,
-    pub sidecar_containers: Vec<Container>,
     pub green_env_injections: Vec<EnvVar>,
     pub blue_env_injections: Vec<EnvVar>,
     pub test_env_injections: Vec<EnvVar>,
@@ -113,6 +112,7 @@ pub struct ReconcileInceptionContext<'a> {
     pub test_data_verify_path: Option<&'a str>,
     pub blue_deployment_name: &'a str,
     pub blue_green_ref: &'a str,
+    pub blue_green_uid: &'a str,
     pub auth_token: &'a str,
 }
 
@@ -133,6 +133,7 @@ pub fn secured_inception_config(
             &mut config,
             context.namespace,
             context.blue_green_ref,
+            context.blue_green_uid,
             &ip.name,
         );
     }
@@ -306,144 +307,115 @@ pub fn reconcile_inception_point(
     let template_context = plugin_template_context(ip, context.namespace, context.blue_green_ref);
     let env_injections = render_container_env_injections(plugin, &template_context, false);
 
-    match plugin.spec.topology {
-        Topology::SidecarBlue => {
-            let mut sidecar = plugin_container.clone();
-            ensure_config_mount(&mut sidecar);
-            Ok(ReconciledResources {
-                config_maps: vec![cm],
-                deployments: vec![],
-                services: vec![],
-                sidecar_containers: vec![sidecar],
-                green_env_injections: env_injections.green,
-                blue_env_injections: env_injections.blue,
-                test_env_injections: env_injections.test,
-            })
-        }
-        Topology::Standalone => {
-            let labels = BTreeMap::from([
-                ("app".to_string(), deployment_name.clone()),
-                ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
-                (
-                    "fluidbg.io/blue-green-ref".to_string(),
-                    context.blue_green_ref.to_string(),
-                ),
-            ]);
-            let mut pod_labels = labels.clone();
-            pod_labels.extend(plugin.spec.inceptor.pod_labels.clone());
-            let pod_annotations = if plugin.spec.inceptor.pod_annotations.is_empty() {
-                None
-            } else {
-                Some(plugin.spec.inceptor.pod_annotations.clone())
-            };
+    let labels = BTreeMap::from([
+        ("app".to_string(), deployment_name.clone()),
+        ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
+        (
+            "fluidbg.io/blue-green-ref".to_string(),
+            context.blue_green_ref.to_string(),
+        ),
+    ]);
+    let mut pod_labels = labels.clone();
+    pod_labels.extend(plugin.spec.inceptor.pod_labels.clone());
+    let pod_annotations = if plugin.spec.inceptor.pod_annotations.is_empty() {
+        None
+    } else {
+        Some(plugin.spec.inceptor.pod_annotations.clone())
+    };
 
-            let pod_spec = PodSpec {
-                containers: vec![{
-                    let mut c = plugin_container;
-                    ensure_config_mount(&mut c);
-                    c
-                }],
-                volumes: Some(volumes),
-                termination_grace_period_seconds: Some(1),
-                service_account_name: plugin.spec.inceptor.service_account_name.clone(),
+    let pod_spec = PodSpec {
+        containers: vec![{
+            let mut c = plugin_container;
+            ensure_config_mount(&mut c);
+            c
+        }],
+        volumes: Some(volumes),
+        termination_grace_period_seconds: Some(1),
+        service_account_name: plugin.spec.inceptor.service_account_name.clone(),
+        ..Default::default()
+    };
+
+    let deployment = Deployment {
+        metadata: ObjectMeta {
+            name: Some(deployment_name.clone()),
+            namespace: Some(context.namespace.to_string()),
+            labels: Some(labels.clone()),
+            ..Default::default()
+        },
+        spec: Some(k8s_openapi::api::apps::v1::DeploymentSpec {
+            selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                match_labels: Some(labels.clone()),
                 ..Default::default()
-            };
-
-            let deployment = Deployment {
-                metadata: ObjectMeta {
-                    name: Some(deployment_name.clone()),
-                    namespace: Some(context.namespace.to_string()),
-                    labels: Some(labels.clone()),
+            },
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(pod_labels),
+                    annotations: pod_annotations,
                     ..Default::default()
-                },
-                spec: Some(k8s_openapi::api::apps::v1::DeploymentSpec {
-                    selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
-                        match_labels: Some(labels.clone()),
+                }),
+                spec: Some(pod_spec),
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let service = Service {
+        metadata: ObjectMeta {
+            name: Some(service_name),
+            namespace: Some(context.namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        spec: Some(k8s_openapi::api::core::v1::ServiceSpec {
+            selector: Some([("app".to_string(), deployment_name)].into_iter().collect()),
+            ports: Some(
+                plugin
+                    .spec
+                    .inceptor
+                    .ports
+                    .iter()
+                    .map(|p| k8s_openapi::api::core::v1::ServicePort {
+                        name: Some(p.name.clone()),
+                        port: p.container_port,
+                        target_port: Some(
+                            k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(
+                                p.container_port,
+                            ),
+                        ),
                         ..Default::default()
-                    },
-                    template: PodTemplateSpec {
-                        metadata: Some(ObjectMeta {
-                            labels: Some(pod_labels),
-                            annotations: pod_annotations,
-                            ..Default::default()
-                        }),
-                        spec: Some(pod_spec),
-                    },
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
 
-            let service = Service {
-                metadata: ObjectMeta {
-                    name: Some(service_name),
-                    namespace: Some(context.namespace.to_string()),
-                    labels: Some(labels),
-                    ..Default::default()
-                },
-                spec: Some(k8s_openapi::api::core::v1::ServiceSpec {
-                    selector: Some([("app".to_string(), deployment_name)].into_iter().collect()),
-                    ports: Some(
-                        plugin
-                            .spec
-                            .inceptor
-                            .ports
-                            .iter()
-                            .map(|p| k8s_openapi::api::core::v1::ServicePort {
-                                name: Some(p.name.clone()),
-                                port: p.container_port,
-                                target_port: Some(
-                                    k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(
-                                        p.container_port,
-                                    ),
-                                ),
-                                ..Default::default()
-                            })
-                            .collect(),
-                    ),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-
-            Ok(ReconciledResources {
-                config_maps: vec![cm],
-                deployments: vec![deployment],
-                services: vec![service],
-                sidecar_containers: vec![],
-                green_env_injections: env_injections.green,
-                blue_env_injections: env_injections.blue,
-                test_env_injections: env_injections.test,
-            })
-        }
-        Topology::SidecarTest => {
-            let mut sidecar = plugin_container.clone();
-            ensure_config_mount(&mut sidecar);
-            Ok(ReconciledResources {
-                config_maps: vec![cm],
-                deployments: vec![],
-                services: vec![],
-                sidecar_containers: vec![sidecar],
-                green_env_injections: env_injections.green,
-                blue_env_injections: env_injections.blue,
-                test_env_injections: env_injections.test,
-            })
-        }
-    }
+    Ok(ReconciledResources {
+        config_maps: vec![cm],
+        deployments: vec![deployment],
+        services: vec![service],
+        green_env_injections: env_injections.green,
+        blue_env_injections: env_injections.blue,
+        test_env_injections: env_injections.test,
+    })
 }
 
 fn rewrite_queue_temp_names(
     config: &mut serde_json::Value,
     namespace: &str,
     blue_green_ref: &str,
+    blue_green_uid: &str,
     inception_point: &str,
 ) {
     set_nested_string(
         config,
         &["duplicator", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "duplicator",
             "green-input",
@@ -452,9 +424,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["duplicator", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "duplicator",
             "blue-input",
@@ -463,9 +436,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["splitter", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "splitter",
             "green-input",
@@ -474,9 +448,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["splitter", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "splitter",
             "blue-input",
@@ -485,9 +460,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["combiner", "greenOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "combiner",
             "green-output",
@@ -496,9 +472,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["combiner", "blueOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "combiner",
             "blue-output",
@@ -847,6 +824,7 @@ mod tests {
             test_data_verify_path: Some("/result/{testId}"),
             blue_deployment_name: "order-processor-blue",
             blue_green_ref: "order-processor-bg",
+            blue_green_uid: "uid-123",
             auth_token: "signed-token",
         }
     }
@@ -946,7 +924,6 @@ mod tests {
         let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
 
         assert_eq!(resources.config_maps.len(), 1);
-        assert_eq!(resources.sidecar_containers.len(), 0);
         assert_eq!(resources.deployments.len(), 1);
         assert_eq!(resources.services.len(), 1);
         assert!(resources.green_env_injections.is_empty());
@@ -994,7 +971,6 @@ mod tests {
         assert_eq!(resources.config_maps.len(), 1);
         assert_eq!(resources.deployments.len(), 1);
         assert_eq!(resources.services.len(), 1);
-        assert_eq!(resources.sidecar_containers.len(), 0);
 
         let deploy = &resources.deployments[0];
         assert_eq!(
@@ -1081,9 +1057,10 @@ mod tests {
         assert_eq!(
             duplicator.get("greenInputQueue").unwrap().as_str(),
             Some(
-                fluidbg_plugin_sdk::derived_temp_queue_name(
+                fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
                     "production",
                     "order-processor-bg",
+                    "uid-123",
                     "incoming-orders",
                     "duplicator",
                     "green-input"
@@ -1183,6 +1160,7 @@ mod tests {
                 test_data_verify_path: Some("/result/{testId}"),
                 blue_deployment_name: "blue",
                 blue_green_ref: "order-processor-bg",
+                blue_green_uid: "uid-123",
                 auth_token: "signed-token",
             },
         )
@@ -1242,6 +1220,7 @@ mod tests {
                 test_data_verify_path: Some("/result/{testId}"),
                 blue_deployment_name: "blue",
                 blue_green_ref: "order-processor-bg",
+                blue_green_uid: "uid-123",
                 auth_token: "signed-token",
             },
         )
@@ -1304,6 +1283,7 @@ mod tests {
                     test_data_verify_path: Some("/result/{testId}"),
                     blue_deployment_name: "blue",
                     blue_green_ref: "order-processor-bg",
+                    blue_green_uid: "uid-123",
                     auth_token: "signed-token",
                 }
             )
@@ -1350,6 +1330,7 @@ mod tests {
                     test_data_verify_path: Some("/result/{testId}"),
                     blue_deployment_name: "blue",
                     blue_green_ref: "order-processor-bg",
+                    blue_green_uid: "uid-123",
                     auth_token: "signed-token",
                 }
             )

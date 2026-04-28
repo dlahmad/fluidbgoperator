@@ -18,10 +18,6 @@ pub enum PluginRole {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum Topology {
-    #[serde(rename = "sidecar-blue")]
-    SidecarBlue,
-    #[serde(rename = "sidecar-test")]
-    SidecarTest,
     #[serde(rename = "standalone")]
     Standalone,
 }
@@ -95,6 +91,8 @@ pub struct PluginFeatures {
 pub struct PluginLifecycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepare_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drain_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

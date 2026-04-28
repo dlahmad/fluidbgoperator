@@ -99,13 +99,21 @@ pub(crate) async fn notify_observer(
     test_id: &str,
     payload: &Value,
     route: TrafficRoute,
-) {
-    if let Some(path) = observer.notify_path.as_deref()
-        && let Err(err) = state
-            .runtime
-            .notify_observer(path, test_id, payload, route)
-            .await
+) -> bool {
+    let Some(path) = observer.notify_path.as_deref() else {
+        warn!(
+            "observer matched test case {} but no notifyPath is configured",
+            test_id
+        );
+        return false;
+    };
+    if let Err(err) = state
+        .runtime
+        .notify_observer(path, test_id, payload, route)
+        .await
     {
         warn!("failed to notify test container for {}: {}", test_id, err);
+        return false;
     }
+    true
 }

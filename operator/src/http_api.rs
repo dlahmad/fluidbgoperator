@@ -19,7 +19,6 @@ use crate::state_store::{Counts, StateStore, TestCaseRecord, TestStatus, Verific
 pub struct ApiState {
     store: Arc<dyn StateStore>,
     client: kube::Client,
-    namespace: String,
     auth: AuthConfig,
 }
 
@@ -78,14 +77,7 @@ pub async fn register_test_case(
     let auth_header = headers
         .get(AUTHORIZATION_HEADER)
         .and_then(|value| value.to_str().ok());
-    let claims = match validate_plugin_auth(
-        &state.client,
-        &state.namespace,
-        &state.auth,
-        auth_header,
-    )
-    .await
-    {
+    let claims = match validate_plugin_auth(&state.client, &state.auth, auth_header).await {
         Ok(Some(claims)) => claims,
         Ok(None) => {
             warn!(
@@ -147,9 +139,10 @@ pub async fn register_test_case(
             );
         }
     }
+    let state_key = crate::controller::blue_green_state_key(&claims.namespace, &req.blue_green_ref);
     let run = TestCaseRecord {
         test_id: req.test_id.clone(),
-        blue_green_ref: req.blue_green_ref,
+        blue_green_ref: state_key,
         triggered_at: req.triggered_at.unwrap_or_else(Utc::now),
         source_inception_point: req.inception_point,
         timeout: Duration::seconds(req.timeout_seconds.unwrap_or(60)),
@@ -254,16 +247,10 @@ pub async fn get_counts(
     }
 }
 
-pub fn router(
-    store: Arc<dyn StateStore>,
-    client: kube::Client,
-    namespace: String,
-    auth: AuthConfig,
-) -> axum::Router {
+pub fn router(store: Arc<dyn StateStore>, client: kube::Client, auth: AuthConfig) -> axum::Router {
     let state = ApiState {
         store,
         client,
-        namespace,
         auth,
     };
     axum::Router::new()
@@ -293,7 +280,7 @@ async fn validate_registration_bgd(
     else {
         return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
     };
-    let bgds: Api<BlueGreenDeployment> = Api::namespaced(state.client.clone(), &state.namespace);
+    let bgds: Api<BlueGreenDeployment> = Api::namespaced(state.client.clone(), &claims.namespace);
     let bgd = bgds
         .get(&req.blue_green_ref)
         .await

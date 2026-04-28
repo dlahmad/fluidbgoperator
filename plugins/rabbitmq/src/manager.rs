@@ -5,11 +5,12 @@ use axum::{
 };
 use fluidbg_plugin_sdk::{
     AUTHORIZATION_HEADER, PluginAuthClaims, PluginManagerLifecycleRequest, PluginRole,
-    bearer_token, derived_temp_queue_name, verify_plugin_auth_token,
+    bearer_token, derived_temp_queue_name_with_uid, verify_plugin_auth_token,
 };
 use serde_json::Value;
 
 use crate::amqp::{connect_with_retry, declare_queue, delete_queue};
+use crate::assignments::build_prepare_assignments;
 use crate::config::{Config, has_role, shadow_queue_name};
 
 #[derive(Clone)]
@@ -37,7 +38,13 @@ pub(crate) async fn prepare_handler(
     let claims = authorize(&state, &headers)?;
     let config = secured_config_from_claims(&claims, &req);
     reconcile_queues(&state, &req.roles, &config, true).await?;
-    Ok(Json(serde_json::json!({"ok": true})))
+    let roles = parse_roles(&req.roles);
+    Ok(Json(
+        serde_json::to_value(fluidbg_plugin_sdk::PluginLifecycleResponse {
+            assignments: build_prepare_assignments(&config, &roles),
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
 }
 
 pub(crate) async fn cleanup_handler(
@@ -73,6 +80,7 @@ fn secured_config_from_claims(
         &mut value,
         &claims.namespace,
         &claims.blue_green_ref,
+        claims.blue_green_uid.as_deref().unwrap_or(""),
         &claims.inception_point,
     );
     serde_json::from_value(value).unwrap_or_default()
@@ -84,10 +92,7 @@ async fn reconcile_queues(
     config: &Config,
     create: bool,
 ) -> Result<(), StatusCode> {
-    let roles = roles
-        .iter()
-        .filter_map(|role| PluginRole::parse(role))
-        .collect::<Vec<_>>();
+    let roles = parse_roles(roles);
     let conn = connect_with_retry(&state.amqp_url)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -182,18 +187,27 @@ async fn reconcile_queues(
     Ok(())
 }
 
+fn parse_roles(roles: &[String]) -> Vec<PluginRole> {
+    roles
+        .iter()
+        .filter_map(|role| PluginRole::parse(role))
+        .collect()
+}
+
 fn rewrite_queue_temp_names(
     config: &mut Value,
     namespace: &str,
     blue_green_ref: &str,
+    blue_green_uid: &str,
     inception_point: &str,
 ) {
     set_nested_string(
         config,
         &["duplicator", "greenInputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "duplicator",
             "green-input",
@@ -202,9 +216,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["duplicator", "blueInputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "duplicator",
             "blue-input",
@@ -213,9 +228,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["splitter", "greenInputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "splitter",
             "green-input",
@@ -224,9 +240,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["splitter", "blueInputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "splitter",
             "blue-input",
@@ -235,9 +252,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["combiner", "greenOutputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "combiner",
             "green-output",
@@ -246,9 +264,10 @@ fn rewrite_queue_temp_names(
     set_nested_string(
         config,
         &["combiner", "blueOutputQueue"],
-        derived_temp_queue_name(
+        derived_temp_queue_name_with_uid(
             namespace,
             blue_green_ref,
+            blue_green_uid,
             inception_point,
             "combiner",
             "blue-output",

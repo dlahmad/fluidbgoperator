@@ -39,14 +39,14 @@ fn sample_bgd(generation: i64) -> BlueGreenDeployment {
     }
 }
 
-fn sample_plugin(topology: Topology, supports_progressive_shifting: bool) -> InceptionPlugin {
+fn sample_plugin(supports_progressive_shifting: bool) -> InceptionPlugin {
     InceptionPlugin::new(
         "rabbitmq",
         InceptionPluginSpec {
             description: "test plugin".to_string(),
             image: "fluidbg/fbg-plugin-rabbitmq:dev".to_string(),
             supported_roles: Vec::new(),
-            topology,
+            topology: Topology::Standalone,
             field_namespaces: Vec::new(),
             config_schema: serde_json::json!({}),
             config_template: None,
@@ -111,7 +111,7 @@ fn candidate_name_respects_dns_length_limit() {
 
 #[test]
 fn progressive_splitter_requires_support_flag() {
-    let plugin = sample_plugin(Topology::Standalone, false);
+    let plugin = sample_plugin(false);
     let err =
         validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap_err();
     assert!(
@@ -121,16 +121,8 @@ fn progressive_splitter_requires_support_flag() {
 }
 
 #[test]
-fn progressive_splitter_requires_standalone_topology() {
-    let plugin = sample_plugin(Topology::SidecarBlue, true);
-    let err =
-        validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap_err();
-    assert!(err.to_string().contains("standalone splitter plugin"));
-}
-
-#[test]
 fn progressive_splitter_accepts_standalone_plugin_with_support_flag() {
-    let plugin = sample_plugin(Topology::Standalone, true);
+    let plugin = sample_plugin(true);
     validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap();
 }
 

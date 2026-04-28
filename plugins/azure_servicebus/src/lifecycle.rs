@@ -114,7 +114,7 @@ pub(crate) async fn prepare_handler(
     headers: HeaderMap,
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
-    state.set_runtime_mode(RuntimeMode::Active);
+    state.set_runtime_mode(RuntimeMode::Idle);
     if inceptor_infra_disabled() {
         return Ok(Json(PluginLifecycleResponse {
             assignments: build_prepare_assignments(&state.config, &state.roles),
@@ -163,6 +163,15 @@ pub(crate) async fn prepare_handler(
     Ok(Json(PluginLifecycleResponse {
         assignments: build_prepare_assignments(&state.config, &state.roles),
     }))
+}
+
+pub(crate) async fn activate_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Active);
+    Ok(Json(PluginLifecycleResponse::default()))
 }
 
 pub(crate) async fn cleanup_handler(

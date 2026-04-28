@@ -9,7 +9,7 @@ pub(super) use inception::ensure_inception_resources;
 pub(super) use rollout::select_previous_green_for_promotion;
 pub(super) use rollout::{
     begin_draining_after_promotion, begin_draining_after_rollback,
-    bootstrap_initial_green_if_empty, ensure_declared_deployments, promote,
+    bootstrap_initial_green_if_empty, promote,
 };
 #[cfg(test)]
 pub(super) use traffic::validate_progressive_splitter_plugin;

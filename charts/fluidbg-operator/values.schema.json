@@ -18,7 +18,6 @@
           }
         },
         "rustLog": { "type": "string" },
-        "watchNamespace": { "type": "string" },
         "auth": {
           "type": "object",
           "properties": {

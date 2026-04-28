@@ -37,3 +37,18 @@ app.kubernetes.io/component: operator
 {{- end -}}
 {{- end -}}
 
+{{- define "fluidbg.postgresSecretName" -}}
+{{- default (printf "%s-postgres" (include "fluidbg.fullname" .)) .Values.stateStore.postgres.urlSecretName -}}
+{{- end -}}
+
+{{- define "fluidbg.cosmosConnectionStringSecretName" -}}
+{{- default (printf "%s-cosmos-connection" (include "fluidbg.fullname" .)) .Values.stateStore.cosmos.connectionStringSecretName -}}
+{{- end -}}
+
+{{- define "fluidbg.cosmosAccountKeySecretName" -}}
+{{- default (printf "%s-cosmos-account-key" (include "fluidbg.fullname" .)) .Values.stateStore.cosmos.accountKeySecretName -}}
+{{- end -}}
+
+{{- define "fluidbg.rabbitmqManagerSecretName" -}}
+{{- default (printf "%s-rabbitmq-manager" (include "fluidbg.fullname" .)) .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName -}}
+{{- end -}}

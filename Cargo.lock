@@ -1138,6 +1138,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
+ "tokio",
  "tracing",
 ]
 

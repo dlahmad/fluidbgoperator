@@ -7,7 +7,32 @@ pub fn derived_temp_queue_name(
     role: &str,
     logical: &str,
 ) -> String {
-    let suffix = stable_suffix(&[namespace, blue_green_ref, inception_point, role, logical]);
+    derived_temp_queue_name_with_uid(
+        namespace,
+        blue_green_ref,
+        "",
+        inception_point,
+        role,
+        logical,
+    )
+}
+
+pub fn derived_temp_queue_name_with_uid(
+    namespace: &str,
+    blue_green_ref: &str,
+    blue_green_uid: &str,
+    inception_point: &str,
+    role: &str,
+    logical: &str,
+) -> String {
+    let suffix = stable_suffix(&[
+        namespace,
+        blue_green_ref,
+        blue_green_uid,
+        inception_point,
+        role,
+        logical,
+    ]);
     format!("fluidbg-{}-{suffix}", sanitize(logical))
 }
 
@@ -79,7 +104,9 @@ fn sanitize_shadow_suffix(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{derived_shadow_queue_name, derived_temp_queue_name};
+    use super::{
+        derived_shadow_queue_name, derived_temp_queue_name, derived_temp_queue_name_with_uid,
+    };
 
     #[test]
     fn derived_temp_names_are_scoped_by_namespace_and_bgd() {
@@ -91,6 +118,16 @@ mod tests {
         assert_ne!(a, c);
         assert!(a.starts_with("fluidbg-blue-input-"));
         assert!(a.len() <= 63);
+    }
+
+    #[test]
+    fn derived_temp_names_are_scoped_by_bgd_uid_when_available() {
+        let a =
+            derived_temp_queue_name_with_uid("ns", "bgd", "uid-a", "incoming", "splitter", "blue");
+        let b =
+            derived_temp_queue_name_with_uid("ns", "bgd", "uid-b", "incoming", "splitter", "blue");
+
+        assert_ne!(a, b);
     }
 
     #[test]

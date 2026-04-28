@@ -8,7 +8,7 @@ This document describes the plugin contract between:
 
 - the operator
 - plugin managers
-- standalone or sidecar plugin inceptors
+- standalone plugin inceptors
 - the test container
 - the application deployments
 
@@ -20,7 +20,7 @@ The operator does not hardcode transport behavior. A plugin is registered as an 
 
 At runtime the operator is responsible for:
 
-1. creating the per-inception inceptor deployment or sidecar
+1. creating the per-inception inceptor Deployment and Service
 2. calling manager and inceptor lifecycle endpoints
 3. patching green, blue, and test deployments with plugin-provided assignments
 4. injecting runtime URLs and identity into the inceptor container
@@ -60,6 +60,7 @@ An `InceptionPlugin` declares:
 - `inceptor`
 - optional `manager`
 - `lifecycle.preparePath`
+- `lifecycle.activatePath`
 - `lifecycle.cleanupPath`
 - `configSchema`
 - `fieldNamespaces`
@@ -73,6 +74,9 @@ For the built-in RabbitMQ and Azure Service Bus plugins the important roles are:
 - `observer`
 - `writer`
 - `consumer`
+
+Only `topology: standalone` is part of the CRD and supported by the operator
+lifecycle.
 
 ### InceptionPoint
 
@@ -104,6 +108,11 @@ inceptionPoints:
             matches: "^order$"
         notifyPath: /observe/{testId}/incoming-orders
 ```
+
+For queue-style built-in plugins, user-supplied temporary queue fields describe
+intent only. The operator and plugin manager rewrite temporary queue names to
+derived names scoped by namespace, BGD name, BGD UID, inception point, role, and
+logical purpose before any create/delete operation or inceptor assignment.
 
 ## Inceptor Discovery
 
@@ -163,7 +172,7 @@ For each inception point the operator signs one JWT and injects it as
 |---|---|
 | `iss` | Fixed issuer: `fluidbg-operator` |
 | `aud` | Fixed audience: `fluidbg-inception-plugin` |
-| `namespace` | BGD namespace watched by the operator |
+| `namespace` | Namespace of the concrete `BlueGreenDeployment` that owns this inception point |
 | `blue_green_ref` | `BlueGreenDeployment.metadata.name` |
 | `blue_green_uid` | `BlueGreenDeployment.metadata.uid` for this concrete rollout CR |
 | `inception_point` | `InceptionPoint.name` |
@@ -219,7 +228,13 @@ Called by the operator before observation starts.
 Purpose:
 
 - create transport-specific derived resources
-- return property assignments for green, blue, and test targets
+- return property assignments for green and blue application targets
+
+Plugins must not return `target: test` assignments from runtime `prepare`
+responses. Test-container assignments must be declared in
+`InceptionPlugin.spec.injects.testContainer`; the operator renders those values
+into the verifier Deployment before creating the verifier pod. This prevents a
+verifier Deployment rollout while observations are already possible.
 
 Response shape:
 
@@ -246,7 +261,7 @@ Assignment fields:
 
 | Field | Values | Meaning |
 |---|---|---|
-| `target` | `green`, `blue`, `test` | Deployment group the operator patches |
+| `target` | `green`, `blue` for runtime prepare; `test` only for plugin-declared template injection | Deployment group the operator patches |
 | `kind` | `env` | Assignment type; only environment variables are currently supported |
 | `name` | string | Environment variable name |
 | `value` | string | Environment variable value |
@@ -356,7 +371,7 @@ Notification shape:
 
 | Value | Meaning |
 |---|---|
-| `blue` | The resource was routed only to the candidate blue path. |
+| `blue` | The resource was routed only to the candidate path. |
 | `green` | The resource was routed only to the current green path. |
 | `both` | The resource was duplicated to both green and blue. This is the queue `duplicator` behavior. |
 | `unknown` | The plugin cannot determine the route for this observation. |
@@ -367,11 +382,39 @@ Queue plugin operator registration semantics:
 
 - `blue`, `both`, and `unknown` observations register an operator `testCase`.
 - `green` observations still call `observer.notifyPath`, but do not register an operator `testCase`; this prevents progressive splitter traffic sent only to green from becoming pending blue verification cases.
+- Plugins must deliver `observer.notifyPath` before registering the operator `testCase`. If the verifier callback cannot be delivered after retry, the plugin must not register that case with the operator. This prevents a rollout from being promoted from operator-local counts when the verifier never observed the actual side effect.
 
 HTTP operator registration follows the same route semantics. Splitter/proxy
 requests routed to blue register operator `testCase`s; green-only progressive
 traffic can still be observed by the test container without creating pending
 blue verification cases.
+
+### Observer State Machine
+
+Every observer role uses the same delivery state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Matched: message or request matches observer filter
+    Matched --> NotifyVerifier: testId extracted
+    NotifyVerifier --> RegisterOperator: notifyPath returned success
+    NotifyVerifier --> SkipRegistration: notifyPath failed after retry
+    RegisterOperator --> PendingVerdict: route is blue, both, or unknown
+    RegisterOperator --> VerifierOnly: route is green
+    SkipRegistration --> [*]: source remains retriable where transport supports it
+    PendingVerdict --> [*]: operator polls verifyPath
+    VerifierOnly --> [*]: no operator case
+```
+
+Correct behavior by failure point:
+
+| Failure point | Plugin behavior | Operator behavior |
+|---|---|---|
+| Filter does not match or no `testId` can be extracted | Do not notify and do not register. Continue normal transport handling. | No test case is created. |
+| `observer.notifyPath` fails after retry | Do not register the operator case. Queue plugins avoid acknowledging or completing the source message when possible so the transport can redeliver. | No false pass count is created. The rollout waits for other cases or eventually times out/rolls back according to promotion policy. |
+| Operator `/testcases` registration fails after verifier notification succeeded | Log the registration failure. Queue plugins may redeliver depending on transport failure handling. | No case count is created until a registration succeeds. |
+| `verifyPath` keeps returning `passed: null` | The plugin is done; verifier state remains pending. | The case stays pending until its timeout, then counts as timed out and can trigger rollback. |
+| `verifyPath` returns `passed: false` | The plugin is done. | The case counts as failed and rollback can be selected when the promotion threshold is no longer recoverable. |
 
 ## Communication Diagrams
 
@@ -400,7 +443,7 @@ sequenceDiagram
     participant MQ as RabbitMQ
     participant In as incoming-orders plugin
     participant G as current green app
-    participant B as candidate blue app
+    participant B as candidate app
     participant Out as outgoing-results plugin
     participant T as test-container
     participant O as operator
@@ -409,8 +452,8 @@ sequenceDiagram
     In->>MQ: consume inputQueue
     In->>MQ: publish greenInputQueue
     In->>MQ: publish blueInputQueue
-    In->>O: POST /testcases
     In->>T: POST observer.notifyPath
+    In->>O: POST /testcases
 
     G->>MQ: consume greenInputQueue
     B->>MQ: consume blueInputQueue
@@ -420,8 +463,8 @@ sequenceDiagram
     Out->>MQ: consume greenOutputQueue
     Out->>MQ: consume blueOutputQueue
     Out->>MQ: publish outputQueue
-    Out->>O: POST /testcases
     Out->>T: POST observer.notifyPath
+    Out->>O: POST /testcases
 
     O->>T: GET dataVerification.verifyPath
     T-->>O: {passed,errorMessage}
@@ -429,45 +472,51 @@ sequenceDiagram
     O->>O: decide promote or rollback
 ```
 
-### 3. Prepare and Cleanup
+### 3. Prepare, Activate, and Cleanup
 
 ```mermaid
 sequenceDiagram
     participant O as operator
     participant P as plugin
     participant G as green deployment
-    participant B as blue deployment
+    participant B as candidate deployment
     participant T as test deployment
 
-    O->>T: create Deployment/Service
-    O->>O: wait until test Deployment is available
+    O->>P: create inceptor Deployment/Service
+    P->>P: start idle
     O->>P: POST /prepare
-    P-->>O: assignments[]
+    P-->>O: app assignments[]
+    O->>B: create candidate with blue assignments in initial pod template
+    O->>T: create Deployment/Service
+    O->>O: wait until test Deployment and Service endpoints are ready
     O->>G: patch env vars
     O->>B: patch env vars
-    O->>T: patch env vars
-    O->>O: wait for rollout completion
+    O->>O: wait for green/blue rollout completion
+    O->>P: POST /activate
+    P->>P: start consuming/proxying/observing
 
     Note over O,P: observation and promotion happen here
 
+    O->>P: POST /drain
     O->>P: POST /cleanup
     P-->>O: cleanup complete
     O->>O: remove plugin and test resources
 ```
 
-The operator waits for verifier test deployments before any plugin `preparePath`
-call. Test containers are declared with native Kubernetes Deployment and Service
-specs, so readiness belongs in the Deployment's normal `readinessProbe` when the
-container can start before its HTTP API is ready. Test-targeted template
-injections from `InceptionPlugin.spec.injects` are also patched and waited
-before prepare. This matters because prepared inceptors can immediately observe
-traffic and call `observer.notifyPath`; the Service must already have ready
-endpoints so those observations are not lost during rollout startup.
+The operator calls plugin `preparePath` before verifier creation and before
+application assignment rollout. Therefore `preparePath` is a non-traffic setup
+phase: queue plugins may declare temporary queues and return app assignments,
+but must not consume from base queues; HTTP plugins must not accept proxy/write
+traffic. Traffic work starts only after the operator has created the candidate
+with blue assignments in its initial pod template, created the verifier, waited
+for verifier readiness and Service endpoints, patched green/blue app
+assignments, waited for those rollouts, and called `activatePath`.
 
 Plugins must not return test-deployment assignments from `preparePath`. Those
-assignments arrive too late to be part of the pre-prepare readiness barrier and
+assignments arrive too late to be part of the initial verifier pod template and
 the operator rejects them. Put test-container injections in the plugin CRD
-`injects` section instead.
+`injects` section instead. Plugins must also not return assignments from
+`activatePath`; activation is only a state transition.
 
 ### 4. Information Sources by Container
 
@@ -492,313 +541,16 @@ flowchart TD
     IPOD -->|"notifyPath call"| TEST
 ```
 
-## Current Built-In RabbitMQ Plugin Behavior
+## Built-In Plugin References
 
-RabbitMQ uses a split plugin security model when `InceptionPlugin.spec.manager`
-is configured:
+Plugin-specific role behavior, configuration, state machines, failure behavior,
+and drain semantics live in the built-in plugin reference pages:
 
-- The manager process runs in the operator namespace and owns RabbitMQ queue
-  creation/deletion authority.
-- Per-inception inceptor pods run in the application namespace and do not
-  create or delete temporary queues.
-- The operator calls manager `/manager/prepare` and `/manager/cleanup` with the
-  per-inception JWT.
-- The manager verifies the JWT signature and derives `namespace`,
-  `blueGreenRef`, `inceptionPoint`, and `plugin` from token claims.
-- Temporary queue names are recomputed from those claims and active role names;
-  user-supplied temporary queue names in the BGD are not trusted for
-  infrastructure creation or deletion.
-- Inceptor pods receive only the secured, operator-rewritten queue names needed
-  for message movement.
-
-```mermaid
-flowchart TD
-    SRC["Base input queue"]
-    DUP["duplicator role"]
-    SPLIT["splitter role"]
-    GREENQ["green input queue"]
-    BLUEQ["blue input queue"]
-    GREEN["green app"]
-    BLUE["blue app"]
-    GOUT["green output queue"]
-    BOUT["blue output queue"]
-    MGR["manager in operator namespace"]
-    COMB["combiner role"]
-    OUT["base output queue"]
-    TEST["test container"]
-    OP["operator"]
-
-    MGR -->|"create/delete derived temp queues"| GREENQ
-    MGR -->|"create/delete derived temp queues"| BLUEQ
-    SRC --> DUP
-    SRC --> SPLIT
-    DUP -->|"route both"| GREENQ
-    DUP -->|"route both"| BLUEQ
-    SPLIT -->|"route green"| GREENQ
-    SPLIT -->|"route blue"| BLUEQ
-    GREENQ --> GREEN --> GOUT
-    BLUEQ --> BLUE --> BOUT
-    GOUT --> COMB
-    BOUT --> COMB
-    COMB --> OUT
-    DUP -->|"register and notify"| OP
-    DUP --> TEST
-    COMB -->|"notify source route"| TEST
-```
-
-### Duplicator
-
-- consumes `duplicator.inputQueue`
-- republishes each matching message to:
-  - `duplicator.greenInputQueue`
-  - `duplicator.blueInputQueue`
-- returns env assignments for:
-  - `duplicator.greenInputQueueEnvVar`
-  - `duplicator.blueInputQueueEnvVar`
-
-### Splitter
-
-- consumes `splitter.inputQueue`
-- routes messages to green or blue based on the current traffic percentage
-- initializes that percentage from `FLUIDBG_TRAFFIC_PERCENT` when the plugin starts
-- updates the percentage at runtime when the operator calls lifecycle `trafficShiftPath` with `{ "trafficPercent": n }`
-- does not require the operator to patch env vars or restart the plugin pod during normal progressive shifting
-
-### Combiner
-
-- consumes:
-  - `combiner.greenOutputQueue`
-  - `combiner.blueOutputQueue`
-- publishes to:
-  - `combiner.outputQueue`
-- returns env assignments for:
-  - `combiner.greenOutputQueueEnvVar`
-  - `combiner.blueOutputQueueEnvVar`
-
-### Observer
-
-- filters messages according to `observer.match`
-- extracts `testId`
-- calls `observer.notifyPath` with `route` metadata in the body
-- registers the `testCase` with the operator for `blue`, `both`, and `unknown` routes
-- does not register green-only observations as operator verification cases
-
-### Promotion and Rollback Safety
-
-RabbitMQ loss prevention is handled by the plugin state machine plus the
-operator drain phase:
-
-- Queue creation/deletion is done by the manager after token verification and
-  derived-name recomputation, so an attacker controlling the application
-  namespace cannot request arbitrary queue deletion by editing BGD config.
-- Duplicator and splitter queue consumers acknowledge the source message only after the plugin has successfully published the required downstream copy or route.
-- During drain, the plugin stops accepting new temporary work and reports
-  `drained: true` only when temporary queue paths have no ready or
-  unacknowledged messages left.
-- If `management.url` is configured, drain status uses the RabbitMQ management
-  API and waits for `messages_ready == 0` and `messages_unacknowledged == 0`
-  on temporary queues before cleanup. Consumer counts are reported for
-  diagnostics but do not block drain by themselves.
-- Without management API access, the fallback AMQP signal can only observe ready
-  message count and consumer count. In that mode the plugin reports the
-  limitation in its drain message and remains less strict.
-- `queueDeclaration` can set RabbitMQ queue declaration properties for
-  temporary queues, including `durable`, `exclusive`, `autoDelete`, and AMQP
-  `arguments` such as `x-queue-type`, `x-message-ttl`, or
-  `x-single-active-consumer`.
-- Optional `shadowQueue` creates an additional queue next to each temporary
-  queue, using the configured suffix literally after safety validation, for
-  example `_dlq` or `.dlq`. `shadowQueue.queueDeclaration` configures the
-  shadow queue independently. The plugin does not implicitly configure RabbitMQ
-  DLX arguments; if the temporary queue should dead-letter into a shadow queue,
-  configure `x-dead-letter-exchange` and `x-dead-letter-routing-key`
-  explicitly in `queueDeclaration.arguments`.
-- During drain, regular temporary queue messages are moved back to the base
-  queue, while temporary shadow queue messages are moved back to the matching
-  base shadow queue. For example, `fluidbg-green-input-..._dlq` moves to
-  `orders_dlq`, not to `orders`.
-- For rollback, blue-only temporary messages are either consumed by blue during the drain window or left/moved so the base queue can continue safely after cleanup.
-- For promotion, surviving traffic is moved back to the base wiring before cleanup removes temporary resources.
-- If drain exceeds the configured wait, the operator records `TimedOutMaybeSuccessful` and proceeds; this is explicit risk accounting rather than silent success.
-
-## Current Built-In Azure Service Bus Plugin Behavior
-
-The Azure Service Bus plugin is named `azure-servicebus` in the built-in
-`InceptionPlugin` registration and ships as
-`ghcr.io/dlahmad/fbg-plugin-azure-servicebus`. It supports the same queue roles
-as RabbitMQ where Service Bus semantics map cleanly: `duplicator`, `splitter`,
-`combiner`, `observer`, `writer`, and `consumer`.
-
-```mermaid
-flowchart TD
-    SRC["Base Service Bus queue"]
-    ASB["fbg-plugin-azure-servicebus"]
-    GREENQ["green input queue"]
-    BLUEQ["blue input queue"]
-    GREEN["green app"]
-    BLUE["blue app"]
-    GOUT["green output queue"]
-    BOUT["blue output queue"]
-    OUT["base output queue"]
-    TEST["test container"]
-    OP["operator"]
-
-    SRC -->|"peek-lock"| ASB
-    ASB -->|"duplicate or split"| GREENQ
-    ASB -->|"duplicate or split"| BLUEQ
-    GREENQ --> GREEN --> GOUT
-    BLUEQ --> BLUE --> BOUT
-    GOUT --> ASB
-    BOUT --> ASB
-    ASB --> OUT
-    ASB -->|"complete after publish"| SRC
-    ASB -->|"register and notify"| OP
-    ASB --> TEST
-```
-
-### Authentication to Azure
-
-Azure Service Bus also uses the split manager/inceptor model when
-`InceptionPlugin.spec.manager` is configured. Azure credentials and workload
-identity bindings belong to the manager pod in the operator namespace. Inceptor
-pods in application namespaces should not receive Service Bus management
-permissions.
-
-The manager supports two Azure authentication modes:
-
-| Mode | Config | Use |
-|---|---|---|
-| `connectionString` | Manager config with `Endpoint`, `SharedAccessKeyName`, and `SharedAccessKey` | Uses Service Bus SAS tokens for queue management. |
-| `workloadIdentity` | Manager config with `fullyQualifiedNamespace` plus AKS workload identity env vars or explicit `auth.tenantId`, `auth.clientId`, `auth.federatedTokenFile` | Exchanges the projected Kubernetes service account token for Microsoft Entra tokens and uses Bearer auth for Service Bus management. |
-
-For AKS workload identity, the manager expects the standard projected values
-`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE` unless
-they are set explicitly in manager config. The manager requests Service Bus data
-plane tokens for `https://servicebus.azure.net/.default`. If
-`management.subscriptionId` and `management.resourceGroup` are also set, queue
-create/delete/status calls use Azure Resource Manager with
-`https://management.azure.com/.default`.
-
-The Kubernetes service account used by the manager pod must be configured for
-Azure Workload Identity by the cluster owner, including the
-`azure.workload.identity/use: "true"` pod label or equivalent chart overlay, and
-the managed identity must have Service Bus data-plane permissions. Automatic
-queue create/delete additionally requires permission to manage
-`Microsoft.ServiceBus/namespaces/queues/*` in the target namespace resource.
-
-`InceptionPlugin.spec.inceptor` supports pod-level metadata for inceptor
-pods, but privileged Azure identity should be bound to the manager deployment,
-not the per-inception inceptor pod. The Helm chart exposes manager workload
-identity settings for the built-in Azure Service Bus plugin under
-`builtinPlugins.azureServiceBus.manager.workloadIdentity`.
-
-### Service Bus Semantics
-
-- The plugin uses Service Bus REST runtime APIs directly to keep the image small.
-- Reads use peek-lock, not receive-and-delete.
-- The source message is completed only after the downstream send and optional observer notification have succeeded.
-- When the plugin duplicates, splits, combines, or drains Service Bus messages,
-  it forwards the body, custom application properties, and sendable
-  `BrokerProperties` such as message id, correlation id, session id, content
-  type, TTL, and partition keys. It intentionally drops read-only receive/lock
-  metadata such as lock token, sequence number, delivery count, lock expiry, and
-  dead-letter reason.
-- On processing failure, the plugin unlocks the message so Service Bus can redeliver it.
-- The writer role publishes JSON payloads to `writer.targetQueue` and maps `properties` to Service Bus custom message headers.
-- Filters and test-id selectors support both `queue.*` and `servicebus.*` field namespaces. Applications do not need to add FluidBG route fields to message bodies.
-- `queueDeclaration` can set Service Bus queue properties for temporary queues,
-  including lock duration, max delivery count, TTL, dead-letter-on-expiration,
-  duplicate detection/session settings, partitioning, forwarding, and status.
-- Optional `shadowQueue` creates a separate queue next to each temporary queue
-  using the configured suffix literally after safety validation. Its
-  `queueDeclaration` is independent from the regular temporary queue. The
-  plugin does not implicitly set Service Bus forwarding properties; if
-  dead-letter forwarding is desired, configure
-  `queueDeclaration.forwardDeadLetteredMessagesTo` explicitly.
-
-### Promotion and Rollback Safety
-
-Azure Service Bus does not expose RabbitMQ-style active consumer counts through
-the portable REST path used by this plugin. The plugin therefore uses the
-following safety model:
-
-- During drain, duplicator and splitter roles stop taking new base-queue work and move available messages from temporary green/blue queues back to the base queue.
-- During drain, duplicator and splitter roles also read the temporary queues'
-  `$deadletterqueue` subqueues and republish those messages to the base queue
-  before completing the DLQ messages. This prevents retryable dead-lettered
-  messages from disappearing when the temporary queues are deleted.
-- If a Service Bus shadow queue is configured, temporary shadow queue messages
-  and their own `$deadletterqueue` messages are moved back to the matching base
-  shadow queue, not to the regular base queue.
-- Combiner roles stop taking new temporary output work during drain, move
-  available messages and dead-letter subqueue messages from temporary output
-  queues to the base output queue, and abandon any message that was already
-  peek-locked by the plugin when drain started.
-- Drain status reports success only after temporary queues report zero total messages and the plugin has no plugin-owned locked messages in flight.
-- With Azure Resource Manager status, `properties.messageCount` is used rather
-  than `activeMessageCount`, so locked messages still present in the entity keep
-  drain status pending. The runtime Atom feed path uses `MessageCount` for the
-  same reason.
-- If the configured operator drain timeout is exceeded, the operator records explicit risk through `TimedOutMaybeSuccessful`.
-
-## Current Built-In HTTP Plugin Behavior
-
-The HTTP plugin is one combined standalone service with `splitter`, `observer`,
-`mock`, and `writer` roles.
-
-```mermaid
-flowchart LR
-    CLIENT["caller"]
-    HP["fbg-plugin-http"]
-    GREEN["green endpoint"]
-    BLUE["blue endpoint"]
-    UP["real upstream"]
-    TEST["test container"]
-    OP["operator"]
-
-    CLIENT --> HP
-    HP -->|"progressive route green"| GREEN
-    HP -->|"progressive route blue"| BLUE
-    BLUE -->|"egress call via plugin"| HP
-    HP -->|"proxy fallback"| UP
-    HP -->|"observer or mock callback"| TEST
-    HP -->|"register blue case"| OP
-    TEST -->|"POST /write"| HP
-    HP -->|"write to blue target"| BLUE
-```
-
-### Splitter / Proxy
-
-- proxies requests through the plugin service
-- routes traffic to `greenEndpoint` or `blueEndpoint` from config using the current traffic percentage
-- reports route metadata as `green`, `blue`, or `unknown`
-- updates progressive percentage through lifecycle `trafficShiftPath`
-
-### Observer / Mock
-
-- filters requests according to `match`/`filters`
-- extracts `testId`
-- posts observer notifications with route metadata in the JSON body
-- can return mock responses from the test container when configured as a mock
-
-### Writer
-
-- exposes `/write`
-- forwards test-container initiated HTTP calls to `targetUrl` or the configured blue endpoint
-- is reached through the env var declared by `writeEnvVar`
-
-### Promotion and Rollback Safety
-
-HTTP cannot provide queue-style durable replay for in-flight requests. The
-operator and plugin minimize request loss by ordering traffic restoration before
-resource removal:
-
-- Progressive changes are applied through `POST /traffic`, so the plugin pod is not restarted when percentages change.
-- Drain is an admission barrier: after `/drain` succeeds, new proxy and write calls are rejected with `503` instead of being counted on a timing window.
-- The operator applies restore assignments so application env vars point back to direct green/blue endpoints before deleting the plugin service.
-- Existing calls already accepted by the HTTP plugin are allowed to complete during the drain window.
-- Cleanup removes the plugin only after drain status reports no admitted calls remain or the configured timeout is reached.
-- If the timeout is hit, the status records that drain was not proven fully successful; the operator does not pretend zero-loss was guaranteed.
+| Plugin | Reference |
+|---|---|
+| `rabbitmq` | [RabbitMQ Plugin](plugins/rabbitmq.md) |
+| `azure-servicebus` | [Azure Service Bus Plugin](plugins/azure-servicebus.md) |
+| `http` | [HTTP Plugin](plugins/http.md) |
 
 ## Practical Notes
 

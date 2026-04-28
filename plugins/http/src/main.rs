@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize},
+    atomic::{AtomicU8, AtomicUsize},
 };
 
 use anyhow::Result;
@@ -14,10 +14,10 @@ mod state;
 
 use config::load_config;
 use handlers::{
-    cleanup_handler, drain_handler, drain_status, health, prepare_handler, proxy_handler,
-    traffic_shift_handler, write_handler,
+    activate_handler, cleanup_handler, drain_handler, drain_status, health, prepare_handler,
+    proxy_handler, traffic_shift_handler, write_handler,
 };
-use state::AppState;
+use state::{AppState, RuntimeMode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         config,
         runtime,
-        draining: Arc::new(AtomicBool::new(false)),
+        mode: Arc::new(AtomicU8::new(RuntimeMode::Idle as u8)),
         active_requests: Arc::new(AtomicUsize::new(0)),
         traffic_percent: Arc::new(AtomicUsize::new(traffic_percent_from_env() as usize)),
     };
@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
     let app = axum::Router::new()
         .route("/health", axum::routing::get(health))
         .route("/prepare", axum::routing::post(prepare_handler))
+        .route("/activate", axum::routing::post(activate_handler))
         .route("/drain", axum::routing::post(drain_handler))
         .route("/cleanup", axum::routing::post(cleanup_handler))
         .route("/drain-status", axum::routing::get(drain_status))

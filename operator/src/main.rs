@@ -28,8 +28,6 @@ async fn main() {
 
     let store = build_state_store().await;
 
-    let namespace =
-        std::env::var("FLUIDBG_NAMESPACE").unwrap_or_else(|_| "fluidbg-system".to_string());
     let signing_secret_namespace = std::env::var("FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE")
         .unwrap_or_else(|_| "fluidbg-system".to_string());
     let auth = AuthConfig {
@@ -50,19 +48,12 @@ async fn main() {
         tokio::time::Duration::from_secs(10),
     );
 
-    let app = http_api::router(
-        store.clone(),
-        client.clone(),
-        namespace.clone(),
-        auth.clone(),
-    );
+    let app = http_api::router(store.clone(), client.clone(), auth.clone());
 
     let ctrl_store = store.clone();
     let ctrl_client = client.clone();
-    let ctrl_ns = namespace.clone();
     let orphan_store = store.clone();
     let orphan_client = client.clone();
-    let orphan_ns = namespace.clone();
     let orphan_interval = Duration::from_secs(
         std::env::var("FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS")
             .ok()
@@ -71,13 +62,12 @@ async fn main() {
             .unwrap_or(60),
     );
     tokio::spawn(async move {
-        fluidbg_operator::controller::run_controller(ctrl_client, ctrl_ns, auth, ctrl_store).await;
+        fluidbg_operator::controller::run_controller(ctrl_client, auth, ctrl_store).await;
     });
 
     tokio::spawn(async move {
         fluidbg_operator::controller::run_orphan_cleanup(
             orphan_client,
-            orphan_ns,
             orphan_store,
             orphan_interval,
         )

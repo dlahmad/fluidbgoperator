@@ -26,8 +26,11 @@ The Rust SDK also provides the shared auth primitives used by built-in plugins:
 - `AUTHORIZATION_HEADER` for bearer-token transport
 - `PluginInceptorRuntime` for operator/test-container discovery inside an inceptor
 - `PluginManagerLifecycleRequest` for manager prepare/cleanup requests
+- `PluginLifecycleResponse` and `PluginDrainStatusResponse` for inceptor
+  prepare, activate, drain, drain-status, and cleanup endpoints
 - `PluginAuthClaims` for signed per-inception identity
-- `derived_temp_queue_name` for manager/inceptor agreement on derived queue names
+- `derived_temp_queue_name_with_uid` for manager/inceptor agreement on derived queue names scoped by namespace, BGD name, BGD UID, inception point, role, and logical purpose
+- `derived_temp_queue_name` for compatibility when no BGD UID is available
 - `sign_plugin_auth_token` and `verify_plugin_auth_token` for HS256 JWT handling
 - `bearer_value`, `bearer_token`, and `bearer_matches` for endpoint checks
 

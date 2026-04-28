@@ -17,7 +17,6 @@ operator:
     limits:
       memory: 256Mi
   rustLog: info
-  watchNamespace: ""
   auth:
     createSigningSecret: false
     signingSecretNamespace: ""

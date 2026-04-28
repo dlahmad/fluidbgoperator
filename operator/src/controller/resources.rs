@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Service, ServiceSpec};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Endpoints, EnvVar, Namespace, Pod, Secret, Service, ServiceSpec,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::ResourceExt;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -21,22 +23,30 @@ use crate::plugins::reconciler::{
 };
 
 use super::deployments::DeploymentIdentity;
+use super::plugin_lifecycle::{AssignmentKind, AssignmentTarget, PropertyAssignment};
 use super::{
     AuthConfig, ReconcileError, apply_family_labels_to_deployment, apply_rollout_candidate_labels,
-    candidate_ref, clear_rollout_candidate_labels, deployment_namespace_spec, set_green_label,
+    blue_green_state_key, candidate_ref, clear_rollout_candidate_labels, deployment_namespace_spec,
+    set_green_label,
 };
 
 pub(super) async fn ensure_test_resources(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
+    assignments: &[PropertyAssignment],
 ) -> std::result::Result<Vec<DeploymentIdentity>, ReconcileError> {
     let mut deployments = Vec::new();
     for test in &bgd.spec.tests {
         let test_name = test_instance_name(bgd, &test.name);
         let labels = test_labels(bgd, &test.name, &test_name);
         ensure_test_name_available(bgd, client, namespace, &test.name, &test_name, &labels).await?;
-        let deployment_spec = deployment_spec_for_test(test, &labels);
+        let mut deployment_spec = deployment_spec_for_test(test, &labels);
+        apply_assignments_to_deployment_spec(
+            &mut deployment_spec,
+            assignments,
+            AssignmentTarget::Test,
+        )?;
 
         let deployment = Deployment {
             metadata: ObjectMeta {
@@ -81,6 +91,47 @@ pub(super) async fn ensure_test_resources(
     Ok(deployments)
 }
 
+fn apply_assignments_to_deployment_spec(
+    deployment: &mut DeploymentSpec,
+    assignments: &[PropertyAssignment],
+    target: AssignmentTarget,
+) -> std::result::Result<(), ReconcileError> {
+    let pod_spec =
+        deployment.template.spec.as_mut().ok_or_else(|| {
+            ReconcileError::Store("deployment has no pod template spec".to_string())
+        })?;
+    for assignment in assignments {
+        if assignment.target != target || !matches!(assignment.kind, AssignmentKind::Env) {
+            continue;
+        }
+        for container in &mut pod_spec.containers {
+            if let Some(target_name) = assignment.container_name.as_deref()
+                && container.name != target_name
+            {
+                continue;
+            }
+            upsert_env_var(
+                container.env.get_or_insert_with(Vec::new),
+                &assignment.name,
+                &assignment.value,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn upsert_env_var(env: &mut Vec<EnvVar>, name: &str, value: &str) {
+    if let Some(existing) = env.iter_mut().find(|env| env.name == name) {
+        existing.value = Some(value.to_string());
+        return;
+    }
+    env.push(EnvVar {
+        name: name.to_string(),
+        value: Some(value.to_string()),
+        ..Default::default()
+    });
+}
+
 pub(super) fn test_service_port(test: &TestSpec) -> std::result::Result<i32, ReconcileError> {
     test.service
         .ports
@@ -93,6 +144,61 @@ pub(super) fn test_service_port(test: &TestSpec) -> std::result::Result<i32, Rec
                 test.name
             ))
         })
+}
+
+pub(super) async fn wait_for_test_services_ready(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    for test in &bgd.spec.tests {
+        let service_name = test_instance_name(bgd, &test.name);
+        wait_for_service_ready_endpoint(client, namespace, &service_name).await?;
+    }
+    Ok(())
+}
+
+async fn wait_for_service_ready_endpoint(
+    client: &kube::Client,
+    namespace: &str,
+    service_name: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let endpoints: Api<Endpoints> = Api::namespaced(client.clone(), namespace);
+
+    for attempt in 1..=60 {
+        match endpoints.get(service_name).await {
+            Ok(current)
+                if current.subsets.as_ref().is_some_and(|subsets| {
+                    subsets.iter().any(endpoint_subset_has_ready_target)
+                }) =>
+            {
+                return Ok(());
+            }
+            Ok(_) => {
+                info!(
+                    "waiting for service '{namespace}/{service_name}' to publish a ready endpoint ({attempt}/60)"
+                );
+            }
+            Err(err) => {
+                info!(
+                    "waiting for service '{namespace}/{service_name}' endpoint lookup ({attempt}/60): {err}"
+                );
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    Err(ReconcileError::Store(format!(
+        "service '{namespace}/{service_name}' did not publish a ready endpoint"
+    )))
+}
+
+fn endpoint_subset_has_ready_target(subset: &k8s_openapi::api::core::v1::EndpointSubset) -> bool {
+    subset
+        .addresses
+        .as_ref()
+        .is_some_and(|addresses| !addresses.is_empty())
+        && subset.ports.as_ref().is_some_and(|ports| !ports.is_empty())
 }
 
 fn deployment_spec_for_test(test: &TestSpec, labels: &BTreeMap<String, String>) -> DeploymentSpec {
@@ -328,7 +434,6 @@ pub(super) async fn sign_inception_auth_token(
 
 pub(super) async fn validate_inception_auth_token(
     client: &kube::Client,
-    namespace: &str,
     auth: &AuthConfig,
     header_value: Option<&str>,
 ) -> std::result::Result<Option<fluidbg_plugin_sdk::PluginAuthClaims>, ReconcileError> {
@@ -343,8 +448,7 @@ pub(super) async fn validate_inception_auth_token(
     )
     .await?;
     match fluidbg_plugin_sdk::verify_plugin_auth_token(token, &signing_key) {
-        Ok(claims) if claims.namespace == namespace => Ok(Some(claims)),
-        Ok(_) => Ok(None),
+        Ok(claims) => Ok(Some(claims)),
         Err(_) => Ok(None),
     }
 }
@@ -449,13 +553,21 @@ pub(super) async fn apply_deployment_manifest(
     deployment_spec: &ManagedDeploymentSpec,
     family_labels: &BTreeMap<String, String>,
     is_green: bool,
+    initial_assignments: &[PropertyAssignment],
 ) -> std::result::Result<DeploymentIdentity, ReconcileError> {
     let candidate = candidate_ref(bgd);
-    let spec = if is_green {
+    let mut spec = if is_green {
         deployment_spec.spec.clone()
     } else {
         deployment_spec_with_test_patch(bgd, &deployment_spec.spec)?
     };
+    if !is_green {
+        apply_assignments_to_deployment_spec(
+            &mut spec,
+            initial_assignments,
+            AssignmentTarget::Blue,
+        )?;
+    }
     let mut deployment = Deployment {
         metadata: ObjectMeta {
             name: Some(candidate.name.clone()),
@@ -653,6 +765,25 @@ pub(super) async fn blue_green_refs_from_owned_resources(
     collect_blue_green_refs::<ConfigMap>(client, namespace, &mut refs).await?;
     collect_blue_green_refs::<Secret>(client, namespace, &mut refs).await?;
     collect_blue_green_refs::<Pod>(client, namespace, &mut refs).await?;
+    Ok(refs)
+}
+
+pub(super) async fn blue_green_refs_from_owned_resources_all(
+    client: &kube::Client,
+) -> std::result::Result<BTreeSet<String>, ReconcileError> {
+    let mut refs = BTreeSet::new();
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    for namespace in namespaces.list(&Default::default()).await?.items {
+        let Some(namespace) = namespace.metadata.name else {
+            continue;
+        };
+        refs.extend(
+            blue_green_refs_from_owned_resources(client, &namespace)
+                .await?
+                .into_iter()
+                .map(|name| blue_green_state_key(&namespace, &name)),
+        );
+    }
     Ok(refs)
 }
 
@@ -900,8 +1031,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        deployment_spec_for_test, deployment_spec_with_test_patch, service_spec_for_test,
-        test_instance_name, test_service_port,
+        apply_assignments_to_deployment_spec, deployment_spec_for_test,
+        deployment_spec_with_test_patch, service_spec_for_test, test_instance_name,
+        test_service_port,
+    };
+    use crate::controller::plugin_lifecycle::{
+        AssignmentKind, AssignmentTarget, PropertyAssignment,
     };
     use crate::crd::blue_green::{
         BlueGreenDeployment, BlueGreenDeploymentSpec, DeploymentSelector, ManagedDeploymentSpec,
@@ -1077,6 +1212,117 @@ mod tests {
             pod_spec.containers[0].env.as_ref().unwrap()[0].name,
             "AMQP_URL"
         );
+    }
+
+    #[test]
+    fn test_env_assignments_are_applied_before_test_deployment_is_created() {
+        let mut spec = DeploymentSpec {
+            selector: LabelSelector {
+                match_labels: Some(BTreeMap::from([(
+                    "app".to_string(),
+                    "verifier".to_string(),
+                )])),
+                ..Default::default()
+            },
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(BTreeMap::from([(
+                        "app".to_string(),
+                        "verifier".to_string(),
+                    )])),
+                    ..Default::default()
+                }),
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        name: "verifier".to_string(),
+                        image: Some("verifier:dev".to_string()),
+                        env: Some(vec![EnvVar {
+                            name: "EXISTING".to_string(),
+                            value: Some("kept".to_string()),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        };
+
+        apply_assignments_to_deployment_spec(
+            &mut spec,
+            &[
+                PropertyAssignment {
+                    target: AssignmentTarget::Test,
+                    kind: AssignmentKind::Env,
+                    name: "HTTP_WRITE_URL".to_string(),
+                    value: "http://plugin:9090".to_string(),
+                    container_name: None,
+                },
+                PropertyAssignment {
+                    target: AssignmentTarget::Blue,
+                    kind: AssignmentKind::Env,
+                    name: "INPUT_QUEUE".to_string(),
+                    value: "ignored-for-tests".to_string(),
+                    container_name: None,
+                },
+            ],
+            AssignmentTarget::Test,
+        )
+        .unwrap();
+
+        let env = spec.template.spec.as_ref().unwrap().containers[0]
+            .env
+            .as_ref()
+            .unwrap();
+        assert!(env.iter().any(|var| var.name == "EXISTING"));
+        assert!(env.iter().any(|var| var.name == "HTTP_WRITE_URL"
+            && var.value.as_deref() == Some("http://plugin:9090")));
+        assert!(!env.iter().any(|var| var.name == "INPUT_QUEUE"));
+    }
+
+    #[test]
+    fn blue_assignments_are_applied_to_candidate_spec_before_creation() {
+        let mut spec = DeploymentSpec {
+            template: PodTemplateSpec {
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        name: "app".to_string(),
+                        env: Some(vec![EnvVar {
+                            name: "EXISTING".to_string(),
+                            value: Some("keep".to_string()),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        apply_assignments_to_deployment_spec(
+            &mut spec,
+            &[PropertyAssignment {
+                target: AssignmentTarget::Blue,
+                kind: AssignmentKind::Env,
+                name: "INPUT_QUEUE".to_string(),
+                value: "orders-blue-temp".to_string(),
+                container_name: None,
+            }],
+            AssignmentTarget::Blue,
+        )
+        .unwrap();
+
+        let env = spec.template.spec.as_ref().unwrap().containers[0]
+            .env
+            .as_ref()
+            .unwrap();
+        assert!(env.iter().any(|var| var.name == "EXISTING"));
+        assert!(env.iter().any(
+            |var| var.name == "INPUT_QUEUE" && var.value.as_deref() == Some("orders-blue-temp")
+        ));
     }
 
     #[test]

@@ -48,15 +48,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.operator.auth.signingSecretName | quote }}
                   key: {{ .Values.operator.auth.signingSecretKey | quote }}
+            {{- if or .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName .Values.builtinPlugins.rabbitmq.manager.amqpUrl }}
             - name: FLUIDBG_RABBITMQ_MANAGER_AMQP_URL
-              {{- if .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName | quote }}
+                  name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
                   key: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretKey | quote }}
-              {{- else }}
-              value: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrl | quote }}
-              {{- end }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health
