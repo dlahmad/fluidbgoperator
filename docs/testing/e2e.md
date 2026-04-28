@@ -9,6 +9,11 @@ only a compatibility wrapper around `cargo test -p fluidbg-e2e-tests --test e2e`
 The suite tests the operator, built-in plugins, CRDs, and example applications
 against a kind cluster with local dev images by default.
 
+Scenario code lives in `e2e/src/scenarios/`. Each scenario has its own Rust
+module, and the Kubernetes manifests for that scenario live in the matching
+folder under `e2e/deploy/`. Shared infrastructure manifests stay under
+`e2e/deploy/infra/`; shared app manifests stay under `e2e/deploy/apps/`.
+
 ## Suite Flow
 
 ```mermaid
@@ -48,6 +53,11 @@ flowchart TD
 - Test-time deployment patching, including a lower candidate replica count during observation and canonical replica count after promotion.
 - Same-`BlueGreenDeployment` rollout serialization so a new rollout cannot start while previous inception resources still exist.
 - Different `BlueGreenDeployment` names running without generated-name collisions.
+- `force-replace` active-update behavior, including the early-update case where
+  the initial rollout has zero observed test cases: rollback-style drain runs
+  against the frozen old spec, shadow queue messages are recovered to base
+  shadow queues, stale store records are removed, and the replacement
+  generation starts as a new candidate.
 - Forced-delete recovery for missing BGD CRs with finalizers removed.
 - GitOps-friendly `Ready`, `Progressing`, and `Degraded` status conditions.
 - Optional HA state-store run with two operator replicas and Postgres.

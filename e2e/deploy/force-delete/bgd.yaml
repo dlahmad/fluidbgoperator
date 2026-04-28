@@ -1,96 +1,71 @@
 apiVersion: fluidbg.io/v1alpha1
 kind: BlueGreenDeployment
 metadata:
-  name: order-flow
-  namespace: fluidbg-demo
+  name: order-processor-force-delete
+  namespace: fluidbg-test
 spec:
   selector:
     matchLabels:
-      fluidbg.io/name: order-flow
+      fluidbg.io/name: order-processor
   deployment:
     spec:
       replicas: 1
       selector:
         matchLabels:
-          app: order-flow
+          app: order-processor-blue
       template:
         metadata:
           labels:
-            app: order-flow
-            fluidbg.io/name: order-flow
+            app: order-processor-blue
+            fluidbg.io/name: order-processor
         spec:
           terminationGracePeriodSeconds: 1
           containers:
-            - name: app
-              image: ghcr.io/dlahmad/fluidbg-example-order-app:latest
-              imagePullPolicy: IfNotPresent
+            - name: order-processor
+              image: fluidbg/blue-app:dev
+              imagePullPolicy: Never
               env:
                 - name: AMQP_URL
-                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/
+                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/
                 - name: INPUT_QUEUE
                   value: orders
                 - name: OUTPUT_QUEUE
                   value: results
-                - name: OUTPUT_PREFIX
-                  value: v2
                 - name: HTTP_UPSTREAM
-                  value: http://unused-before-plugin-prepare
+                  value: http://httpbin.fluidbg-system/post
   inceptionPoints:
     - name: incoming-orders
       pluginRef:
         name: rabbitmq
       roles:
-        - splitter
+        - duplicator
         - observer
       drain:
-        maxWaitSeconds: 20
+        maxWaitSeconds: 15
       config:
-        splitter:
+        duplicator:
           inputQueue: orders
           greenInputQueue: orders-green
           blueInputQueue: orders-blue
           greenInputQueueEnvVar: INPUT_QUEUE
           blueInputQueueEnvVar: INPUT_QUEUE
-          temporaryQueueIdentifier: incoming-orders
         observer:
           testId:
             field: queue.body
             jsonPath: $.orderId
           match:
             - field: queue.body
-              jsonPath: $.type
-              matches: ^demo-order$
+              jsonPath: $.action
+              matches: ^force-delete-check$
           notifyPath: /observe/{testId}/incoming-orders
-    - name: audit-http
-      pluginRef:
-        name: http
-      roles:
-        - observer
-      drain:
-        maxWaitSeconds: 20
-      config:
-        port: 9090
-        realEndpoint: http://order-flow-sink.fluidbg-demo:8080
-        envVarName: HTTP_UPSTREAM
-        testId:
-          field: http.body
-          jsonPath: $.orderId
-        filters:
-          - match:
-              - field: http.path
-                equals: /audit
-              - field: http.body
-                jsonPath: $.type
-                matches: ^demo-order$
-            notifyPath: /observe/{testId}/audit-http
-            payload: request
     - name: outgoing-results
       pluginRef:
         name: rabbitmq
       roles:
         - combiner
+        - observer
       drain:
-        maxWaitSeconds: 20
+        maxWaitSeconds: 15
       config:
         combiner:
           greenOutputQueueEnvVar: OUTPUT_QUEUE
@@ -98,23 +73,32 @@ spec:
           greenOutputQueue: results-green
           blueOutputQueue: results-blue
           outputQueue: results
-          temporaryQueueIdentifier: outgoing-results
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          match:
+            - field: queue.body
+              jsonPath: $.originalMessage.action
+              matches: ^force-delete-check$
+          notifyPath: /observe/{testId}/outgoing-results
   test:
-    name: verifier
+    name: test-container
     deployment:
       replicas: 1
       selector:
         matchLabels:
-          app: order-flow-verifier
+          app: test-container
       template:
         metadata:
           labels:
-            app: order-flow-verifier
+            app: test-container
         spec:
           terminationGracePeriodSeconds: 1
           containers:
-            - name: verifier
-              image: ghcr.io/dlahmad/fluidbg-example-verifier:latest
+            - name: test-container
+              image: fluidbg/test-app:dev
+              imagePullPolicy: Never
               ports:
                 - containerPort: 8080
               readinessProbe:
@@ -126,13 +110,11 @@ spec:
               env:
                 - name: PORT
                   value: "8080"
-                - name: EXPECTED_PREFIX
-                  value: v2
-                - name: SINK_URL
-                  value: http://order-flow-sink.fluidbg-demo:8080
+                - name: AMQP_URL
+                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/
     service:
       selector:
-        app: order-flow-verifier
+        app: test-container
       ports:
         - port: 8080
           targetPort: 8080
@@ -141,19 +123,8 @@ spec:
       timeoutSeconds: 120
   promotion:
     data:
-      minTestCases: 3
+      minTestCases: 10
       successRate: 1.0
       timeoutSeconds: 300
     strategy:
-      type: progressive
-      progressive:
-        steps:
-          - trafficPercent: 10
-            observeCases: 3
-            successRate: 1.0
-          - trafficPercent: 50
-            observeCases: 8
-            successRate: 1.0
-          - trafficPercent: 100
-            observeCases: 12
-            successRate: 1.0
+      type: hard-switch

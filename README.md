@@ -1,6 +1,6 @@
 # FluidBG Operator
 
-FluidBG is a Kubernetes operator for blue-green deployments where the candidate version is validated with live traffic before promotion. It wires transport-specific inception plugins around the candidate, records test cases through the operator API, polls verifier containers, and promotes or rolls back from the configured success criteria.
+FluidBG is a Kubernetes operator for blue-green deployments where the candidate version is validated with live traffic before promotion. It wires transport-specific inception plugins around the candidate, records test cases through the operator API, polls the configured verifier container, and promotes or rolls back from the configured success criteria.
 
 ## Status
 
@@ -61,8 +61,10 @@ just build-images dev
 ```
 
 End-to-end tests are implemented as a Rust `kube-rs` integration-test crate.
-The wrapper below requires Docker, kind, Helm, kubectl for port-forward/exec
-boundaries, and local images:
+Scenario modules are under `e2e/src/scenarios/` and each scenario's manifests
+are grouped under the matching `e2e/deploy/<scenario>/` folder. The wrapper
+below requires Docker, kind, Helm, kubectl for port-forward/exec boundaries,
+and local images:
 
 ```sh
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh
@@ -123,7 +125,7 @@ Observed arm64 image sizes:
 - [docs/index.md](docs/index.md) is the GitHub Pages entry point.
 - [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
 - [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.
-- [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and verifier containers.
+- [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and the verifier container.
 - [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, and Azure Service Bus.
 - [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.

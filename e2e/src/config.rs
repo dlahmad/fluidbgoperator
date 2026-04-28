@@ -37,6 +37,7 @@ pub struct E2eConfig {
     pub system_namespace: String,
     pub kind_cluster: Option<String>,
     pub build_images: bool,
+    pub image_tag: String,
     pub state_store: StateStore,
     pub operator_replicas: u32,
     pub root_dir: PathBuf,
@@ -46,6 +47,17 @@ pub struct E2eConfig {
 impl E2eConfig {
     pub fn from_env() -> Result<Self> {
         let root_dir = command::repo_root()?;
+        let build_images = env::var("BUILD_IMAGES").unwrap_or_else(|_| "1".to_string()) == "1";
+        let image_tag = env::var("E2E_IMAGE_TAG")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                if build_images {
+                    format!("dev-{}", std::process::id())
+                } else {
+                    "dev".to_string()
+                }
+            });
         Ok(Self {
             namespace: env::var("NS").unwrap_or_else(|_| "fluidbg-test".to_string()),
             system_namespace: env::var("NS_SYSTEM")
@@ -53,7 +65,8 @@ impl E2eConfig {
             kind_cluster: env::var("KIND_CLUSTER")
                 .ok()
                 .filter(|value| !value.is_empty()),
-            build_images: env::var("BUILD_IMAGES").unwrap_or_else(|_| "1".to_string()) == "1",
+            build_images,
+            image_tag,
             state_store: StateStore::from_env()?,
             operator_replicas: env::var("OPERATOR_REPLICAS")
                 .ok()

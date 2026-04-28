@@ -24,7 +24,7 @@ pub struct ManagedDeploymentSpec {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct TestDeploymentPatch {
+pub struct CandidateDeploymentPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,6 +218,20 @@ pub struct PromotionSpec {
     pub strategy: PromotionStrategy,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActiveRolloutUpdatePolicy {
+    Defer,
+    ForceReplace,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_rollout: Option<ActiveRolloutUpdatePolicy>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "PascalCase")]
 pub enum BGDPhase {
@@ -315,6 +329,7 @@ pub struct BlueGreenDeploymentStatus {
     group = "fluidbg.io",
     version = "v1alpha1",
     kind = "BlueGreenDeployment",
+    shortname = "bgd",
     namespaced
 )]
 #[kube(status = "BlueGreenDeploymentStatus")]
@@ -322,13 +337,15 @@ pub struct BlueGreenDeploymentSpec {
     pub selector: DeploymentSelector,
     pub deployment: ManagedDeploymentSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_deployment_patch: Option<TestDeploymentPatch>,
+    pub candidate_patch: Option<CandidateDeploymentPatch>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inception_points: Vec<InceptionPoint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tests: Vec<TestSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<TestSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion: Option<PromotionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_policy: Option<UpdatePolicy>,
 }
 
 fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -406,7 +423,7 @@ mod tests {
                         "amqpUrl": "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
                     }
                 }],
-                "tests": [{
+                "test": {
                     "name": "test-container",
                     "deployment": {
                         "replicas": 1,
@@ -430,7 +447,7 @@ mod tests {
                         "verifyPath": "/result/{testId}",
                         "timeoutSeconds": 120
                     }
-                }],
+                },
                 "promotion": {
                     "data": {
                         "minTestCases": 1,

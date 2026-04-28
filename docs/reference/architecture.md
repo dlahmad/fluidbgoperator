@@ -8,7 +8,7 @@ title: Architecture
 
 FluidBG is a Kubernetes operator for blue-green and progressive delivery of queue
 and HTTP workloads. A candidate deployment is exposed to controlled live traffic,
-verifier containers decide whether observed test cases passed, and the operator
+one verifier container decides whether observed test cases passed, and the operator
 promotes or rolls back from configured success criteria.
 
 The operator is intentionally transport-agnostic. Transport behavior lives in
@@ -86,7 +86,7 @@ flowchart TD
 
 | Term | Current Meaning |
 |---|---|
-| `BlueGreenDeployment` | Names the green deployment, candidate deployment template, inception points, verifier containers, and promotion strategy. |
+| `BlueGreenDeployment` | Names the green deployment, candidate deployment template, inception points, one verifier, and promotion strategy. |
 | `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
 | `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
 | Plugin manager | Long-running privileged control-plane component in the operator namespace. It creates and deletes derived infrastructure after verifying the per-inception JWT. |
@@ -178,7 +178,7 @@ Important fields:
 | `inceptor` | Pod ports, volume mounts, labels, annotations, and service account for the per-inception traffic component. |
 | `manager` | Optional Service endpoint for the privileged manager in the operator namespace. |
 | `lifecycle` | HTTP endpoints called by the operator for prepare, activate, drain, cleanup, and traffic shifting. |
-| `injects` | Env vars the operator patches into green, blue, or test containers from plugin config/template values. |
+| `injects` | Env vars the operator patches into green, blue, or the verifier container from plugin config/template values. |
 | `features.supportsProgressiveShifting` | Required for progressive strategies that use splitter plugins. |
 
 ### `BlueGreenDeployment`
@@ -230,7 +230,7 @@ promotion:
       stepTimeoutMinutes: 15
 ```
 
-`testDeploymentPatch` is an optional, typed test-time overlay for the candidate
+`candidatePatch` is an optional, typed test-time overlay for the candidate
 DeploymentSpec. It is applied only while the candidate is being tested. On
 promotion, the operator reapplies the canonical `deployment.spec` before the
 candidate is marked green.
@@ -248,7 +248,7 @@ deployment:
         containers:
           - name: orders
             image: ghcr.io/acme/orders:2.0.0
-testDeploymentPatch:
+candidatePatch:
   replicas: 2
 ```
 
@@ -281,6 +281,37 @@ If the holder pod dies, renewal stops and another replica can take over after
 the lease duration. Different BGD resources use different leases and can
 reconcile concurrently.
 
+At rollout start, the operator stores an internal snapshot of the
+`BlueGreenDeployment.spec` used by that rollout. If the user updates the BGD
+while it is still `Pending`, `Observing`, `Promoting`, or `Draining`, the
+default behavior is to defer the new generation. The active rollout continues
+using the snapshot so promotion, rollback, drain, plugin cleanup, and test
+cleanup address the same resources that were created at rollout start. Status
+gets an `UpdateDeferred=True` condition until the active rollout reaches
+`Completed` or `RolledBack`; then the operator clears the old snapshot and
+starts the new generation.
+
+Users can opt into immediate replacement with:
+
+```yaml
+updatePolicy:
+  activeRollout: force-replace
+```
+
+`force-replace` is intentionally explicit because it trades safety for
+operator responsiveness. The operator does not wait for the active test plan to
+finish. Instead, it immediately starts the rollback drain for the frozen active
+rollout, tells plugins to restore traffic to the current green path, waits for
+normal `drainStatusPath` completion or the configured drain timeout, runs
+cleanup, and only then starts the new generation as the next candidate. This
+also works when no test case has been observed yet; drain/cleanup is tied to
+the active inception resources, not to test-case existence. This
+preserves the normal plugin drain guarantees; the additional risk is that the
+candidate being replaced is interrupted and any in-flight candidate-side work is
+handled by the same rollback/drain guarantees and timeouts as a failed rollout.
+The interrupted rollout reaches `RolledBack`; after its terminal cleanup the
+replacement generation resets to `Pending` and starts normally.
+
 Status phase updates use optimistic concurrency on the status subresource:
 the operator reads the latest status object and replaces it with the observed
 `resourceVersion`. If another writer changed status between read and write, the
@@ -308,43 +339,49 @@ For one `BlueGreenDeployment`, reconciliation does the following:
 
 1. Validate tests, promotion settings, plugin references, supported roles,
    supported field namespaces, plugin config schemas, and progressive capability.
-2. Resolve the current green Deployment and validate that progressive strategy,
+2. Record the rollout generation and store an internal spec snapshot.
+3. Resolve the current green Deployment and validate that progressive strategy,
    if configured, is supported by the selected splitter plugin.
-3. Call manager `preparePath` endpoints with a per-inception JWT, secured
+4. Call manager `preparePath` endpoints with a per-inception JWT, secured
    config, and active-inception inventory. The manager creates privileged
    resources and returns scoped `inceptorEnv`.
-4. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`
+5. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`
    with secured config, per-inception bearer token, and manager-provided
    `inceptorEnv`.
-5. Start plugin inceptors idle. They do not move traffic until activation.
-6. Call inceptor `preparePath` endpoints for non-traffic setup and assignment
+6. Start plugin inceptors idle. They do not move traffic until activation.
+7. Call inceptor `preparePath` endpoints for non-traffic setup and assignment
    discovery. Inceptors must stay idle after `preparePath`; they may create
    non-privileged local resources and return green/blue assignments, but they
    must not consume, proxy, observe, or write traffic yet.
-7. Create/update the candidate Deployment from `deployment.spec`, applying
-   `testDeploymentPatch` and blue-targeted assignments directly into the initial
+8. Create/update the candidate Deployment from `deployment.spec`, applying
+   `candidatePatch` and blue-targeted assignments directly into the initial
    pod template. This prevents the candidate from starting with production or
    default transport wiring.
-8. Render verifier test resources from native Kubernetes `DeploymentSpec` and
+9. Render verifier test resources from native Kubernetes `DeploymentSpec` and
    `ServiceSpec`, with test-targeted template assignments already included in
    the initial pod template. The operator then waits for verifier Deployment
    availability and Service endpoints. If a verifier needs application-level
    startup checks, define a normal Kubernetes `readinessProbe` in the test
    Deployment.
-9. Patch green/blue application assignments, then wait for those rollouts.
-10. Call inceptor `activatePath`. Only this transition may start queue
+10. Patch green/blue application assignments, then wait for those rollouts.
+11. Call inceptor `activatePath`. Only this transition may start queue
    consumption, HTTP proxying, observation callbacks, writer traffic, or
    combiner movement.
-11. Register and poll test cases through the operator HTTP API and verifier
+12. Register and poll test cases through the operator HTTP API and verifier
    `verifyPath`.
-12. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
-13. On promotion, reapply canonical `deployment.spec` to the candidate and wait
+13. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
+14. On promotion, reapply canonical `deployment.spec` to the candidate and wait
    until it is ready before marking it green.
-14. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
+15. On promotion or rollback, enter draining, call inceptor `drainPath`, poll
    `drainStatusPath`, then call inceptor and manager `cleanupPath`.
-15. Remove temporary test/inceptor resources and restore direct assignment values
+16. Remove temporary test/inceptor resources and restore direct assignment values
    where plugins declared restore templates.
-16. Independently, the orphan-cleanup loop calls manager `syncPath` with the
+17. If a new BGD generation appears during the rollout, keep using the snapshot
+   and mark `UpdateDeferred=True` by default. If
+   `updatePolicy.activeRollout: force-replace` is set before the rollout is
+   already draining, start rollback-style draining for the active snapshot and
+   start the new generation after that drain/cleanup completes.
+18. Independently, the orphan-cleanup loop calls manager `syncPath` with the
    active-inception inventory so missed cleanup can be repaired after crashes or
    forced BGD deletion.
 
@@ -466,6 +503,9 @@ verifier resolved successfully.
 | Minimum case count or success threshold is not met before promotion timeout | The rollout rolls back and then drains/cleans temporary resources. |
 | Final hard-switch or progressive step passes | The rollout enters `Draining`, promotes the candidate wiring, waits for plugin drain status, then cleans inception/test resources and marks `Completed`. |
 | Drain does not finish before the inception point drain timeout | The operator records `TimedOutMaybeSuccessful` for that drain and proceeds to cleanup. This is explicit risk reporting, not a zero-loss guarantee. |
+| BGD is updated during an active rollout | By default the update is deferred. The active rollout continues from its stored spec snapshot and status includes `UpdateDeferred=True`; the new generation starts after terminal cleanup. |
+| BGD is updated with `updatePolicy.activeRollout: force-replace` before drain starts | The operator stops waiting for the active tests, starts rollback-style plugin drain for the frozen active snapshot, restores traffic to the current green path, waits for drain completion or configured drain timeouts, marks the interrupted rollout `RolledBack`, cleans up, then starts the new generation. |
+| BGD is updated with `updatePolicy.activeRollout: force-replace` after drain already started | The operator continues the already-started drain with the frozen snapshot. If promotion had already switched green, it does not reconstruct the deleted previous green; it finishes that drain and then starts the new generation. |
 | BGD is force-deleted without finalizers | Orphan cleanup uses store references and `fluidbg.io/blue-green-ref` labels to remove remaining plugin, test, secret, and store records when the operator runs again. |
 
 Traffic route semantics are plugin-owned:
@@ -530,7 +570,7 @@ application correctness from message bodies or HTTP payloads. Plugins notify the
 verifier, register test cases when appropriate, and the operator polls the
 verifier result path.
 
-Each `tests[]` entry defines a native Kubernetes `deployment` and `service`.
+`spec.test` defines exactly one verifier with a native Kubernetes `deployment` and `service`.
 Container image, ports, env vars, resources, probes, security context, commands,
 and similar runtime details belong in the Deployment spec. The operator only
 adds FluidBG ownership labels/selectors, creates a Service with the same runtime

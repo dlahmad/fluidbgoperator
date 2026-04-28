@@ -65,7 +65,7 @@ the test container created for the rollout.
 | `splitter` | Proxies requests and routes to green or blue based on current traffic percentage. | Patches `envVarName` so the application calls the plugin service. |
 | `observer` | Filters requests, extracts `testId`, posts `notifyPath`, then registers blue/both/unknown cases with the operator. | None. |
 | `mock` | For matched requests, can return `200 mocked by fluidbg` instead of forwarding upstream. | None. |
-| `writer` | Exposes `/write` and forwards test-container initiated HTTP calls to `targetUrl` or fallback endpoint. | Patches `writeEnvVar` for test containers. |
+| `writer` | Exposes `/write` and forwards verifier-initiated HTTP calls to `targetUrl` or fallback endpoint. | Patches `writeEnvVar` for the verifier container. |
 
 Progressive shifting uses `POST /traffic`; `FLUIDBG_TRAFFIC_PERCENT` is only the
 startup default. Normal step changes do not restart the plugin pod.

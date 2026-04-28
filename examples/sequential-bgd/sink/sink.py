@@ -23,14 +23,33 @@ def case(order_id):
             "orderId": order_id,
             "sequence": None,
             "http": None,
+            "httpByPrefix": {},
+            "httpEvents": [],
             "output": None,
+            "outputByPrefix": {},
+            "outputEvents": [],
             "complete": False,
+            "completeByPrefix": {},
         },
     )
 
 
 def recompute(record):
-    record["complete"] = bool(record["http"] and record["output"])
+    prefixes = set(record.get("httpByPrefix", {}).keys()) | set(
+        record.get("outputByPrefix", {}).keys()
+    )
+    record["completeByPrefix"] = {
+        prefix: complete_for_prefix(record, prefix) for prefix in sorted(prefixes)
+    }
+    record["complete"] = any(record["completeByPrefix"].values())
+
+
+def complete_for_prefix(record, prefix):
+    return bool(
+        prefix
+        and record.get("httpByPrefix", {}).get(prefix)
+        and record.get("outputByPrefix", {}).get(prefix)
+    )
 
 
 def sequences_for_prefix(prefix, field):
@@ -39,15 +58,32 @@ def sequences_for_prefix(prefix, field):
         for record in cases.values()
         if record.get(field)
         and record.get("sequence") is not None
-        and record_matches_prefix(record, prefix)
+        and record_has_prefix(record, prefix, field)
     }
     return sorted(seqs)
 
 
-def record_matches_prefix(record, prefix):
-    http_prefix = str((record.get("http") or {}).get("outputPrefix", ""))
-    output_result = str((record.get("output") or {}).get("result", ""))
-    return http_prefix == prefix or output_result.startswith(f"{prefix}-")
+def output_sequences_all_prefixes():
+    return sorted(
+        {
+            record["sequence"]
+            for record in cases.values()
+            if record.get("output")
+            and record.get("sequence") is not None
+        }
+    )
+
+
+def record_has_prefix(record, prefix, field):
+    if not prefix:
+        return False
+    if field == "http":
+        return bool(record.get("httpByPrefix", {}).get(prefix))
+    if field == "output":
+        return bool(record.get("outputByPrefix", {}).get(prefix))
+    if field == "complete":
+        return complete_for_prefix(record, prefix)
+    return False
 
 
 def missing_sequences(seqs):
@@ -58,20 +94,19 @@ def missing_sequences(seqs):
 
 
 def print_gap_summary(prefix):
-    http_missing = missing_sequences(sequences_for_prefix(prefix, "http"))
-    output_missing = missing_sequences(sequences_for_prefix(prefix, "output"))
-    complete_missing = missing_sequences(sequences_for_prefix(prefix, "complete"))
-    if http_missing or output_missing or complete_missing:
+    all_output_missing = missing_sequences(output_sequences_all_prefixes())
+    complete = len(sequences_for_prefix(prefix, "complete"))
+    if all_output_missing:
         print(
-            "SEQUENCE GAP "
-            f"prefix={prefix} httpMissing={http_missing} "
-            f"outputMissing={output_missing} completeMissing={complete_missing}",
+            "OUTPUT STREAM GAP "
+            f"allOutputMissing={all_output_missing} prefix={prefix} "
+            f"candidateCompleteCount={complete}",
             flush=True,
         )
     else:
         print(
-            "SEQUENCE OK "
-            f"prefix={prefix} httpMissing=[] outputMissing=[] completeMissing=[]",
+            "OUTPUT STREAM OK "
+            f"allOutputMissing=[] prefix={prefix} candidateCompleteCount={complete}",
             flush=True,
         )
 
@@ -90,9 +125,11 @@ def audit():
         record = case(order_id)
         record["sequence"] = payload.get("sequence", record.get("sequence"))
         record["http"] = payload
+        record["httpEvents"].append(payload)
+        record["httpByPrefix"][prefix] = payload
         recompute(record)
         print(
-            f"HTTP sequence={record['sequence']} order={order_id} prefix={prefix} complete={record['complete']}",
+            f"HTTP sequence={record['sequence']} order={order_id} prefix={prefix} complete={complete_for_prefix(record, prefix)}",
             flush=True,
         )
         print_gap_summary(prefix)
@@ -104,12 +141,21 @@ def get_case(order_id):
     expected_prefix = request.args.get("expectedPrefix", "")
     with lock:
         record = dict(cases.get(order_id, {"orderId": order_id, "complete": False}))
+        http_by_prefix = dict(record.get("httpByPrefix") or {})
+        output_by_prefix = dict(record.get("outputByPrefix") or {})
+        expected_http = http_by_prefix.get(expected_prefix)
+        expected_output = output_by_prefix.get(expected_prefix)
         output = record.get("output") or {}
         record["expectedPrefix"] = expected_prefix
-        record["expectedPrefixMatched"] = (
-            bool(expected_prefix)
-            and str(output.get("result", "")).startswith(f"{expected_prefix}-")
-        )
+        record["expectedHttpSeen"] = bool(expected_http)
+        record["expectedOutputSeen"] = bool(expected_output)
+        record["expectedPrefixMatched"] = bool(expected_http and expected_output)
+        record["expectedHttp"] = expected_http
+        record["expectedOutput"] = expected_output
+        if expected_http:
+            record["http"] = expected_http
+        if expected_output:
+            record["output"] = expected_output
         record["missingHttpSequences"] = (
             missing_sequences(sequences_for_prefix(expected_prefix, "http"))
             if expected_prefix
@@ -134,6 +180,30 @@ def list_cases():
         return jsonify(cases)
 
 
+@app.get("/summary")
+def summary():
+    with lock:
+        outputs_by_prefix = {}
+        complete_by_prefix = {}
+        for record in cases.values():
+            for prefix in record.get("outputByPrefix", {}).keys():
+                outputs_by_prefix[prefix] = outputs_by_prefix.get(prefix, 0) + 1
+            for prefix, complete in record.get("completeByPrefix", {}).items():
+                if complete:
+                    complete_by_prefix[prefix] = complete_by_prefix.get(prefix, 0) + 1
+        output_sequences = output_sequences_all_prefixes()
+        return jsonify(
+            {
+                "outputCount": len(output_sequences),
+                "firstOutputSequence": min(output_sequences) if output_sequences else None,
+                "lastOutputSequence": max(output_sequences) if output_sequences else None,
+                "allOutputMissing": missing_sequences(output_sequences),
+                "outputsByPrefix": outputs_by_prefix,
+                "completeByPrefix": complete_by_prefix,
+            }
+        )
+
+
 def consume_results():
     while True:
         try:
@@ -156,9 +226,11 @@ def consume_results():
                         record = case(order_id)
                         record["sequence"] = payload.get("sequence", record.get("sequence"))
                         record["output"] = payload
+                        record["outputEvents"].append(payload)
+                        record["outputByPrefix"][prefix] = payload
                         recompute(record)
                         print(
-                            f"OUTPUT sequence={record['sequence']} order={order_id} result={payload.get('result')} complete={record['complete']}",
+                            f"OUTPUT sequence={record['sequence']} order={order_id} result={payload.get('result')} complete={complete_for_prefix(record, prefix)}",
                             flush=True,
                         )
                         print_gap_summary(prefix)

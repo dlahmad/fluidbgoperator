@@ -99,11 +99,11 @@ pub(super) fn validate_test_configuration(
     bgd: &BlueGreenDeployment,
 ) -> std::result::Result<(), ReconcileError> {
     let Some(promotion) = bgd.spec.promotion.as_ref() else {
-        if bgd.spec.tests.is_empty() {
+        if bgd.spec.test.is_none() {
             return Ok(());
         }
         return Err(ReconcileError::Store(
-            "tests require a promotion spec".to_string(),
+            "test requires a promotion spec".to_string(),
         ));
     };
 
@@ -113,7 +113,7 @@ pub(super) fn validate_test_configuration(
         ));
     }
 
-    for test in &bgd.spec.tests {
+    if let Some(test) = bgd.spec.test.as_ref() {
         if test.service.ports.as_ref().is_none_or(Vec::is_empty) {
             return Err(ReconcileError::Store(format!(
                 "test '{}' service spec must define at least one port",
@@ -201,9 +201,9 @@ mod tests {
                     namespace: None,
                     spec: Default::default(),
                 },
-                test_deployment_patch: None,
+                candidate_patch: None,
                 inception_points: Vec::new(),
-                tests: Vec::new(),
+                test: None,
                 promotion: Some(PromotionSpec {
                     data: None,
                     custom: Some(CustomPromotionSpec {
@@ -215,6 +215,7 @@ mod tests {
                         progressive: None,
                     },
                 }),
+                update_policy: None,
             },
             status: None,
         }
@@ -317,7 +318,7 @@ mod tests {
     #[test]
     fn validation_rejects_data_test_without_data_promotion() {
         let mut bgd = base_bgd();
-        bgd.spec.tests.push(verifier_test(
+        bgd.spec.test = Some(verifier_test(
             Some(DataVerificationSpec {
                 verify_path: "/result/{testId}".to_string(),
                 timeout_seconds: None,
@@ -347,7 +348,7 @@ mod tests {
                 progressive: None,
             },
         });
-        bgd.spec.tests.push(verifier_test(
+        bgd.spec.test = Some(verifier_test(
             Some(DataVerificationSpec {
                 verify_path: "/result/{testId}".to_string(),
                 timeout_seconds: None,

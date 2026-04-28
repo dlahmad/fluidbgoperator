@@ -156,7 +156,7 @@ For standalone inceptors the operator injects:
 Standalone env injection templates can also reference operator-provided template
 context values such as `{{pluginServiceName}}`, `{{pluginDeploymentName}}`,
 `{{inceptionPoint}}`, `{{blueGreenRef}}`, and `{{namespace}}`. Built-in HTTP
-uses `{{pluginServiceName}}` so both blue and test containers can call the same
+uses `{{pluginServiceName}}` so both the blue application and verifier container can call the same
 combined HTTP plugin service.
 
 The inceptor gets the full operator and test-container base URLs from env injection, not from hardcoded names inside the plugin itself.

@@ -1,9 +1,11 @@
 apiVersion: fluidbg.io/v1alpha1
 kind: BlueGreenDeployment
 metadata:
-  name: order-processor-force-delete
+  name: order-processor-force-replace
   namespace: fluidbg-test
 spec:
+  updatePolicy:
+    activeRollout: force-replace
   selector:
     matchLabels:
       fluidbg.io/name: order-processor
@@ -26,27 +28,36 @@ spec:
               imagePullPolicy: Never
               env:
                 - name: AMQP_URL
-                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/
                 - name: INPUT_QUEUE
-                  value: "orders"
+                  value: orders
                 - name: OUTPUT_QUEUE
-                  value: "results"
+                  value: results
                 - name: HTTP_UPSTREAM
-                  value: "http://httpbin.fluidbg-system/post"
+                  value: http://httpbin.fluidbg-system/post
+                - name: FORCE_REPLACE_GENERATION
+                  value: replacement
   inceptionPoints:
     - name: incoming-orders
       pluginRef:
         name: rabbitmq
-      roles: [duplicator, observer]
+      roles:
+        - duplicator
+        - observer
       drain:
-        maxWaitSeconds: 15
+        maxWaitSeconds: 30
       config:
+        shadowQueue:
+          suffix: _dlq
+          queueDeclaration:
+            durable: true
         duplicator:
           inputQueue: orders
           greenInputQueue: orders-green
           blueInputQueue: orders-blue
           greenInputQueueEnvVar: INPUT_QUEUE
           blueInputQueueEnvVar: INPUT_QUEUE
+          temporaryQueueIdentifier: force-replace-incoming
         observer:
           testId:
             field: queue.body
@@ -54,21 +65,28 @@ spec:
           match:
             - field: queue.body
               jsonPath: $.action
-              matches: "^force-delete-check$"
+              matches: ^force-replace-check$
           notifyPath: /observe/{testId}/incoming-orders
     - name: outgoing-results
       pluginRef:
         name: rabbitmq
-      roles: [combiner, observer]
+      roles:
+        - combiner
+        - observer
       drain:
-        maxWaitSeconds: 15
+        maxWaitSeconds: 30
       config:
+        shadowQueue:
+          suffix: _dlq
+          queueDeclaration:
+            durable: true
         combiner:
           greenOutputQueueEnvVar: OUTPUT_QUEUE
           blueOutputQueueEnvVar: OUTPUT_QUEUE
           greenOutputQueue: results-green
           blueOutputQueue: results-blue
           outputQueue: results
+          temporaryQueueIdentifier: force-replace-results
         observer:
           testId:
             field: queue.body
@@ -76,50 +94,50 @@ spec:
           match:
             - field: queue.body
               jsonPath: $.originalMessage.action
-              matches: "^force-delete-check$"
+              matches: ^force-replace-check$
           notifyPath: /observe/{testId}/outgoing-results
-  tests:
-    - name: test-container
-      deployment:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: test-container
-        template:
-          metadata:
-            labels:
-              app: test-container
-          spec:
-            terminationGracePeriodSeconds: 1
-            containers:
-              - name: test-container
-                image: fluidbg/test-app:dev
-                imagePullPolicy: Never
-                ports:
-                  - containerPort: 8080
-                readinessProbe:
-                  httpGet:
-                    path: /health
-                    port: 8080
-                  periodSeconds: 1
-                  failureThreshold: 60
-                env:
-                  - name: PORT
-                    value: "8080"
-                  - name: AMQP_URL
-                    value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
-      service:
-        selector:
+  test:
+    name: test-container
+    deployment:
+      replicas: 1
+      selector:
+        matchLabels:
           app: test-container
-        ports:
-          - port: 8080
-            targetPort: 8080
-      dataVerification:
-        verifyPath: /result/{testId}
-        timeoutSeconds: 120
+      template:
+        metadata:
+          labels:
+            app: test-container
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: test-container
+              image: fluidbg/test-app:dev
+              imagePullPolicy: Never
+              ports:
+                - containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                periodSeconds: 1
+                failureThreshold: 60
+              env:
+                - name: PORT
+                  value: "8080"
+                - name: AMQP_URL
+                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/
+    service:
+      selector:
+        app: test-container
+      ports:
+        - port: 8080
+          targetPort: 8080
+    dataVerification:
+      verifyPath: /result/{testId}
+      timeoutSeconds: 120
   promotion:
     data:
-      minTestCases: 10
+      minTestCases: 3
       successRate: 1.0
       timeoutSeconds: 300
     strategy:

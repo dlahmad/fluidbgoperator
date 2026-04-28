@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::command;
 use crate::config::{E2eConfig, StateStore};
@@ -20,12 +20,11 @@ impl E2eHarness {
         let kube = Kube::new().await?;
 
         regenerate_crds(&config)?;
+        deploy_infrastructure(&config, &kube).await?;
+        reset_previous_resources(&config, &kube).await?;
         if config.build_images {
             build_and_load_images(&config)?;
         }
-
-        deploy_infrastructure(&config, &kube).await?;
-        reset_previous_resources(&config, &kube).await?;
         install_operator(&config, &kube).await?;
 
         Ok(Self {
@@ -72,6 +71,9 @@ fn regenerate_crds(config: &E2eConfig) -> Result<()> {
 
 fn build_and_load_images(config: &E2eConfig) -> Result<()> {
     let arch = target_arch();
+    let operator_image = format!("fluidbg/fbg-operator:{}", config.image_tag);
+    let http_plugin_image = format!("fluidbg/fbg-plugin-http:{}", config.image_tag);
+    let rabbitmq_plugin_image = format!("fluidbg/fbg-plugin-rabbitmq:{}", config.image_tag);
     prefetch_linux_rust_dependencies(config, &arch)?;
     command::run(
         &config
@@ -89,7 +91,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
             "--platform",
             &format!("linux/{arch}"),
             "-t",
-            "fluidbg/fbg-operator:dev",
+            &operator_image,
             &root,
         ],
     )?;
@@ -105,7 +107,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
                 .join("plugins/http/Dockerfile")
                 .to_string_lossy(),
             "-t",
-            "fluidbg/fbg-plugin-http:dev",
+            &http_plugin_image,
             &root,
         ],
     )?;
@@ -121,7 +123,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
                 .join("plugins/rabbitmq/Dockerfile")
                 .to_string_lossy(),
             "-t",
-            "fluidbg/fbg-plugin-rabbitmq:dev",
+            &rabbitmq_plugin_image,
             &root,
         ],
     )?;
@@ -166,9 +168,9 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
 
     if let Some(cluster) = kind_cluster(config)? {
         for image in [
-            "fluidbg/fbg-operator:dev",
-            "fluidbg/fbg-plugin-http:dev",
-            "fluidbg/fbg-plugin-rabbitmq:dev",
+            operator_image.as_str(),
+            http_plugin_image.as_str(),
+            rabbitmq_plugin_image.as_str(),
             "fluidbg/blue-app:dev",
             "fluidbg/green-app:dev",
             "fluidbg/test-app:dev",
@@ -194,12 +196,12 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
 async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
     kube.apply_namespace(&config.system_namespace).await?;
     kube.apply_namespace(&config.namespace).await?;
-    kube.apply_file(&config.deploy_file("01-httpbin.yaml"))
+    kube.apply_file(&config.deploy_file("infra/httpbin.yaml"))
         .await?;
-    kube.apply_file(&config.deploy_file("01-rabbitmq.yaml"))
+    kube.apply_file(&config.deploy_file("infra/rabbitmq.yaml"))
         .await?;
     if config.state_store == StateStore::Postgres {
-        kube.apply_file(&config.deploy_file("01-postgres.yaml"))
+        kube.apply_file(&config.deploy_file("infra/postgres.yaml"))
             .await?;
     }
 
@@ -231,17 +233,37 @@ async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
 
 async fn reset_previous_resources(config: &E2eConfig, kube: &Kube) -> Result<()> {
     kube.cleanup_stale_blue_green_deployments().await?;
-    let _ = command::run(
-        "helm",
-        [
-            "uninstall",
-            "fluidbg-e2e",
-            "-n",
-            &config.system_namespace,
-            "--ignore-not-found",
-            "--wait",
-        ],
-    );
+    for release in ["fluidbg-e2e", "fluidbg"] {
+        let _ = command::run(
+            "helm",
+            [
+                "uninstall",
+                release,
+                "-n",
+                &config.system_namespace,
+                "--ignore-not-found",
+                "--no-hooks",
+                "--wait",
+            ],
+        );
+    }
+    kube.delete_named(
+        "job",
+        "fluidbg-operator-builtin-plugin-hook-apply",
+        &config.system_namespace,
+    )
+    .await?;
+    kube.delete_named(
+        "job",
+        "fluidbg-operator-builtin-plugin-hook-delete",
+        &config.system_namespace,
+    )
+    .await?;
+    kube.delete_labeled_resources(
+        &config.system_namespace,
+        "app.kubernetes.io/component=builtin-plugin-hook",
+    )
+    .await?;
     kube.delete_labeled_resources(&config.namespace, "fluidbg.io/name=order-processor")
         .await?;
     kube.delete_named(
@@ -380,7 +402,10 @@ fn kind_cluster(config: &E2eConfig) -> Result<Option<String>> {
         return Ok(None);
     }
     if let Some(cluster) = &config.kind_cluster {
-        return Ok(kind_cluster_exists(cluster)?.then(|| cluster.clone()));
+        if kind_cluster_exists(cluster)? {
+            return Ok(Some(cluster.clone()));
+        }
+        bail!("KIND_CLUSTER={cluster} does not exist");
     }
     let clusters = command::output("kind", ["get", "clusters"])?
         .lines()

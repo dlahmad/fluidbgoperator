@@ -69,9 +69,12 @@ def result(test_id):
             }
         )
 
-    output = sink_case.get("output") or {}
-    http_seen = bool(sink_case.get("http"))
-    output_seen = bool(output)
+    http_seen = bool(
+        sink_case.get("expectedHttpSeen", bool(sink_case.get("http")))
+    )
+    output_seen = bool(
+        sink_case.get("expectedOutputSeen", bool(sink_case.get("output")))
+    )
     prefix_ok = bool(sink_case.get("expectedPrefixMatched"))
     passed = http_seen and output_seen and prefix_ok
     with lock:

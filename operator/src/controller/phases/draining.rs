@@ -9,7 +9,8 @@ use super::super::resources::{cleanup_inception_resources, cleanup_test_resource
 use super::super::status::{update_inception_point_drain_statuses, update_status_phase};
 use super::super::{AuthConfig, ReconcileError};
 use crate::crd::blue_green::{
-    BGDPhase, BlueGreenDeployment, InceptionPointDrainPhase, InceptionPointDrainStatus,
+    ActiveRolloutUpdatePolicy, BGDPhase, BlueGreenDeployment, InceptionPointDrainPhase,
+    InceptionPointDrainStatus,
 };
 use crate::crd::inception_plugin::InceptionPlugin;
 
@@ -152,12 +153,13 @@ async fn finalize_draining(
     cleanup_inception_resources(bgd, client, namespace).await?;
     cleanup_test_resources(bgd, client, namespace).await?;
 
-    let final_phase = if bgd
-        .status
-        .as_ref()
-        .and_then(|status| status.test_cases_failed)
-        .unwrap_or_default()
-        > 0
+    let final_phase = if force_replace_interrupted_rollout(bgd)
+        || bgd
+            .status
+            .as_ref()
+            .and_then(|status| status.test_cases_failed)
+            .unwrap_or_default()
+            > 0
         || bgd
             .status
             .as_ref()
@@ -171,4 +173,21 @@ async fn finalize_draining(
     };
     update_status_phase(bgd, client, namespace, final_phase).await;
     Ok(())
+}
+
+fn force_replace_interrupted_rollout(bgd: &BlueGreenDeployment) -> bool {
+    let force_replace = matches!(
+        bgd.spec
+            .update_policy
+            .as_ref()
+            .and_then(|policy| policy.active_rollout.as_ref()),
+        Some(ActiveRolloutUpdatePolicy::ForceReplace)
+    );
+    let generation = bgd.metadata.generation.unwrap_or_default();
+    let rollout_generation = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .unwrap_or_default();
+    force_replace && rollout_generation > 0 && generation > rollout_generation
 }

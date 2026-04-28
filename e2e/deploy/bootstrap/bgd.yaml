@@ -34,7 +34,6 @@ spec:
                 - name: HTTP_UPSTREAM
                   value: "http://httpbin.fluidbg-system/post"
   inceptionPoints: []
-  tests: []
   promotion:
     data:
       minTestCases: 1

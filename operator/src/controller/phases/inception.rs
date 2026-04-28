@@ -29,7 +29,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     let blue_green_uid = bgd.metadata.uid.as_deref().unwrap_or("");
     let operator_url = "http://fluidbg-operator.fluidbg-system:8090";
-    let test_container_url = if let Some(test) = bgd.spec.tests.first() {
+    let test_container_url = if let Some(test) = bgd.spec.test.as_ref() {
         let port = test_service_port(test)?;
         format!(
             "http://{}.{}:{}",
@@ -42,8 +42,8 @@ pub(in crate::controller) async fn ensure_inception_resources(
     };
     let test_data_verify_path = bgd
         .spec
-        .tests
-        .first()
+        .test
+        .as_ref()
         .and_then(|test| test.data_verification.as_ref())
         .map(|verification| verification.verify_path.as_str());
     let mut plans = Vec::new();

@@ -4,9 +4,11 @@ metadata:
   name: rabbitmq-no-progressive
   namespace: fluidbg-test
 spec:
-  description: "RabbitMQ transport plugin without progressive shifting"
+  description: RabbitMQ transport plugin without progressive shifting
   image: fluidbg/fbg-plugin-rabbitmq:dev
-  supportedRoles: [splitter, observer]
+  supportedRoles:
+    - splitter
+    - observer
   topology: standalone
   lifecycle:
     preparePath: /prepare
@@ -23,24 +25,33 @@ spec:
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
     syncPath: /manager/sync
-  fieldNamespaces: [queue]
+  fieldNamespaces:
+    - queue
   configSchema:
     type: object
     properties:
       splitter:
         type: object
         properties:
-          inputQueue: { type: string }
-          greenInputQueue: { type: string }
-          blueInputQueue: { type: string }
-          greenInputQueueEnvVar: { type: string }
-          blueInputQueueEnvVar: { type: string }
+          inputQueue:
+            type: string
+          greenInputQueue:
+            type: string
+          blueInputQueue:
+            type: string
+          greenInputQueueEnvVar:
+            type: string
+          blueInputQueueEnvVar:
+            type: string
       observer:
         type: object
         properties:
-          testId: { type: object }
-          match: { type: array }
-          notifyPath: { type: string }
+          testId:
+            type: object
+          match:
+            type: array
+          notifyPath:
+            type: string
   inceptor:
     ports:
       - name: health
@@ -74,18 +85,20 @@ spec:
               imagePullPolicy: Never
               env:
                 - name: AMQP_URL
-                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+                  value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/
                 - name: INPUT_QUEUE
-                  value: "orders"
+                  value: orders
                 - name: OUTPUT_QUEUE
-                  value: "results"
+                  value: results
                 - name: HTTP_UPSTREAM
-                  value: "http://httpbin.fluidbg-system/post"
+                  value: http://httpbin.fluidbg-system/post
   inceptionPoints:
     - name: incoming-orders
       pluginRef:
         name: rabbitmq-no-progressive
-      roles: [splitter, observer]
+      roles:
+        - splitter
+        - observer
       config:
         splitter:
           inputQueue: orders
@@ -100,42 +113,42 @@ spec:
           match:
             - field: queue.body
               jsonPath: $.type
-              matches: "^order$"
+              matches: ^order$
           notifyPath: /observe/{testId}/incoming-orders
-  tests:
-    - name: test-container
-      deployment:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: test-container
-        template:
-          metadata:
-            labels:
-              app: test-container
-          spec:
-            terminationGracePeriodSeconds: 1
-            containers:
-              - name: test-container
-                image: fluidbg/test-app:dev
-                imagePullPolicy: Never
-                ports:
-                  - containerPort: 8080
-                readinessProbe:
-                  httpGet:
-                    path: /health
-                    port: 8080
-                  periodSeconds: 1
-                  failureThreshold: 60
-      service:
-        selector:
+  test:
+    name: test-container
+    deployment:
+      replicas: 1
+      selector:
+        matchLabels:
           app: test-container
-        ports:
-          - port: 8080
-            targetPort: 8080
-      dataVerification:
-        verifyPath: /result/{testId}
-        timeoutSeconds: 120
+      template:
+        metadata:
+          labels:
+            app: test-container
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: test-container
+              image: fluidbg/test-app:dev
+              imagePullPolicy: Never
+              ports:
+                - containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                periodSeconds: 1
+                failureThreshold: 60
+    service:
+      selector:
+        app: test-container
+      ports:
+        - port: 8080
+          targetPort: 8080
+    dataVerification:
+      verifyPath: /result/{testId}
+      timeoutSeconds: 120
   promotion:
     data:
       minTestCases: 1

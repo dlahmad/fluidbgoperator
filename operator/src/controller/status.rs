@@ -189,6 +189,64 @@ pub(super) async fn reset_status_for_new_rollout(
     }
 }
 
+pub(super) async fn update_status_update_deferred(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let mut latest = match api.get_status(&name).await {
+        Ok(latest) => latest,
+        Err(e) => {
+            warn!("failed to read latest status for '{}': {}", name, e);
+            return;
+        }
+    };
+    let generation = bgd.metadata.generation.unwrap_or_default();
+    let rollout_generation = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+    let mut status = latest.status.clone().unwrap_or_default();
+    status
+        .conditions
+        .retain(|condition| condition.condition_type != "UpdateDeferred");
+    status.conditions.push(condition(
+        "UpdateDeferred",
+        ConditionStatus::True,
+        "ActiveRollout",
+        &format!(
+            "Spec generation {generation} is deferred until rollout generation {rollout_generation} reaches a terminal phase."
+        ),
+        generation,
+        &now,
+    ));
+    latest.status = Some(status);
+
+    match api
+        .replace_status(&name, &PostParams::default(), &latest)
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(error)) if error.code == 409 => {
+            info!(
+                "deferred-update status for '{}' conflicted with a newer write",
+                name
+            );
+        }
+        Err(e) => warn!(
+            "failed to update deferred-update status for '{}': {}",
+            name, e
+        ),
+    }
+}
+
 pub(super) fn conditions_for_phase(
     phase: &BGDPhase,
     observed_generation: i64,

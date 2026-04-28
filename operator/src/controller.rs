@@ -3,15 +3,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::ConfigMap;
 use kube::ResourceExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::{Controller, watcher};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::crd::blue_green::{BGDPhase, BlueGreenDeployment};
+use crate::crd::blue_green::{
+    ActiveRolloutUpdatePolicy, BGDPhase, BlueGreenDeployment, BlueGreenDeploymentSpec,
+};
 use crate::crd::inception_plugin::InceptionPlugin;
 use crate::state_store::StateStore;
 use crate::state_store::VerificationMode;
@@ -58,6 +62,7 @@ use resources::{
 use status::{
     ensure_rollout_generation, reset_status_for_new_rollout, update_drain_started_at,
     update_status_counts, update_status_phase, update_status_progress,
+    update_status_update_deferred,
 };
 
 const BGD_FINALIZER: &str = "fluidbg.io/cleanup";
@@ -294,9 +299,41 @@ async fn reconcile_locked(
         );
         cleanup_inception_resources(&bgd, &client, &namespace).await?;
         cleanup_test_resources(&bgd, &client, &namespace).await?;
+        delete_rollout_spec_snapshot(&bgd, &client, &namespace).await?;
+        let removed = ctx
+            .store
+            .cleanup_blue_green(&state_key)
+            .await
+            .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        if removed > 0 {
+            info!(
+                "cleaned {} store records for restarted BGD '{}'",
+                removed, name
+            );
+        }
         reset_status_for_new_rollout(&bgd, &client, &namespace).await;
         return Ok(Action::requeue(std::time::Duration::from_secs(1)));
     }
+
+    let bgd = if active_rollout_has_new_spec_generation(&bgd, &phase) {
+        if should_start_force_replace_rollout(&bgd, &phase) {
+            warn!(
+                "force-replacing active rollout for BGD '{}' generation {} over rollout generation {}; starting rollback-style drain before new rollout",
+                name,
+                bgd.metadata.generation.unwrap_or_default(),
+                current_rollout_generation_from_bgd(&bgd)
+            );
+            start_force_replace_rollout(&bgd, &client, &namespace, &ctx.auth).await?;
+            return Ok(Action::requeue(std::time::Duration::from_secs(1)));
+        } else {
+            if !force_replace_active_rollout(&bgd) {
+                update_status_update_deferred(&bgd, &client, &namespace).await;
+            }
+            Arc::new(load_rollout_spec_snapshot(&bgd, &client, &namespace).await?)
+        }
+    } else {
+        bgd
+    };
 
     info!(
         "reconciling BlueGreenDeployment '{}' phase={:?}",
@@ -306,6 +343,7 @@ async fn reconcile_locked(
     match phase {
         BGDPhase::Pending => {
             ensure_rollout_generation(&bgd, &client, &namespace).await;
+            ensure_rollout_spec_snapshot(&bgd, &client, &namespace).await?;
             let Some(generated_name) =
                 ensure_generated_candidate_name(&bgd, &client, &namespace).await?
             else {
@@ -429,6 +467,7 @@ async fn reconcile_locked(
             info!("BGD '{}' in terminal state {:?}", name, phase);
             cleanup_inception_resources(&bgd, &client, &namespace).await?;
             cleanup_test_resources(&bgd, &client, &namespace).await?;
+            delete_rollout_spec_snapshot(&bgd, &client, &namespace).await?;
             let removed = ctx
                 .store
                 .cleanup_blue_green(&state_key)
@@ -451,6 +490,7 @@ async fn cleanup_deleted_bgd(
     info!("cleaning deleted BlueGreenDeployment '{}'", name);
     cleanup_inception_resources(bgd, &ctx.client, namespace).await?;
     cleanup_test_resources(bgd, &ctx.client, namespace).await?;
+    delete_rollout_spec_snapshot(bgd, &ctx.client, namespace).await?;
     let removed = ctx
         .store
         .cleanup_blue_green(&blue_green_state_key(namespace, name))
@@ -636,4 +676,190 @@ fn rollout_needs_restart(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
         .and_then(|status| status.observed_generation)
         .unwrap_or_default();
     generation > observed_generation
+}
+
+fn active_rollout_has_new_spec_generation(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
+    if matches!(*phase, BGDPhase::Completed | BGDPhase::RolledBack) {
+        return false;
+    }
+    let generation = bgd.metadata.generation.unwrap_or_default();
+    let rollout_generation = bgd
+        .status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .unwrap_or_default();
+    rollout_generation > 0 && generation > rollout_generation
+}
+
+fn force_replace_active_rollout(bgd: &BlueGreenDeployment) -> bool {
+    matches!(
+        bgd.spec
+            .update_policy
+            .as_ref()
+            .and_then(|policy| policy.active_rollout.as_ref()),
+        Some(ActiveRolloutUpdatePolicy::ForceReplace)
+    )
+}
+
+fn should_start_force_replace_rollout(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
+    force_replace_active_rollout(bgd)
+        && active_rollout_has_new_spec_generation(bgd, phase)
+        && !matches!(*phase, BGDPhase::Draining)
+}
+
+async fn start_force_replace_rollout(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    auth: &AuthConfig,
+) -> std::result::Result<(), ReconcileError> {
+    let rollout_bgd = load_rollout_spec_snapshot(bgd, client, namespace)
+        .await
+        .unwrap_or_else(|err| {
+            warn!(
+                "falling back to latest BGD spec during force replace because rollout snapshot could not be loaded: {}",
+                err
+            );
+            bgd.clone()
+        });
+    begin_draining_after_rollback(&rollout_bgd, client, namespace, auth).await?;
+    update_status_phase(&rollout_bgd, client, namespace, BGDPhase::Draining).await;
+    update_drain_started_at(&rollout_bgd, client, namespace).await;
+    Ok(())
+}
+
+async fn ensure_rollout_spec_snapshot(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let Some(name) = bgd.metadata.name.as_deref() else {
+        return Ok(());
+    };
+    let snapshot_name = rollout_spec_snapshot_name(bgd, namespace);
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let spec = serde_yaml::to_string(&bgd.spec)
+        .map_err(|err| ReconcileError::Store(format!("failed to snapshot BGD spec: {err}")))?;
+    let rollout_generation = current_rollout_generation_from_bgd(bgd);
+    let snapshot = ConfigMap {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(snapshot_name.clone()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(std::collections::BTreeMap::from([
+                ("fluidbg.io/blue-green-ref".to_string(), name.to_string()),
+                (
+                    "fluidbg.io/rollout-snapshot".to_string(),
+                    "true".to_string(),
+                ),
+            ])),
+            ..Default::default()
+        },
+        data: Some(std::collections::BTreeMap::from([
+            ("generation".to_string(), rollout_generation.to_string()),
+            ("spec.yaml".to_string(), spec),
+        ])),
+        ..Default::default()
+    };
+    resources::apply_resource(api, &snapshot_name, &snapshot).await
+}
+
+async fn load_rollout_spec_snapshot(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<BlueGreenDeployment, ReconcileError> {
+    let name = bgd.metadata.name.as_deref().unwrap_or("unknown");
+    let snapshot_name = rollout_spec_snapshot_name(bgd, namespace);
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let snapshot = api.get(&snapshot_name).await.map_err(|err| {
+        ReconcileError::Store(format!(
+            "BGD '{name}' was updated during an active rollout, but rollout spec snapshot '{snapshot_name}' could not be loaded: {err}"
+        ))
+    })?;
+    let spec_yaml = snapshot
+        .data
+        .as_ref()
+        .and_then(|data| data.get("spec.yaml"))
+        .ok_or_else(|| {
+            ReconcileError::Store(format!(
+                "BGD '{name}' rollout spec snapshot '{snapshot_name}' is missing spec.yaml"
+            ))
+        })?;
+    let mut spec: BlueGreenDeploymentSpec = serde_yaml::from_str(spec_yaml).map_err(|err| {
+        ReconcileError::Store(format!(
+            "BGD '{name}' rollout spec snapshot '{snapshot_name}' could not be parsed: {err}"
+        ))
+    })?;
+    if force_replace_active_rollout(bgd) {
+        spec.update_policy = bgd.spec.update_policy.clone();
+    }
+    warn!(
+        "BGD '{}' spec generation {} is deferred while rollout generation {} finishes",
+        name,
+        bgd.metadata.generation.unwrap_or_default(),
+        current_rollout_generation_from_bgd(bgd)
+    );
+    let mut frozen = bgd.clone();
+    frozen.spec = spec;
+    Ok(frozen)
+}
+
+async fn delete_rollout_spec_snapshot(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+) -> std::result::Result<(), ReconcileError> {
+    let snapshot_name = rollout_spec_snapshot_name(bgd, namespace);
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    match api.delete(&snapshot_name, &Default::default()).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(error)) if error.code == 404 => Ok(()),
+        Err(err) => Err(ReconcileError::K8s(err)),
+    }
+}
+
+fn current_rollout_generation_from_bgd(bgd: &BlueGreenDeployment) -> i64 {
+    bgd.status
+        .as_ref()
+        .and_then(|status| status.rollout_generation)
+        .or(bgd.metadata.generation)
+        .unwrap_or_default()
+}
+
+fn rollout_spec_snapshot_name(bgd: &BlueGreenDeployment, namespace: &str) -> String {
+    let name = bgd.metadata.name.as_deref().unwrap_or("unknown");
+    let uid = bgd.metadata.uid.as_deref().unwrap_or("unknown");
+    let mut hasher = Sha256::new();
+    hasher.update(namespace.as_bytes());
+    hasher.update(b"/");
+    hasher.update(name.as_bytes());
+    hasher.update(b"/");
+    hasher.update(uid.as_bytes());
+    let digest = hasher.finalize();
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let prefix_limit = 253usize.saturating_sub(suffix.len() + 1);
+    let safe_name = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let truncated = safe_name
+        .trim_matches('-')
+        .chars()
+        .take(prefix_limit)
+        .collect::<String>();
+    let base = if truncated.is_empty() {
+        "fluidbg-rollout".to_string()
+    } else {
+        truncated
+    };
+    format!("{base}-{suffix}")
 }

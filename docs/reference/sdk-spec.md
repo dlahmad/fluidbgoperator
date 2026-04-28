@@ -19,7 +19,7 @@ from `plugin-api-v1alpha1.openapi.yaml`.
 ## SDK Generation
 
 The canonical plugin wire contract is OpenAPI because FluidBG plugins already
-communicate with the operator and test containers through JSON over HTTP. This
+communicate with the operator and the verifier test container through JSON over HTTP. This
 keeps non-Rust SDKs generated from one source of truth without forcing plugin
 authors into a specific runtime. Protocol Buffers would also support many
 languages, but it would add an RPC/binary-schema layer that does not match the

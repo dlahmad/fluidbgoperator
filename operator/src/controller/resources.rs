@@ -37,7 +37,7 @@ pub(super) async fn ensure_test_resources(
     assignments: &[PropertyAssignment],
 ) -> std::result::Result<Vec<DeploymentIdentity>, ReconcileError> {
     let mut deployments = Vec::new();
-    for test in &bgd.spec.tests {
+    if let Some(test) = bgd.spec.test.as_ref() {
         let test_name = test_instance_name(bgd, &test.name);
         let labels = test_labels(bgd, &test.name, &test_name);
         ensure_test_name_available(bgd, client, namespace, &test.name, &test_name, &labels).await?;
@@ -151,7 +151,7 @@ pub(super) async fn wait_for_test_services_ready(
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
-    for test in &bgd.spec.tests {
+    if let Some(test) = bgd.spec.test.as_ref() {
         let service_name = test_instance_name(bgd, &test.name);
         wait_for_service_ready_endpoint(client, namespace, &service_name).await?;
     }
@@ -651,7 +651,7 @@ pub(super) fn deployment_spec_with_test_patch(
     bgd: &BlueGreenDeployment,
     base: &DeploymentSpec,
 ) -> std::result::Result<DeploymentSpec, ReconcileError> {
-    let Some(patch) = bgd.spec.test_deployment_patch.as_ref() else {
+    let Some(patch) = bgd.spec.candidate_patch.as_ref() else {
         return Ok(base.clone());
     };
     let mut value = serde_json::to_value(base).map_err(|err| {
@@ -661,13 +661,13 @@ pub(super) fn deployment_spec_with_test_patch(
     })?;
     let patch = serde_json::to_value(patch).map_err(|err| {
         ReconcileError::Store(format!(
-            "failed to encode spec.testDeploymentPatch for patching: {err}"
+            "failed to encode spec.candidatePatch for patching: {err}"
         ))
     })?;
     merge_json_value(&mut value, &patch);
     serde_json::from_value(value).map_err(|err| {
         ReconcileError::Store(format!(
-            "spec.testDeploymentPatch does not produce a valid apps/v1 DeploymentSpec: {err}"
+            "spec.candidatePatch does not produce a valid apps/v1 DeploymentSpec: {err}"
         ))
     })
 }
@@ -734,7 +734,7 @@ pub(super) async fn cleanup_test_resources(
     client: &kube::Client,
     namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
-    for test in &bgd.spec.tests {
+    if let Some(test) = bgd.spec.test.as_ref() {
         let test_name = test_instance_name(bgd, &test.name);
         delete_deployment(client, namespace, &test_name).await?;
         delete_service(client, namespace, &test_name).await?;
@@ -992,7 +992,7 @@ async fn wait_for_test_resources_deleted(
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
 
-    for test in &bgd.spec.tests {
+    if let Some(test) = bgd.spec.test.as_ref() {
         let test_name = test_instance_name(bgd, &test.name);
         for attempt in 1..=60 {
             let deployment_exists = deployments.get_opt(&test_name).await?.is_some();
@@ -1061,8 +1061,8 @@ mod tests {
         AssignmentKind, AssignmentTarget, PropertyAssignment,
     };
     use crate::crd::blue_green::{
-        BlueGreenDeployment, BlueGreenDeploymentSpec, DeploymentSelector, ManagedDeploymentSpec,
-        TestDeploymentPatch, TestSpec,
+        BlueGreenDeployment, BlueGreenDeploymentSpec, CandidateDeploymentPatch, DeploymentSelector,
+        ManagedDeploymentSpec, TestSpec,
     };
     use k8s_openapi::api::apps::v1::DeploymentSpec;
     use k8s_openapi::api::core::v1::{
@@ -1092,10 +1092,11 @@ mod tests {
                     namespace: None,
                     spec: Default::default(),
                 },
-                test_deployment_patch: None,
+                candidate_patch: None,
                 inception_points: Vec::new(),
-                tests: Vec::new(),
+                test: None,
                 promotion: None,
+                update_policy: None,
             },
             status: None,
         }
@@ -1384,9 +1385,9 @@ mod tests {
     }
 
     #[test]
-    fn test_deployment_patch_overlays_optional_fields_only() {
+    fn candidate_patch_overlays_optional_fields_only() {
         let mut bgd = bgd("rollout-a");
-        bgd.spec.test_deployment_patch = Some(TestDeploymentPatch {
+        bgd.spec.candidate_patch = Some(CandidateDeploymentPatch {
             replicas: Some(2),
             template: Some(PodTemplateSpec {
                 metadata: Some(ObjectMeta {

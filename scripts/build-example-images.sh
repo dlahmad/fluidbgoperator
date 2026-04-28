@@ -55,11 +55,15 @@ build_image() {
         cache_args+=("--cache-to" "$DOCKER_BUILD_CACHE_TO-$name")
     fi
 
+    local build_args=(--load)
     if [ -n "$PLATFORM" ]; then
-        docker buildx build --load --platform "$PLATFORM" "${cache_args[@]}" "${tag_args[@]}" "$ROOT_DIR/$context"
-    else
-        docker buildx build --load "${cache_args[@]}" "${tag_args[@]}" "$ROOT_DIR/$context"
+        build_args+=(--platform "$PLATFORM")
     fi
+    if [ "${#cache_args[@]}" -gt 0 ]; then
+        build_args+=("${cache_args[@]}")
+    fi
+    build_args+=("${tag_args[@]}" "$ROOT_DIR/$context")
+    docker buildx build "${build_args[@]}"
 
     if [ "$PUSH" = true ]; then
         for tag in "${TAGS[@]}"; do

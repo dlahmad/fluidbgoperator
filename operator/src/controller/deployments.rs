@@ -89,7 +89,7 @@ pub(super) async fn apply_assignments(
                 touched.insert(identity, ());
             }
             AssignmentTarget::Test => {
-                for test in &bgd.spec.tests {
+                if let Some(test) = bgd.spec.test.as_ref() {
                     let test_name = test_instance_name(bgd, &test.name);
                     let identity = DeploymentIdentity {
                         namespace: namespace.to_string(),

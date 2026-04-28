@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use fluidbg_operator::crd::blue_green::BlueGreenDeployment;
 use fluidbg_operator::crd::inception_plugin::InceptionPlugin;
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, Secret, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
@@ -459,6 +460,7 @@ impl Kube {
             &lp,
         )
         .await?;
+        delete_labeled(Api::<Job>::namespaced(self.client.clone(), namespace), &lp).await?;
         delete_labeled(Api::<Pod>::namespaced(self.client.clone(), namespace), &lp).await
     }
 
@@ -488,6 +490,13 @@ impl Kube {
             "configmap" => {
                 delete_if_exists(
                     &Api::<ConfigMap>::namespaced(self.client.clone(), namespace),
+                    name,
+                )
+                .await
+            }
+            "job" => {
+                delete_if_exists(
+                    &Api::<Job>::namespaced(self.client.clone(), namespace),
                     name,
                 )
                 .await
@@ -887,7 +896,7 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "operator.image.repository=fluidbg/fbg-operator".to_string(),
         "--set".to_string(),
-        "operator.image.tag=dev".to_string(),
+        format!("operator.image.tag={}", config.image_tag),
         "--set".to_string(),
         "operator.image.pullPolicy=Never".to_string(),
         "--set".to_string(),
@@ -907,15 +916,13 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http".to_string(),
         "--set".to_string(),
-        "builtinPlugins.http.image.tag=dev".to_string(),
+        format!("builtinPlugins.http.image.tag={}", config.image_tag),
         "--set".to_string(),
         "builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq".to_string(),
         "--set".to_string(),
-        "builtinPlugins.rabbitmq.image.tag=dev".to_string(),
+        format!("builtinPlugins.rabbitmq.image.tag={}", config.image_tag),
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.enabled=true".to_string(),
-        "--set".to_string(),
-        "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string(),
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string(),
         "--set".to_string(),

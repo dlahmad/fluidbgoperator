@@ -176,7 +176,6 @@ spec:
                 - name: OUTPUT_PREFIX
                   value: v1
   inceptionPoints: []
-  tests: []
   promotion:
     data:
       minTestCases: 1

@@ -1,10 +1,13 @@
 use super::{
-    BGD_FINALIZER, BlueGreenDeployment, ManagedDeploymentSpec, candidate_name_with_suffix,
-    deterministic_candidate_suffixes, generated_candidate_name_seed, has_finalizer,
-    select_previous_green_for_promotion, validate_progressive_splitter_plugin,
+    BGD_FINALIZER, BlueGreenDeployment, ManagedDeploymentSpec,
+    active_rollout_has_new_spec_generation, candidate_name_with_suffix,
+    deterministic_candidate_suffixes, force_replace_active_rollout, generated_candidate_name_seed,
+    has_finalizer, rollout_spec_snapshot_name, select_previous_green_for_promotion,
+    should_start_force_replace_rollout, validate_progressive_splitter_plugin,
 };
 use crate::crd::blue_green::{
-    BlueGreenDeploymentSpec, DeploymentRef, DeploymentSelector, TestSpec,
+    ActiveRolloutUpdatePolicy, BGDPhase, BlueGreenDeploymentSpec, BlueGreenDeploymentStatus,
+    DeploymentRef, DeploymentSelector, UpdatePolicy,
 };
 use crate::crd::inception_plugin::{
     InceptionPlugin, InceptionPluginSpec, PluginFeatures, PluginInceptor, Topology,
@@ -26,14 +29,15 @@ fn sample_bgd(generation: i64) -> BlueGreenDeployment {
                 namespace: Some("fluidbg-test".to_string()),
                 spec: Default::default(),
             },
-            test_deployment_patch: None,
+            candidate_patch: None,
             selector: DeploymentSelector {
                 namespace: None,
                 match_labels: BTreeMap::new(),
             },
             inception_points: Vec::new(),
-            tests: Vec::<TestSpec>::new(),
+            test: None,
             promotion: None,
+            update_policy: None,
         },
         status: None,
     }
@@ -124,6 +128,73 @@ fn progressive_splitter_requires_support_flag() {
 fn progressive_splitter_accepts_standalone_plugin_with_support_flag() {
     let plugin = sample_plugin(true);
     validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap();
+}
+
+#[test]
+fn active_rollout_detects_new_generation_for_deferred_update() {
+    let mut bgd = sample_bgd(4);
+    bgd.status = Some(BlueGreenDeploymentStatus {
+        phase: Some(BGDPhase::Observing),
+        rollout_generation: Some(3),
+        observed_generation: Some(3),
+        ..Default::default()
+    });
+
+    assert!(active_rollout_has_new_spec_generation(
+        &bgd,
+        &BGDPhase::Observing
+    ));
+    assert!(!active_rollout_has_new_spec_generation(
+        &bgd,
+        &BGDPhase::Completed
+    ));
+}
+
+#[test]
+fn force_replace_update_policy_is_explicit() {
+    let mut bgd = sample_bgd(4);
+    assert!(!force_replace_active_rollout(&bgd));
+
+    bgd.spec.update_policy = Some(UpdatePolicy {
+        active_rollout: Some(ActiveRolloutUpdatePolicy::ForceReplace),
+    });
+
+    assert!(force_replace_active_rollout(&bgd));
+}
+
+#[test]
+fn force_replace_starts_only_before_draining() {
+    let mut bgd = sample_bgd(4);
+    bgd.spec.update_policy = Some(UpdatePolicy {
+        active_rollout: Some(ActiveRolloutUpdatePolicy::ForceReplace),
+    });
+    bgd.status = Some(BlueGreenDeploymentStatus {
+        phase: Some(BGDPhase::Observing),
+        rollout_generation: Some(3),
+        observed_generation: Some(3),
+        ..Default::default()
+    });
+
+    assert!(should_start_force_replace_rollout(
+        &bgd,
+        &BGDPhase::Observing
+    ));
+    assert!(!should_start_force_replace_rollout(
+        &bgd,
+        &BGDPhase::Draining
+    ));
+}
+
+#[test]
+fn rollout_spec_snapshot_name_is_stable_and_bounded() {
+    let mut bgd = sample_bgd(1);
+    bgd.metadata.name = Some("x".repeat(400));
+    let name = rollout_spec_snapshot_name(&bgd, "fluidbg-test");
+    let (_, suffix) = name.rsplit_once('-').unwrap();
+
+    assert!(name.len() <= 253);
+    assert_eq!(suffix.len(), 12);
+    assert_eq!(name, rollout_spec_snapshot_name(&bgd, "fluidbg-test"));
 }
 
 #[test]
