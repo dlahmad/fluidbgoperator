@@ -107,6 +107,43 @@ async fn successful_rabbitmq_promotion(
         .wait_bgd_phase("order-processor-upgrade", &cfg.namespace, "Observing", 60)
         .await?;
 
+    let green_input_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-upgrade",
+            "incoming-orders",
+            &cfg.namespace,
+            "duplicator.greenInputQueue",
+        )
+        .await?;
+    let blue_input_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-upgrade",
+            "incoming-orders",
+            &cfg.namespace,
+            "duplicator.blueInputQueue",
+        )
+        .await?;
+    let green_output_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-upgrade",
+            "outgoing-results",
+            &cfg.namespace,
+            "combiner.greenOutputQueue",
+        )
+        .await?;
+    let blue_output_queue = harness
+        .kube
+        .get_inception_config_value(
+            "order-processor-upgrade",
+            "outgoing-results",
+            &cfg.namespace,
+            "combiner.blueOutputQueue",
+        )
+        .await?;
+
     for i in 1..=5 {
         harness
             .rabbitmq
@@ -155,6 +192,18 @@ async fn successful_rabbitmq_promotion(
         .kube
         .wait_deployment_label(&deployment, &cfg.namespace, "fluidbg.io/green", "true")
         .await?;
+
+    for queue in [
+        &green_input_queue,
+        &blue_input_queue,
+        &green_output_queue,
+        &blue_output_queue,
+    ] {
+        harness.rabbitmq.assert_queue_drained(queue).await?;
+    }
+    for i in 1..=5 {
+        wait_for_queue_json_field(harness, "results", "orderId", &format!("order-{i}"), 30).await?;
+    }
 
     let status = harness
         .kube
@@ -1112,6 +1161,27 @@ async fn publish_progressive_message(harness: &mut E2eHarness, index: u64) -> Re
         ),
     )
     .await
+}
+
+async fn wait_for_queue_json_field(
+    harness: &mut E2eHarness,
+    queue: &str,
+    field: &str,
+    expected: &str,
+    attempts: u32,
+) -> Result<()> {
+    for _ in 1..=attempts {
+        if harness
+            .rabbitmq
+            .queue_contains_json_field(queue, field, expected)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    bail!("expected queue {queue} to contain {field}={expected}")
 }
 
 fn http_case_flags(

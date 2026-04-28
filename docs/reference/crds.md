@@ -23,6 +23,9 @@ per `BlueGreenDeployment`.
 `InceptionPlugin.spec.inceptor` describes the per-inception traffic component.
 `InceptionPlugin.spec.manager` optionally references a privileged manager
 Service in the operator namespace for resource create/delete operations.
+`BlueGreenDeployment.spec.tests[]` uses native Kubernetes `deployment` and
+`service` specs for verifier containers. Put env vars, readiness probes,
+resources, security contexts, commands, and ports in those Kubernetes specs.
 
 Regenerate CRDs after changing Rust CRD models:
 

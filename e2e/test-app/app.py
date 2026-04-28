@@ -15,6 +15,7 @@ INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://localhost:8081")
 PORT = int(os.environ.get("PORT", "8080"))
+STARTUP_DELAY_SECONDS = int(os.environ.get("STARTUP_DELAY_SECONDS", "0"))
 
 cases = {}
 cases_lock = threading.Lock()
@@ -153,4 +154,6 @@ def list_cases():
 # ── Start ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    if STARTUP_DELAY_SECONDS > 0:
+        time.sleep(STARTUP_DELAY_SECONDS)
     app.run(host="0.0.0.0", port=PORT)

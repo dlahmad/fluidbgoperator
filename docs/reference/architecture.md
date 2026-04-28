@@ -305,7 +305,11 @@ For one `BlueGreenDeployment`, reconciliation does the following:
    supported field namespaces, plugin config schemas, and progressive capability.
 2. Render the candidate Deployment from `deployment.spec`, applying
    `testDeploymentPatch` only for the test-time candidate when present.
-3. Render verifier test deployments/services.
+3. Render verifier test resources from native Kubernetes `DeploymentSpec` and
+   `ServiceSpec`, then wait for verifier Deployment availability before any
+   inceptor can send observations to it. If a verifier needs application-level
+   startup checks, define a normal Kubernetes `readinessProbe` in the test
+   Deployment.
 4. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
 5. Start plugin inceptors idle with only their secured config and per-inception
    bearer token.
@@ -314,7 +318,11 @@ For one `BlueGreenDeployment`, reconciliation does the following:
 7. Call inceptor `preparePath` endpoints to activate traffic work and collect
    returned assignments.
 8. Patch all returned/template assignments into green, blue, and test
-   deployments in one batch, then wait for those rollouts.
+   deployments in one batch, then wait for those rollouts. Test deployments are
+   already available before plugin preparation. Test-targeted template
+   assignments are applied and waited before any inceptor `preparePath`; runtime
+   `preparePath` responses are not allowed to patch test deployments because an
+   inceptor may be active immediately after prepare.
 9. Register and poll test cases through the operator HTTP API and verifier
    `verifyPath`.
 10. Apply progressive traffic updates by calling the inceptor `trafficShiftPath`.
@@ -461,6 +469,13 @@ Verifier containers hold observation state. The operator does not infer
 application correctness from message bodies or HTTP payloads. Plugins notify the
 verifier, register test cases when appropriate, and the operator polls the
 verifier result path.
+
+Each `tests[]` entry defines a native Kubernetes `deployment` and `service`.
+Container image, ports, env vars, resources, probes, security context, commands,
+and similar runtime details belong in the Deployment spec. The operator only
+adds FluidBG ownership labels/selectors, creates a Service with the same runtime
+name, waits for Deployment availability, and derives the verifier base URL from
+the first Service port.
 
 Verifier response:
 

@@ -92,16 +92,43 @@ spec:
           notifyPath: /observe/{testId}/outgoing-results
   tests:
     - name: test-container
-      image: fluidbg/test-app:dev
-      port: 8080
+      deployment:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: test-container
+        template:
+          metadata:
+            labels:
+              app: test-container
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: test-container
+                image: fluidbg/test-app:dev
+                imagePullPolicy: Never
+                ports:
+                  - containerPort: 8080
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  periodSeconds: 1
+                  failureThreshold: 60
+                env:
+                  - name: PORT
+                    value: "8080"
+                  - name: AMQP_URL
+                    value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
+      service:
+        selector:
+          app: test-container
+        ports:
+          - port: 8080
+            targetPort: 8080
       dataVerification:
         verifyPath: /result/{testId}
         timeoutSeconds: 120
-      env:
-        - name: PORT
-          value: "8080"
-        - name: AMQP_URL
-          value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/"
   promotion:
     data:
       minTestCases: 1

@@ -7,7 +7,9 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, Secret, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{
+    ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+};
 use kube::{Api, Client, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -508,14 +510,28 @@ impl Kube {
         {
             return Ok(());
         }
-        let api: Api<BlueGreenDeployment> = Api::all(self.client.clone());
+        let api: Api<DynamicObject> = Api::all_with(
+            self.client.clone(),
+            &ApiResource::from_gvk(&GroupVersionKind::gvk(
+                "fluidbg.io",
+                "v1alpha1",
+                "BlueGreenDeployment",
+            )),
+        );
         for bgd in api.list(&ListParams::default()).await?.items {
             let Some(namespace) = bgd.namespace() else {
                 continue;
             };
             let name = bgd.name_any();
-            let namespaced: Api<BlueGreenDeployment> =
-                Api::namespaced(self.client.clone(), &namespace);
+            let namespaced: Api<DynamicObject> = Api::namespaced_with(
+                self.client.clone(),
+                &namespace,
+                &ApiResource::from_gvk(&GroupVersionKind::gvk(
+                    "fluidbg.io",
+                    "v1alpha1",
+                    "BlueGreenDeployment",
+                )),
+            );
             let patch = serde_json::json!({ "metadata": { "finalizers": [] } });
             let _ = namespaced
                 .patch(&name, &PatchParams::default(), &Patch::Merge(&patch))

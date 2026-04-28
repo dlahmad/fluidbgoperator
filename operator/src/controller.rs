@@ -311,7 +311,8 @@ async fn reconcile_locked(
             resolve_current_green(&client, &namespace, &bgd.spec.selector).await?;
             validate_progressive_shifting_support(&bgd, &client, &namespace).await?;
             ensure_declared_deployments(&bgd, &client, &namespace).await?;
-            ensure_test_resources(&bgd, &client, &namespace).await?;
+            let test_deployments = ensure_test_resources(&bgd, &client, &namespace).await?;
+            wait_for_deployments_ready(&client, &test_deployments).await?;
             ensure_inception_resources(&bgd, &client, &namespace, &ctx.auth).await?;
             initialize_splitter_traffic(&bgd, &client, &namespace, &ctx.auth).await?;
             update_status_phase(&bgd, &client, &namespace, BGDPhase::Observing).await;

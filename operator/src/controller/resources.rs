@@ -1,12 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
-use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvVar, Pod, PodSpec, PodTemplateSpec, Secret, Service,
-    ServicePort, ServiceSpec,
-};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Service, ServiceSpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::ResourceExt;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
@@ -15,7 +11,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::crd::blue_green::{BlueGreenDeployment, InceptionPoint, ManagedDeploymentSpec};
+use crate::crd::blue_green::{
+    BlueGreenDeployment, InceptionPoint, ManagedDeploymentSpec, TestSpec,
+};
 use crate::crd::inception_plugin::InceptionPlugin;
 use crate::plugins::reconciler::{
     inception_auth_secret_name, inception_config_map_name, inception_instance_base_name,
@@ -32,20 +30,13 @@ pub(super) async fn ensure_test_resources(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
-) -> std::result::Result<(), ReconcileError> {
+) -> std::result::Result<Vec<DeploymentIdentity>, ReconcileError> {
+    let mut deployments = Vec::new();
     for test in &bgd.spec.tests {
         let test_name = test_instance_name(bgd, &test.name);
         let labels = test_labels(bgd, &test.name, &test_name);
         ensure_test_name_available(bgd, client, namespace, &test.name, &test_name, &labels).await?;
-        let env = test
-            .env
-            .iter()
-            .map(|env| EnvVar {
-                name: env.name.clone(),
-                value: Some(env.value.clone()),
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
+        let deployment_spec = deployment_spec_for_test(test, &labels);
 
         let deployment = Deployment {
             metadata: ObjectMeta {
@@ -54,35 +45,7 @@ pub(super) async fn ensure_test_resources(
                 labels: Some(labels.clone()),
                 ..Default::default()
             },
-            spec: Some(DeploymentSpec {
-                replicas: Some(1),
-                selector: LabelSelector {
-                    match_labels: Some(labels.clone()),
-                    ..Default::default()
-                },
-                template: PodTemplateSpec {
-                    metadata: Some(ObjectMeta {
-                        labels: Some(labels.clone()),
-                        ..Default::default()
-                    }),
-                    spec: Some(PodSpec {
-                        containers: vec![Container {
-                            name: test_name.clone(),
-                            image: Some(test.image.clone()),
-                            image_pull_policy: Some("Never".to_string()),
-                            ports: Some(vec![ContainerPort {
-                                container_port: test.port,
-                                ..Default::default()
-                            }]),
-                            env: Some(env),
-                            ..Default::default()
-                        }],
-                        termination_grace_period_seconds: Some(1),
-                        ..Default::default()
-                    }),
-                },
-                ..Default::default()
-            }),
+            spec: Some(deployment_spec),
             ..Default::default()
         };
         apply_resource(
@@ -91,7 +54,12 @@ pub(super) async fn ensure_test_resources(
             &deployment,
         )
         .await?;
+        deployments.push(DeploymentIdentity {
+            namespace: namespace.to_string(),
+            name: test_name.clone(),
+        });
 
+        let service_spec = service_spec_for_test(test, &labels)?;
         let service = Service {
             metadata: ObjectMeta {
                 name: Some(test_name.clone()),
@@ -99,15 +67,7 @@ pub(super) async fn ensure_test_resources(
                 labels: Some(labels.clone()),
                 ..Default::default()
             },
-            spec: Some(ServiceSpec {
-                selector: Some(labels),
-                ports: Some(vec![ServicePort {
-                    port: test.port,
-                    target_port: Some(IntOrString::Int(test.port)),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }),
+            spec: Some(service_spec),
             ..Default::default()
         };
         apply_resource(
@@ -118,7 +78,54 @@ pub(super) async fn ensure_test_resources(
         .await?;
     }
 
-    Ok(())
+    Ok(deployments)
+}
+
+pub(super) fn test_service_port(test: &TestSpec) -> std::result::Result<i32, ReconcileError> {
+    test.service
+        .ports
+        .as_ref()
+        .and_then(|ports| ports.first())
+        .map(|port| port.port)
+        .ok_or_else(|| {
+            ReconcileError::Store(format!(
+                "test '{}' service spec must define at least one port",
+                test.name
+            ))
+        })
+}
+
+fn deployment_spec_for_test(test: &TestSpec, labels: &BTreeMap<String, String>) -> DeploymentSpec {
+    let mut deployment = test.deployment.clone();
+    merge_labels(&mut deployment.selector.match_labels, labels);
+    let template_metadata = deployment
+        .template
+        .metadata
+        .get_or_insert_with(ObjectMeta::default);
+    merge_labels(&mut template_metadata.labels, labels);
+    deployment
+}
+
+fn service_spec_for_test(
+    test: &TestSpec,
+    labels: &BTreeMap<String, String>,
+) -> std::result::Result<ServiceSpec, ReconcileError> {
+    let mut service = test.service.clone();
+    merge_labels(&mut service.selector, labels);
+    if service.ports.as_ref().is_none_or(Vec::is_empty) {
+        return Err(ReconcileError::Store(format!(
+            "test '{}' service spec must define at least one port",
+            test.name
+        )));
+    }
+    Ok(service)
+}
+
+fn merge_labels(target: &mut Option<BTreeMap<String, String>>, labels: &BTreeMap<String, String>) {
+    let target = target.get_or_insert_with(BTreeMap::new);
+    for (key, value) in labels {
+        target.insert(key.clone(), value.clone());
+    }
 }
 
 pub(super) fn test_instance_name(bgd: &BlueGreenDeployment, logical_name: &str) -> String {
@@ -892,14 +899,20 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{deployment_spec_with_test_patch, test_instance_name};
+    use super::{
+        deployment_spec_for_test, deployment_spec_with_test_patch, service_spec_for_test,
+        test_instance_name, test_service_port,
+    };
     use crate::crd::blue_green::{
         BlueGreenDeployment, BlueGreenDeploymentSpec, DeploymentSelector, ManagedDeploymentSpec,
-        TestDeploymentPatch,
+        TestDeploymentPatch, TestSpec,
     };
     use k8s_openapi::api::apps::v1::DeploymentSpec;
-    use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec};
+    use k8s_openapi::api::core::v1::{
+        Container, EnvVar, HTTPGetAction, PodSpec, PodTemplateSpec, Probe, ServicePort, ServiceSpec,
+    };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
     use std::collections::BTreeMap;
 
     fn bgd(name: &str) -> BlueGreenDeployment {
@@ -970,6 +983,135 @@ mod tests {
         assert!(
             name.chars()
                 .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        );
+    }
+
+    #[test]
+    fn native_test_deployment_keeps_kubernetes_fields_and_adds_fluidbg_labels() {
+        let labels = BTreeMap::from([("fluidbg.io/test".to_string(), "verifier".to_string())]);
+        let spec = deployment_spec_for_test(
+            &TestSpec {
+                name: "verifier".to_string(),
+                deployment: DeploymentSpec {
+                    selector: LabelSelector {
+                        match_labels: Some(BTreeMap::from([(
+                            "app".to_string(),
+                            "verifier".to_string(),
+                        )])),
+                        ..Default::default()
+                    },
+                    template: PodTemplateSpec {
+                        metadata: Some(ObjectMeta {
+                            labels: Some(BTreeMap::from([(
+                                "app".to_string(),
+                                "verifier".to_string(),
+                            )])),
+                            ..Default::default()
+                        }),
+                        spec: Some(PodSpec {
+                            containers: vec![Container {
+                                name: "verifier".to_string(),
+                                image: Some("verifier:dev".to_string()),
+                                env: Some(vec![EnvVar {
+                                    name: "AMQP_URL".to_string(),
+                                    value: Some("amqp://rabbitmq".to_string()),
+                                    ..Default::default()
+                                }]),
+                                readiness_probe: Some(Probe {
+                                    http_get: Some(HTTPGetAction {
+                                        path: Some("/health".to_string()),
+                                        port: IntOrString::Int(8080),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }),
+                    },
+                    ..Default::default()
+                },
+                service: ServiceSpec {
+                    ports: Some(vec![ServicePort {
+                        port: 8080,
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                data_verification: None,
+                custom_verification: None,
+            },
+            &labels,
+        );
+
+        assert_eq!(
+            spec.selector
+                .match_labels
+                .as_ref()
+                .unwrap()
+                .get("fluidbg.io/test"),
+            Some(&"verifier".to_string())
+        );
+        assert_eq!(
+            spec.template
+                .metadata
+                .as_ref()
+                .unwrap()
+                .labels
+                .as_ref()
+                .unwrap()
+                .get("fluidbg.io/test"),
+            Some(&"verifier".to_string())
+        );
+        let pod_spec = spec.template.spec.unwrap();
+        let probe = pod_spec.containers[0]
+            .readiness_probe
+            .as_ref()
+            .unwrap()
+            .http_get
+            .as_ref()
+            .unwrap();
+        assert_eq!(probe.path.as_deref(), Some("/health"));
+        assert_eq!(
+            pod_spec.containers[0].env.as_ref().unwrap()[0].name,
+            "AMQP_URL"
+        );
+    }
+
+    #[test]
+    fn native_test_service_keeps_kubernetes_port_and_adds_selector_labels() {
+        let labels = BTreeMap::from([("fluidbg.io/test".to_string(), "verifier".to_string())]);
+        let test = TestSpec {
+            name: "verifier".to_string(),
+            deployment: DeploymentSpec::default(),
+            service: ServiceSpec {
+                selector: Some(BTreeMap::from([(
+                    "app".to_string(),
+                    "verifier".to_string(),
+                )])),
+                ports: Some(vec![ServicePort {
+                    name: Some("http".to_string()),
+                    port: 9090,
+                    target_port: Some(IntOrString::String("http".to_string())),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            data_verification: None,
+            custom_verification: None,
+        };
+
+        let spec = service_spec_for_test(&test, &labels).unwrap();
+
+        assert_eq!(test_service_port(&test).unwrap(), 9090);
+        assert_eq!(
+            spec.selector.as_ref().unwrap().get("fluidbg.io/test"),
+            Some(&"verifier".to_string())
+        );
+        assert_eq!(
+            spec.ports.as_ref().unwrap()[0].target_port,
+            Some(IntOrString::String("http".to_string()))
         );
     }
 

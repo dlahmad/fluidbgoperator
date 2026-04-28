@@ -107,18 +107,44 @@ spec:
           outputQueue: results
   tests:
     - name: verifier
-      image: ghcr.io/dlahmad/fluidbg-example-verifier:latest
-      port: 8080
+      deployment:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: order-flow-verifier
+        template:
+          metadata:
+            labels:
+              app: order-flow-verifier
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: verifier
+                image: ghcr.io/dlahmad/fluidbg-example-verifier:latest
+                ports:
+                  - containerPort: 8080
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  periodSeconds: 1
+                  failureThreshold: 60
+                env:
+                  - name: PORT
+                    value: "8080"
+                  - name: EXPECTED_PREFIX
+                    value: v2
+                  - name: SINK_URL
+                    value: "http://order-flow-sink.fluidbg-demo:8080"
+      service:
+        selector:
+          app: order-flow-verifier
+        ports:
+          - port: 8080
+            targetPort: 8080
       dataVerification:
         verifyPath: /result/{testId}
         timeoutSeconds: 120
-      env:
-        - name: PORT
-          value: "8080"
-        - name: EXPECTED_PREFIX
-          value: v2
-        - name: SINK_URL
-          value: "http://order-flow-sink.fluidbg-demo:8080"
   promotion:
     data:
       minTestCases: 3

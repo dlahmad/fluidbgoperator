@@ -12,9 +12,9 @@ use super::super::plugin_lifecycle::{
 };
 use super::super::resources::{
     apply_resource, ensure_inception_point_owned_resources, sign_inception_auth_token,
-    test_instance_name,
+    test_instance_name, test_service_port,
 };
-use crate::crd::blue_green::BlueGreenDeployment;
+use crate::crd::blue_green::{BlueGreenDeployment, InceptionPoint};
 use crate::crd::inception_plugin::InceptionPlugin;
 use crate::plugins::reconciler::{ReconcileInceptionContext, reconcile_inception_point};
 
@@ -26,26 +26,26 @@ pub(in crate::controller) async fn ensure_inception_resources(
 ) -> std::result::Result<(), ReconcileError> {
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     let operator_url = "http://fluidbg-operator.fluidbg-system:8090";
-    let test_container_url = bgd
-        .spec
-        .tests
-        .first()
-        .map(|test| {
-            format!(
-                "http://{}.{}:{}",
-                test_instance_name(bgd, &test.name),
-                namespace,
-                test.port
-            )
-        })
-        .unwrap_or_else(|| "http://localhost:8080".to_string());
+    let test_container_url = if let Some(test) = bgd.spec.tests.first() {
+        let port = test_service_port(test)?;
+        format!(
+            "http://{}.{}:{}",
+            test_instance_name(bgd, &test.name),
+            namespace,
+            port
+        )
+    } else {
+        "http://localhost:8080".to_string()
+    };
     let test_data_verify_path = bgd
         .spec
         .tests
         .first()
         .and_then(|test| test.data_verification.as_ref())
         .map(|verification| verification.verify_path.as_str());
-    let mut all_assignments = Vec::new();
+    let mut plans = Vec::new();
+    let mut pre_prepare_test_assignments = Vec::new();
+    let mut post_prepare_assignments = Vec::new();
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
@@ -74,11 +74,13 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .map_err(ReconcileError::Store)?;
         let mut plugin_deployments = Vec::new();
-        all_assignments.extend(template_assignments(
+        let (test_assignments, other_assignments) = split_test_assignments(template_assignments(
             resources.green_env_injections,
             resources.blue_env_injections,
             resources.test_env_injections,
         ));
+        pre_prepare_test_assignments.extend(test_assignments);
+        post_prepare_assignments.extend(other_assignments);
 
         for cm in resources.config_maps {
             let name =
@@ -117,16 +119,30 @@ pub(in crate::controller) async fn ensure_inception_resources(
             apply_resource(Api::namespaced(client.clone(), namespace), &name, &service).await?;
         }
 
-        if !plugin_deployments.is_empty() {
-            wait_for_deployments_ready(client, &plugin_deployments).await?;
+        plans.push(PreparedInceptionPoint {
+            inception_point: ip.clone(),
+            plugin,
+            plugin_deployments,
+        });
+    }
+
+    if !pre_prepare_test_assignments.is_empty() {
+        let touched =
+            apply_assignments(bgd, client, namespace, &pre_prepare_test_assignments, false).await?;
+        wait_for_deployments_ready(client, &touched).await?;
+    }
+
+    for plan in &plans {
+        if !plan.plugin_deployments.is_empty() {
+            wait_for_deployments_ready(client, &plan.plugin_deployments).await?;
         }
 
         invoke_plugin_manager_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
-            ip,
-            &plugin,
+            &plan.inception_point,
+            &plan.plugin,
             auth,
             PluginLifecycleStage::Prepare,
         )
@@ -136,23 +152,58 @@ pub(in crate::controller) async fn ensure_inception_resources(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
             namespace,
-            ip.name.as_str(),
-            &plugin,
+            plan.inception_point.name.as_str(),
+            &plan.plugin,
             auth,
             PluginLifecycleStage::Prepare,
         )
         .await?
         {
-            all_assignments.append(&mut lifecycle_assignments.assignments);
+            reject_lifecycle_test_assignments(
+                &plan.inception_point.name,
+                &lifecycle_assignments.assignments,
+            )?;
+            post_prepare_assignments.append(&mut lifecycle_assignments.assignments);
         }
     }
 
-    if !all_assignments.is_empty() {
-        let touched = apply_assignments(bgd, client, namespace, &all_assignments, false).await?;
+    if !post_prepare_assignments.is_empty() {
+        let touched =
+            apply_assignments(bgd, client, namespace, &post_prepare_assignments, false).await?;
         wait_for_deployments_ready(client, &touched).await?;
     }
 
     Ok(())
+}
+
+struct PreparedInceptionPoint {
+    inception_point: InceptionPoint,
+    plugin: InceptionPlugin,
+    plugin_deployments: Vec<DeploymentIdentity>,
+}
+
+fn split_test_assignments(
+    assignments: Vec<PropertyAssignment>,
+) -> (Vec<PropertyAssignment>, Vec<PropertyAssignment>) {
+    assignments
+        .into_iter()
+        .partition(|assignment| matches!(assignment.target, AssignmentTarget::Test))
+}
+
+fn reject_lifecycle_test_assignments(
+    inception_point: &str,
+    assignments: &[PropertyAssignment],
+) -> std::result::Result<(), ReconcileError> {
+    if assignments
+        .iter()
+        .any(|assignment| matches!(assignment.target, AssignmentTarget::Test))
+    {
+        Err(ReconcileError::Store(format!(
+            "inception point '{inception_point}' returned test deployment assignments from prepare; test assignments must be declared in InceptionPlugin injects so the operator can apply them before inceptor activation"
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn template_assignments(
@@ -195,4 +246,43 @@ fn template_assignments(
             }),
     );
     assignments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assignment(target: AssignmentTarget, name: &str) -> PropertyAssignment {
+        PropertyAssignment {
+            target,
+            kind: AssignmentKind::Env,
+            name: name.to_string(),
+            value: "value".to_string(),
+            container_name: None,
+        }
+    }
+
+    #[test]
+    fn split_test_assignments_keeps_test_assignments_pre_prepare() {
+        let (test, other) = split_test_assignments(vec![
+            assignment(AssignmentTarget::Green, "GREEN_ENV"),
+            assignment(AssignmentTarget::Test, "TEST_ENV"),
+            assignment(AssignmentTarget::Blue, "BLUE_ENV"),
+        ]);
+
+        assert_eq!(test.len(), 1);
+        assert_eq!(test[0].name, "TEST_ENV");
+        assert_eq!(other.len(), 2);
+    }
+
+    #[test]
+    fn lifecycle_prepare_may_not_return_test_assignments() {
+        let err = reject_lifecycle_test_assignments(
+            "observer",
+            &[assignment(AssignmentTarget::Test, "TEST_ENV")],
+        )
+        .expect_err("test assignments from prepare must be rejected");
+
+        assert!(format!("{err}").contains("observer"));
+    }
 }

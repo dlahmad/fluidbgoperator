@@ -26,7 +26,9 @@ rollout did not drop traffic.
 - `01-base.yaml` creates the demo namespace, RabbitMQ, the producer, the
   downstream sink, and the initial `BlueGreenDeployment` with `OUTPUT_PREFIX=v1`.
 - `02-upgrade.yaml` updates the same `BlueGreenDeployment` to
-  `OUTPUT_PREFIX=v2` and enables the RabbitMQ and HTTP inception points.
+  `OUTPUT_PREFIX=v2`, defines the verifier with native Kubernetes
+  `deployment`/`service` specs, and enables the RabbitMQ and HTTP inception
+  points.
 - `app/`, `producer/`, `sink/`, and `verifier/` contain the small demo
   container images.
 

@@ -198,7 +198,7 @@ deleted by rollout cleanup.
 
 - The operator URL is a cluster service in `fluidbg-system`.
 - The test container URL is namespace-qualified:
-  - `http://<test-name>.<bgd-namespace>:<port>`
+  - `http://<generated-test-service>.<bgd-namespace>:<first-service-port>`
 - The verify URL for each `testCase` is built by the plugin from:
   - `FLUIDBG_TEST_CONTAINER_URL`
   - `FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE`
@@ -439,6 +439,8 @@ sequenceDiagram
     participant B as blue deployment
     participant T as test deployment
 
+    O->>T: create Deployment/Service
+    O->>O: wait until test Deployment is available
     O->>P: POST /prepare
     P-->>O: assignments[]
     O->>G: patch env vars
@@ -452,6 +454,20 @@ sequenceDiagram
     P-->>O: cleanup complete
     O->>O: remove plugin and test resources
 ```
+
+The operator waits for verifier test deployments before any plugin `preparePath`
+call. Test containers are declared with native Kubernetes Deployment and Service
+specs, so readiness belongs in the Deployment's normal `readinessProbe` when the
+container can start before its HTTP API is ready. Test-targeted template
+injections from `InceptionPlugin.spec.injects` are also patched and waited
+before prepare. This matters because prepared inceptors can immediately observe
+traffic and call `observer.notifyPath`; the Service must already have ready
+endpoints so those observations are not lost during rollout startup.
+
+Plugins must not return test-deployment assignments from `preparePath`. Those
+assignments arrive too late to be part of the pre-prepare readiness barrier and
+the operator rejects them. Put test-container injections in the plugin CRD
+`injects` section instead.
 
 ### 4. Information Sources by Container
 

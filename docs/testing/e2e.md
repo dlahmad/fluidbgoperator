@@ -37,6 +37,13 @@ flowchart TD
 - Rejection of progressive strategy when the splitter plugin does not advertise `supportsProgressiveShifting`.
 - Combined HTTP plugin proxy, observer, mock, and writer behavior.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.
+- Test verifier readiness before plugin preparation, so inceptors cannot send
+  observations to a test Service without ready endpoints. The e2e verifier uses
+  a native Kubernetes `readinessProbe`; there is no FluidBG-specific readiness
+  abstraction.
+- Promotion and rollback drain safety for RabbitMQ temporary queues, including
+  messages in regular and shadow queues, and verification that promoted output
+  messages are present on the restored base queue.
 - Test-time deployment patching, including a lower candidate replica count during observation and canonical replica count after promotion.
 - Same-`BlueGreenDeployment` rollout serialization so a new rollout cannot start while previous inception resources still exist.
 - Different `BlueGreenDeployment` names running without generated-name collisions.

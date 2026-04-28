@@ -114,6 +114,12 @@ pub(super) fn validate_test_configuration(
     }
 
     for test in &bgd.spec.tests {
+        if test.service.ports.as_ref().is_none_or(Vec::is_empty) {
+            return Err(ReconcileError::Store(format!(
+                "test '{}' service spec must define at least one port",
+                test.name
+            )));
+        }
         if test.data_verification.is_none() && test.custom_verification.is_none() {
             return Err(ReconcileError::Store(format!(
                 "test '{}' must define at least one of dataVerification or customVerification",
@@ -174,6 +180,9 @@ mod tests {
     };
     use crate::state_store::Counts;
     use crate::strategy::PromotionAction;
+    use k8s_openapi::api::apps::v1::DeploymentSpec;
+    use k8s_openapi::api::core::v1::{ServicePort, ServiceSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use std::collections::BTreeMap;
 
@@ -208,6 +217,34 @@ mod tests {
                 }),
             },
             status: None,
+        }
+    }
+
+    fn verifier_test(
+        data_verification: Option<DataVerificationSpec>,
+        custom_verification: Option<CustomVerificationSpec>,
+    ) -> TestSpec {
+        TestSpec {
+            name: "verifier".to_string(),
+            deployment: DeploymentSpec {
+                selector: LabelSelector {
+                    match_labels: Some(BTreeMap::from([(
+                        "app".to_string(),
+                        "verifier".to_string(),
+                    )])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            service: ServiceSpec {
+                ports: Some(vec![ServicePort {
+                    port: 8080,
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            data_verification,
+            custom_verification,
         }
     }
 
@@ -280,17 +317,13 @@ mod tests {
     #[test]
     fn validation_rejects_data_test_without_data_promotion() {
         let mut bgd = base_bgd();
-        bgd.spec.tests.push(TestSpec {
-            name: "verifier".to_string(),
-            image: "verifier:dev".to_string(),
-            port: 8080,
-            data_verification: Some(DataVerificationSpec {
+        bgd.spec.tests.push(verifier_test(
+            Some(DataVerificationSpec {
                 verify_path: "/result/{testId}".to_string(),
                 timeout_seconds: None,
             }),
-            custom_verification: None,
-            env: Vec::new(),
-        });
+            None,
+        ));
 
         let err = validate_test_configuration(&bgd).unwrap_err().to_string();
         assert!(err.contains("promotion.data is missing"));
@@ -314,22 +347,18 @@ mod tests {
                 progressive: None,
             },
         });
-        bgd.spec.tests.push(TestSpec {
-            name: "verifier".to_string(),
-            image: "verifier:dev".to_string(),
-            port: 8080,
-            data_verification: Some(DataVerificationSpec {
+        bgd.spec.tests.push(verifier_test(
+            Some(DataVerificationSpec {
                 verify_path: "/result/{testId}".to_string(),
                 timeout_seconds: None,
             }),
-            custom_verification: Some(CustomVerificationSpec {
+            Some(CustomVerificationSpec {
                 start_path: "/start".to_string(),
                 verify_path: "/result/{testId}".to_string(),
                 timeout_seconds: None,
                 retries: Some(2),
             }),
-            env: Vec::new(),
-        });
+        ));
 
         validate_test_configuration(&bgd).unwrap();
     }

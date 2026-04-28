@@ -1,5 +1,5 @@
 use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStrategy};
-use k8s_openapi::api::core::v1::PodTemplateSpec;
+use k8s_openapi::api::core::v1::{PodTemplateSpec, ServiceSpec};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -124,14 +124,12 @@ pub struct InceptionPointDrainSpec {
 #[serde(rename_all = "camelCase")]
 pub struct TestSpec {
     pub name: String,
-    pub image: String,
-    pub port: i32,
+    pub deployment: DeploymentSpec,
+    pub service: ServiceSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_verification: Option<DataVerificationSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_verification: Option<CustomVerificationSpec>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub env: Vec<TestEnvVar>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -151,12 +149,6 @@ pub struct CustomVerificationSpec {
     pub timeout_seconds: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retries: Option<i32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct TestEnvVar {
-    pub name: String,
-    pub value: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -416,8 +408,24 @@ mod tests {
                 }],
                 "tests": [{
                     "name": "test-container",
-                    "image": "fluidbg/test-app:dev",
-                    "port": 8080,
+                    "deployment": {
+                        "replicas": 1,
+                        "selector": { "matchLabels": { "app": "test-container" } },
+                        "template": {
+                            "metadata": { "labels": { "app": "test-container" } },
+                            "spec": {
+                                "containers": [{
+                                    "name": "test-container",
+                                    "image": "fluidbg/test-app:dev",
+                                    "ports": [{ "containerPort": 8080 }]
+                                }]
+                            }
+                        }
+                    },
+                    "service": {
+                        "selector": { "app": "test-container" },
+                        "ports": [{ "port": 8080, "targetPort": 8080 }]
+                    },
                     "dataVerification": {
                         "verifyPath": "/result/{testId}",
                         "timeoutSeconds": 120
