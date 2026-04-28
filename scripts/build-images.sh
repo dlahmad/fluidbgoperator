@@ -47,10 +47,18 @@ build_image() {
         tag_args+=("-t" "$REGISTRY/$name:$tag")
     done
 
+    local cache_args=()
+    if [ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]; then
+        cache_args+=("--cache-from" "$DOCKER_BUILD_CACHE_FROM-$name")
+    fi
+    if [ -n "${DOCKER_BUILD_CACHE_TO:-}" ]; then
+        cache_args+=("--cache-to" "$DOCKER_BUILD_CACHE_TO-$name")
+    fi
+
     if [ -n "$PLATFORM" ]; then
-        docker build --platform "$PLATFORM" "${tag_args[@]}" -f "$dockerfile" "$ROOT_DIR"
+        docker buildx build --load --platform "$PLATFORM" "${cache_args[@]}" "${tag_args[@]}" -f "$dockerfile" "$ROOT_DIR"
     else
-        docker build "${tag_args[@]}" -f "$dockerfile" "$ROOT_DIR"
+        docker buildx build --load "${cache_args[@]}" "${tag_args[@]}" -f "$dockerfile" "$ROOT_DIR"
     fi
 
     if [ "$PUSH" = true ]; then

@@ -215,6 +215,7 @@ jobs:
         with:
           cluster_name: fluidbg-dev
           config: testenv/kind-config.yaml
+      - uses: docker/setup-buildx-action@v3
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-host
@@ -277,7 +278,7 @@ jobs:
         id: image_namespace
         run: echo "value=${{ needs.resolve.outputs.image_namespace }}" >> "$GITHUB_OUTPUT"
       - name: Login to GHCR
-        if: needs.resolve.outputs.is_release == 'true'
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -285,12 +286,18 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build local images
         if: needs.resolve.outputs.is_release != 'true'
+        env:
+          DOCKER_BUILD_CACHE_FROM: ${{ format('type=registry,ref={0}/{1}/fluidbg-build-cache:images-{2}', env.REGISTRY, steps.image_namespace.outputs.value, matrix.arch) }}
+          DOCKER_BUILD_CACHE_TO: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}/fluidbg-build-cache:images-{2},mode=max', env.REGISTRY, steps.image_namespace.outputs.value, matrix.arch) || '' }}
         run: |
           ./scripts/build-images.sh \
             --tag "ci-${{ matrix.arch }}" \
             --platform "${{ matrix.platform }}"
       - name: Build and push release images
         if: needs.resolve.outputs.is_release == 'true'
+        env:
+          DOCKER_BUILD_CACHE_FROM: ${{ format('type=registry,ref={0}/{1}/fluidbg-build-cache:images-{2}', env.REGISTRY, steps.image_namespace.outputs.value, matrix.arch) }}
+          DOCKER_BUILD_CACHE_TO: ${{ format('type=registry,ref={0}/{1}/fluidbg-build-cache:images-{2},mode=max', env.REGISTRY, steps.image_namespace.outputs.value, matrix.arch) }}
         run: |
           ./scripts/build-images.sh \
             --registry "${REGISTRY}/${{ steps.image_namespace.outputs.value }}" \

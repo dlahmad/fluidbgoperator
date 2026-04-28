@@ -15,6 +15,7 @@ use crate::config::{AuthMode, Config, ManagementConfig, QueueDeclarationConfig};
 
 const SERVICE_BUS_SCOPE: &str = "https://servicebus.azure.net/.default";
 const ARM_SCOPE: &str = "https://management.azure.com/.default";
+const BROKER_PROPERTIES_HEADER: &str = "BrokerProperties";
 
 #[derive(Clone)]
 pub(crate) struct ServiceBusClient {
@@ -51,6 +52,7 @@ struct CachedToken {
 pub(crate) struct LockedMessage {
     pub(crate) body: Vec<u8>,
     pub(crate) properties: BTreeMap<String, String>,
+    broker_properties: Option<Value>,
     location: String,
 }
 
@@ -227,6 +229,27 @@ impl ServiceBusClient {
         payload: &[u8],
         properties: &BTreeMap<String, String>,
     ) -> Result<()> {
+        self.send_message_with_broker_properties(queue, payload, properties, None)
+            .await
+    }
+
+    pub(crate) async fn forward_message(&self, queue: &str, message: &LockedMessage) -> Result<()> {
+        self.send_message_with_broker_properties(
+            queue,
+            &message.body,
+            &message.properties,
+            message.broker_properties.as_ref(),
+        )
+        .await
+    }
+
+    async fn send_message_with_broker_properties(
+        &self,
+        queue: &str,
+        payload: &[u8],
+        properties: &BTreeMap<String, String>,
+        broker_properties: Option<&Value>,
+    ) -> Result<()> {
         let queue_url = self.queue_url(queue);
         let url = format!("{queue_url}/messages");
         let mut builder = self
@@ -234,6 +257,9 @@ impl ServiceBusClient {
             .post(&url)
             .header(CONTENT_TYPE, "application/octet-stream")
             .body(payload.to_vec());
+        if let Some(broker_properties) = sendable_broker_properties(broker_properties) {
+            builder = builder.header(BROKER_PROPERTIES_HEADER, broker_properties.to_string());
+        }
         for (key, value) in properties {
             builder = builder.header(key, value);
         }
@@ -274,10 +300,12 @@ impl ServiceBusClient {
                     .map(str::to_string)
                     .context("Service Bus locked message response missing Location")?;
                 let properties = custom_properties(response.headers());
+                let broker_properties = broker_properties(response.headers());
                 let body = response.bytes().await?.to_vec();
                 Ok(Some(LockedMessage {
                     body,
                     properties,
+                    broker_properties,
                     location,
                 }))
             }
@@ -361,10 +389,7 @@ impl ServiceBusClient {
             let Some(message) = self.receive_peek_lock(source_path, 1).await? else {
                 break;
             };
-            match self
-                .send_message(target_queue, &message.body, &message.properties)
-                .await
-            {
+            match self.forward_message(target_queue, &message).await {
                 Ok(()) => {
                     self.complete(&message).await?;
                     moved += 1;
@@ -943,6 +968,45 @@ fn custom_properties(headers: &HeaderMap) -> BTreeMap<String, String> {
     out
 }
 
+fn broker_properties(headers: &HeaderMap) -> Option<Value> {
+    let raw = headers.get(BROKER_PROPERTIES_HEADER)?.to_str().ok()?;
+    let parsed = serde_json::from_str::<Value>(raw).ok()?;
+    sendable_broker_properties(Some(&parsed))
+}
+
+fn sendable_broker_properties(value: Option<&Value>) -> Option<Value> {
+    let Value::Object(input) = value? else {
+        return None;
+    };
+    let mut out = serde_json::Map::new();
+    for key in [
+        "MessageId",
+        "CorrelationId",
+        "SessionId",
+        "ReplyToSessionId",
+        "Label",
+        "Subject",
+        "To",
+        "ReplyTo",
+        "ContentType",
+        "TimeToLive",
+        "ScheduledEnqueueTimeUtc",
+        "PartitionKey",
+        "ViaPartitionKey",
+    ] {
+        if let Some(value) = input.get(key)
+            && !value.is_null()
+        {
+            out.insert(key.to_string(), value.clone());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Object(out))
+    }
+}
+
 fn is_standard_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -1048,7 +1112,7 @@ pub(crate) fn properties_from_json(value: &Option<Value>) -> BTreeMap<String, St
     };
     for (key, value) in map {
         let header_name = HeaderName::from_bytes(key.as_bytes());
-        if header_name.is_err() {
+        if header_name.is_err() || is_standard_header(key) {
             continue;
         }
         let value = match value {
@@ -1164,5 +1228,66 @@ mod tests {
         assert_eq!(properties["maxDeliveryCount"], 12);
         assert_eq!(properties["enablePartitioning"], true);
         assert_eq!(properties["enableBatchedOperations"], true);
+    }
+
+    #[test]
+    fn broker_properties_preserve_sendable_metadata_only() {
+        let input = serde_json::json!({
+            "MessageId": "order-17",
+            "CorrelationId": "corr-17",
+            "SessionId": "tenant-a",
+            "ContentType": "application/json",
+            "TimeToLive": 300,
+            "LockToken": "must-not-copy",
+            "SequenceNumber": 42,
+            "DeliveryCount": 3,
+            "LockedUntilUtc": "2026-04-28T00:00:00Z",
+            "DeadLetterReason": "must-not-copy"
+        });
+
+        let sanitized = sendable_broker_properties(Some(&input)).unwrap();
+
+        assert_eq!(sanitized["MessageId"], "order-17");
+        assert_eq!(sanitized["CorrelationId"], "corr-17");
+        assert_eq!(sanitized["SessionId"], "tenant-a");
+        assert_eq!(sanitized["ContentType"], "application/json");
+        assert_eq!(sanitized["TimeToLive"], 300);
+        assert!(sanitized.get("LockToken").is_none());
+        assert!(sanitized.get("SequenceNumber").is_none());
+        assert!(sanitized.get("DeliveryCount").is_none());
+        assert!(sanitized.get("LockedUntilUtc").is_none());
+        assert!(sanitized.get("DeadLetterReason").is_none());
+    }
+
+    #[test]
+    fn broker_properties_are_extracted_from_received_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            BROKER_PROPERTIES_HEADER,
+            HeaderValue::from_static(
+                r#"{"MessageId":"m-1","CorrelationId":"c-1","LockToken":"drop-me"}"#,
+            ),
+        );
+
+        let parsed = broker_properties(&headers).unwrap();
+
+        assert_eq!(parsed["MessageId"], "m-1");
+        assert_eq!(parsed["CorrelationId"], "c-1");
+        assert!(parsed.get("LockToken").is_none());
+    }
+
+    #[test]
+    fn custom_properties_skip_standard_and_control_headers() {
+        let properties = properties_from_json(&Some(serde_json::json!({
+            "x-test-id": "case-1",
+            "Content-Type": "ignored",
+            "BrokerProperties": "{\"MessageId\":\"ignored\"}",
+            "Location": "ignored"
+        })));
+
+        assert_eq!(properties.get("x-test-id"), Some(&"case-1".to_string()));
+        assert!(!properties.contains_key("Content-Type"));
+        assert!(!properties.contains_key("BrokerProperties"));
+        assert!(!properties.contains_key("Location"));
     }
 }

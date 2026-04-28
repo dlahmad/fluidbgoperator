@@ -34,6 +34,10 @@ multiple jobs. Cargo caches are shared by purpose:
 - `cargo-linux-amd64-musl` for static amd64 release binaries.
 - `cargo-linux-arm64-musl` for static arm64 release binaries.
 
+Image builds reuse the downloaded `fluidbg-dist-<arch>` executable artifacts and
+export BuildKit layer caches to `ghcr.io/<owner>/fluidbg-build-cache`.
+Pull requests read cache metadata but do not push cache updates.
+
 GitHub Release assets contain executable archives and chart packages only:
 
 - `fluidbg-<version>-linux-amd64.tar.gz`

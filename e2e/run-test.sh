@@ -1268,15 +1268,17 @@ wait_deployment_env_pair_values "$HTTP_DEPLOYMENT" "$FORCE_DELETE_DEPLOYMENT" "$
 wait_deployment_env_pair_values "$HTTP_DEPLOYMENT" "$FORCE_DELETE_DEPLOYMENT" "$NS" OUTPUT_QUEUE "$FORCE_DELETE_BLUE_OUTPUT_QUEUE" "$FORCE_DELETE_GREEN_OUTPUT_QUEUE" results
 kubectl rollout status deployment/"$HTTP_DEPLOYMENT" -n "$NS" --timeout=120s
 kubectl rollout status deployment/"$FORCE_DELETE_DEPLOYMENT" -n "$NS" --timeout=120s
-echo "Publishing force-delete verification message..."
-FORCE_DELETE_ORDER_ID="force-delete-$(date +%s)"
-publish_rabbitmq_message "orders" "{\"orderId\":\"$FORCE_DELETE_ORDER_ID\",\"type\":\"order\",\"action\":\"force-delete-check\"}"
+echo "Publishing force-delete verification messages until at least one case is tracked..."
+FORCE_DELETE_PUBLISHED=0
 for i in $(seq 1 30); do
+    FORCE_DELETE_PUBLISHED=$((FORCE_DELETE_PUBLISHED + 1))
+    FORCE_DELETE_ORDER_ID="force-delete-$(date +%s)-$FORCE_DELETE_PUBLISHED"
+    publish_rabbitmq_message "orders" "{\"orderId\":\"$FORCE_DELETE_ORDER_ID\",\"type\":\"order\",\"action\":\"force-delete-check\"}"
     STATUS_JSON="$(kubectl get bluegreendeployment order-processor-force-delete -n "$NS" -o json)"
     OBSERVED_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesObserved", 0))')"
     PENDING_COUNT="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", {}).get("testCasesPending", 0))')"
     TRACKED_COUNT="$((OBSERVED_COUNT + PENDING_COUNT))"
-    echo "  Force-delete BGD tracked=$TRACKED_COUNT observed=$OBSERVED_COUNT pending=$PENDING_COUNT ($i/30)"
+    echo "  Force-delete BGD tracked=$TRACKED_COUNT observed=$OBSERVED_COUNT pending=$PENDING_COUNT published=$FORCE_DELETE_PUBLISHED ($i/30)"
     if [ "$TRACKED_COUNT" -ge 1 ]; then
         break
     fi

@@ -50,6 +50,15 @@ nightly schedules, and manual workflow dispatches with `run_e2e=true`. Normal
 branch and pull-request runs still build and validate the project without
 publishing release artifacts.
 
+Manual e2e trigger:
+
+```sh
+gh workflow run "CI/CD" --repo dlahmad/fluidbgoperator --ref main -f run_e2e=true
+```
+
+Release-only jobs are intentionally tag-gated. They run when a `v*.*.*` tag is
+pushed, not from manual dispatch.
+
 The default e2e mode uses the in-memory state store and one operator replica:
 
 ```sh

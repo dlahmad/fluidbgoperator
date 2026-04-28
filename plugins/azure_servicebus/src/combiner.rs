@@ -70,7 +70,7 @@ async fn run_combine_loop(
         let result = async {
             state
                 .service_bus
-                .send_message(&result_queue, &message.body, &message.properties)
+                .forward_message(&result_queue, &message)
                 .await?;
 
             if has_role(&state.roles, PluginRole::Observer)

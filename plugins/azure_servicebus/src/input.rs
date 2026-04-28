@@ -27,13 +27,13 @@ async fn process_input_message(state: &AppState, message: &LockedMessage) -> Res
         if let Some(green_queue) = &duplicator.green_input_queue {
             state
                 .service_bus
-                .send_message(green_queue, &message.body, &message.properties)
+                .forward_message(green_queue, message)
                 .await?;
         }
         if let Some(blue_queue) = &duplicator.blue_input_queue {
             state
                 .service_bus
-                .send_message(blue_queue, &message.body, &message.properties)
+                .forward_message(blue_queue, message)
                 .await?;
         }
         route = TrafficRoute::Both;
@@ -43,14 +43,14 @@ async fn process_input_message(state: &AppState, message: &LockedMessage) -> Res
             if let Some(blue_queue) = &splitter.blue_input_queue {
                 state
                     .service_bus
-                    .send_message(blue_queue, &message.body, &message.properties)
+                    .forward_message(blue_queue, message)
                     .await?;
             }
             route = TrafficRoute::Blue;
         } else if let Some(green_queue) = &splitter.green_input_queue {
             state
                 .service_bus
-                .send_message(green_queue, &message.body, &message.properties)
+                .forward_message(green_queue, message)
                 .await?;
             route = TrafficRoute::Green;
         }

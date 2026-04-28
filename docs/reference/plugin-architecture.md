@@ -214,6 +214,10 @@ messages and their dead-letter subqueue messages are moved back to the matching
 base shadow queue. If the configured drain timeout is exceeded, the operator
 records `TimedOutMaybeSuccessful` instead of silently treating the drain as
 safe.
+Service Bus message moves preserve message body, custom application properties,
+and sendable `BrokerProperties`. Runtime-only broker fields from a received
+message, including lock tokens and delivery counters, are not replayed into the
+new message.
 
 ## Built-In Plugin Matrix
 

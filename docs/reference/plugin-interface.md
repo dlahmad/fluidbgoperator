@@ -681,6 +681,12 @@ identity settings for the built-in Azure Service Bus plugin under
 - The plugin uses Service Bus REST runtime APIs directly to keep the image small.
 - Reads use peek-lock, not receive-and-delete.
 - The source message is completed only after the downstream send and optional observer notification have succeeded.
+- When the plugin duplicates, splits, combines, or drains Service Bus messages,
+  it forwards the body, custom application properties, and sendable
+  `BrokerProperties` such as message id, correlation id, session id, content
+  type, TTL, and partition keys. It intentionally drops read-only receive/lock
+  metadata such as lock token, sequence number, delivery count, lock expiry, and
+  dead-letter reason.
 - On processing failure, the plugin unlocks the message so Service Bus can redeliver it.
 - The writer role publishes JSON payloads to `writer.targetQueue` and maps `properties` to Service Bus custom message headers.
 - Filters and test-id selectors support both `queue.*` and `servicebus.*` field namespaces. Applications do not need to add FluidBG route fields to message bodies.
