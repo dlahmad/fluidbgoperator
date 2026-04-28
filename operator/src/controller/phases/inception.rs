@@ -52,6 +52,22 @@ pub(in crate::controller) async fn ensure_inception_resources(
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        let mut manager_inceptor_env = Vec::new();
+        if let Some(mut lifecycle_response) = invoke_plugin_manager_lifecycle(
+            client,
+            bgd.metadata.name.as_deref().unwrap_or(""),
+            namespace,
+            ip,
+            &plugin,
+            auth,
+            PluginLifecycleStage::Prepare,
+        )
+        .await?
+        {
+            reject_manager_test_assignments(&ip.name, &lifecycle_response.assignments)?;
+            manager_inceptor_env = manager_inceptor_env_vars(lifecycle_response.inceptor_env);
+            pre_activation_assignments.append(&mut lifecycle_response.assignments);
+        }
         let auth_token = sign_inception_auth_token(
             client,
             namespace,
@@ -74,6 +90,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
                 blue_green_ref: bgd.metadata.name.as_deref().unwrap_or(""),
                 blue_green_uid,
                 auth_token: &auth_token,
+                manager_inceptor_env: &manager_inceptor_env,
             },
         )
         .map_err(ReconcileError::Store)?;
@@ -136,26 +153,6 @@ pub(in crate::controller) async fn ensure_inception_resources(
             wait_for_deployments_ready(client, &plan.plugin_deployments).await?;
         }
 
-        if let Some(mut lifecycle_assignments) = invoke_plugin_manager_lifecycle(
-            client,
-            bgd.metadata.name.as_deref().unwrap_or(""),
-            namespace,
-            &plan.inception_point,
-            &plan.plugin,
-            auth,
-            PluginLifecycleStage::Prepare,
-        )
-        .await?
-        {
-            reject_manager_test_assignments(
-                &plan.inception_point.name,
-                &lifecycle_assignments.assignments,
-            )?;
-            pre_activation_assignments.append(&mut lifecycle_assignments.assignments);
-        }
-    }
-
-    for plan in &plans {
         if let Some(mut lifecycle_assignments) = invoke_inceptor_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
@@ -167,6 +164,10 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .await?
         {
+            reject_inceptor_env_response(
+                &plan.inception_point.name,
+                &lifecycle_assignments.inceptor_env,
+            )?;
             reject_manager_test_assignments(
                 &plan.inception_point.name,
                 &lifecycle_assignments.assignments,
@@ -199,6 +200,10 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .await?
         {
+            reject_inceptor_env_response(
+                &plan.inception_point.name,
+                &lifecycle_assignments.inceptor_env,
+            )?;
             reject_activation_assignments(
                 &plan.inception_point.name,
                 &lifecycle_assignments.assignments,
@@ -207,6 +212,16 @@ pub(in crate::controller) async fn ensure_inception_resources(
     }
 
     Ok(())
+}
+
+fn manager_inceptor_env_vars(vars: Vec<fluidbg_plugin_sdk::InceptorEnvVar>) -> Vec<EnvVar> {
+    vars.into_iter()
+        .map(|env| EnvVar {
+            name: env.name,
+            value: Some(env.value),
+            ..Default::default()
+        })
+        .collect()
 }
 
 struct PreparedInceptionPoint {
@@ -248,6 +263,19 @@ fn reject_activation_assignments(
     } else {
         Err(ReconcileError::Store(format!(
             "inception point '{inception_point}' returned deployment assignments from activate; app/test assignments must be provided before activation"
+        )))
+    }
+}
+
+fn reject_inceptor_env_response(
+    inception_point: &str,
+    env: &[fluidbg_plugin_sdk::InceptorEnvVar],
+) -> std::result::Result<(), ReconcileError> {
+    if env.is_empty() {
+        Ok(())
+    } else {
+        Err(ReconcileError::Store(format!(
+            "inception point '{inception_point}' returned inceptorEnv outside manager prepare; inceptor runtime env must be provided by the manager before pod creation"
         )))
     }
 }

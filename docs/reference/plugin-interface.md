@@ -62,6 +62,7 @@ An `InceptionPlugin` declares:
 - `lifecycle.preparePath`
 - `lifecycle.activatePath`
 - `lifecycle.cleanupPath`
+- `manager.syncPath`
 - `configSchema`
 - `fieldNamespaces`
 - `features`
@@ -91,7 +92,6 @@ inceptionPoints:
       name: rabbitmq
     roles: [duplicator, observer]
     config:
-      amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
       duplicator:
         inputQueue: orders
         greenInputQueue: orders-green
@@ -517,6 +517,13 @@ assignments arrive too late to be part of the initial verifier pod template and
 the operator rejects them. Put test-container injections in the plugin CRD
 `injects` section instead. Plugins must also not return assignments from
 `activatePath`; activation is only a state transition.
+
+Managers may expose `manager.syncPath` (default `/manager/sync`). The operator
+calls it from the orphan-cleanup loop with an authenticated active-inception
+inventory. The inventory includes namespace, BGD name, BGD UID, inception point,
+roles, and non-secret BGD plugin config for every active BGD using that plugin.
+Managers use it to garbage-collect scoped credentials and FluidBG-owned
+temporary resources that are no longer represented by live BGDs.
 
 ### 4. Information Sources by Container
 

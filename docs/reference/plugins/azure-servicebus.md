@@ -19,7 +19,9 @@ The Azure Service Bus plugin mirrors the RabbitMQ queue-role model where Service
 Bus semantics map cleanly. The manager should run in the operator namespace and
 hold connection-string or workload-identity permissions for queue management.
 Per-inception inceptors run in application namespaces and should not receive
-queue management credentials.
+queue management credentials. With connection-string manager auth, inceptors
+receive short-lived queue-scoped SAS tokens instead of the base connection
+string.
 
 ```mermaid
 flowchart TD
@@ -58,10 +60,6 @@ Top-level fields:
 
 | Field | Required | Used By | Meaning |
 |---|---|---|---|
-| `connectionString` | one auth mode | runtime and manager | Service Bus connection string for SAS authentication. |
-| `fullyQualifiedNamespace` | workload identity | runtime and manager | Namespace host such as `example.servicebus.windows.net`. |
-| `auth` | workload identity | runtime and manager | Tenant/client/federated token settings and SAS token TTL. |
-| `management` | manager/status | manager | ARM resource identity plus create/delete toggles. |
 | `queueDeclaration` | no | manager | Service Bus queue properties for derived temporary queues. |
 | `shadowQueue` | no | manager, drain | Optional separate queue next to each temporary queue. |
 | `duplicator` | when role active | `duplicator` | Base input and green/blue input queue names plus env vars to patch. |
@@ -83,8 +81,14 @@ implicitly set forwarding or dead-letter properties.
 
 | Mode | Required Input | Notes |
 |---|---|---|
-| Connection string | `connectionString` or manager connection string secret | Uses SAS tokens for Service Bus runtime and management calls. |
-| Workload identity | `fullyQualifiedNamespace` plus projected AKS workload identity env vars or explicit `auth.tenantId`, `auth.clientId`, `auth.federatedTokenFile` | Exchanges the Kubernetes service account token for Microsoft Entra tokens. |
+| Connection string | manager Secret with `AZURE_SERVICEBUS_CONNECTION_STRING` | Manager creates queues and returns short-lived per-queue SAS tokens to the inceptor. |
+| Workload identity | manager/inceptor runtime env `AZURE_SERVICEBUS_NAMESPACE` plus projected AKS workload identity env vars | Exchanges the Kubernetes service account token for Microsoft Entra tokens. |
+
+Service Bus authentication and ARM management settings are never valid BGD
+config. They are plugin installation/runtime configuration. Helm injects them
+from Secrets and workload identity ServiceAccounts into manager and inceptor
+pods; BGD authors only describe queue names, queue properties, role behavior,
+and verifier matching.
 
 For workload identity, the manager requests Service Bus data-plane tokens for
 `https://servicebus.azure.net/.default`. If ARM queue management is used, it
@@ -174,18 +178,27 @@ the entity keep drain pending.
 Cleanup deletes only derived queue names recomputed from token claims and active
 roles. Derived names include namespace, BGD name, BGD UID, inception point, role,
 and logical queue purpose. User-supplied queue names are not trusted for manager
-cleanup.
+cleanup. The manager also supports `/manager/sync`; the operator periodically
+sends the active inception inventory so the manager can remove FluidBG-owned
+temporary Service Bus queues that missed normal cleanup. Connection-string
+inceptor credentials are short-lived SAS tokens, so missed credential cleanup
+expires naturally.
 
 ## Security Boundary
 
 The manager verifies the per-inception JWT and derives namespace, BGD,
-inception point, and plugin identity from claims. Azure credentials and workload
-identity bindings belong on the manager, not in per-inception inceptor pods.
-This prevents application namespaces from receiving broad queue-management
-privileges through a BGD.
+inception point, and plugin identity from claims. Privileged Azure management
+credentials belong on the manager. Per-inception inceptors may receive
+least-privilege data-plane credentials or workload identity bindings needed to
+read/write their assigned queues, but those credentials are plugin installation
+config, never BGD config. This prevents application namespaces from receiving
+broad queue-management privileges through a BGD.
 
 For connection-string auth, provide
 `builtinPlugins.azureServiceBus.manager.connectionStringSecretName` in Helm.
 For workload identity, provide the manager ServiceAccount and Azure Workload
 Identity annotations. The chart does not embed Azure Service Bus credentials
-directly into manager Deployment env vars.
+directly into manager Deployment env vars. The manager may return
+`AZURE_SERVICEBUS_NAMESPACE`, `FLUIDBG_AZURE_SERVICEBUS_AUTH_MODE`, and
+`FLUIDBG_AZURE_SERVICEBUS_SAS_TOKENS_JSON` as authenticated `inceptorEnv`; the
+base connection string remains manager-only.

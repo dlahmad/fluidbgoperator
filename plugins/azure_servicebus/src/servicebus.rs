@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::config::{AuthMode, Config, ManagementConfig, QueueDeclarationConfig};
+use crate::config::{AuthMode, ManagementConfig, QueueDeclarationConfig, ServiceBusRuntimeConfig};
 
 const SERVICE_BUS_SCOPE: &str = "https://servicebus.azure.net/.default";
 const ARM_SCOPE: &str = "https://management.azure.com/.default";
@@ -28,6 +28,9 @@ pub(crate) struct ServiceBusClient {
 
 #[derive(Clone)]
 enum AuthProvider {
+    StaticSasTokens {
+        tokens_by_resource: BTreeMap<String, String>,
+    },
     Sas {
         key_name: String,
         key: String,
@@ -57,7 +60,7 @@ pub(crate) struct LockedMessage {
 }
 
 impl ServiceBusClient {
-    pub(crate) fn from_config(config: &Config) -> Result<Self> {
+    pub(crate) fn from_runtime_config(config: &ServiceBusRuntimeConfig) -> Result<Self> {
         let connection = config
             .connection_string
             .as_deref()
@@ -102,23 +105,28 @@ impl ServiceBusClient {
             .unwrap_or_default()
             .to_string();
 
-        let auth = match auth_mode {
-            AuthMode::ConnectionString => {
-                let connection =
-                    connection.context("connectionString auth requires connectionString")?;
-                AuthProvider::Sas {
-                    key_name: connection.shared_access_key_name,
-                    key: connection.shared_access_key,
-                    ttl_seconds: config
-                        .auth
-                        .as_ref()
-                        .and_then(|auth| auth.sas_token_ttl_seconds)
-                        .unwrap_or(3600),
-                }
+        let auth = if !config.static_sas_tokens.is_empty() {
+            AuthProvider::StaticSasTokens {
+                tokens_by_resource: config.static_sas_tokens.clone(),
             }
-            AuthMode::WorkloadIdentity => {
-                let auth = config.auth.as_ref();
-                AuthProvider::WorkloadIdentity {
+        } else {
+            match auth_mode {
+                AuthMode::ConnectionString => {
+                    let connection =
+                        connection.context("connectionString auth requires connectionString")?;
+                    AuthProvider::Sas {
+                        key_name: connection.shared_access_key_name,
+                        key: connection.shared_access_key,
+                        ttl_seconds: config
+                            .auth
+                            .as_ref()
+                            .and_then(|auth| auth.sas_token_ttl_seconds)
+                            .unwrap_or(3600),
+                    }
+                }
+                AuthMode::WorkloadIdentity => {
+                    let auth = config.auth.as_ref();
+                    AuthProvider::WorkloadIdentity {
                     tenant_id: auth
                         .and_then(|auth| auth.tenant_id.clone())
                         .or_else(|| std::env::var("AZURE_TENANT_ID").ok())
@@ -139,6 +147,7 @@ impl ServiceBusClient {
                         .unwrap_or_else(|| "https://login.microsoftonline.com".to_string()),
                     service_bus_token: Arc::new(Mutex::new(None)),
                     arm_token: Arc::new(Mutex::new(None)),
+                }
                 }
             }
         };
@@ -447,6 +456,31 @@ impl ServiceBusClient {
         }
     }
 
+    pub(crate) async fn list_queues(&self) -> Result<Vec<String>> {
+        if self.uses_workload_identity()
+            && let Some(management) = &self.management
+            && has_arm_management_config(management)
+        {
+            return self.list_queues_arm(management).await;
+        }
+
+        let url = format!("{}/$Resources/Queues", self.endpoint);
+        let response = self
+            .authorized(self.http.get(&url), &url, SERVICE_BUS_SCOPE)
+            .await?
+            .send()
+            .await?;
+        match response.status().as_u16() {
+            200 => Ok(extract_xml_titles(&response.text().await?)),
+            404 => Ok(Vec::new()),
+            status => bail!(
+                "list Service Bus queues failed: {} {}",
+                status,
+                response.text().await.unwrap_or_default()
+            ),
+        }
+    }
+
     async fn create_queue_arm(
         &self,
         queue: &str,
@@ -557,6 +591,45 @@ impl ServiceBusClient {
         }
     }
 
+    async fn list_queues_arm(&self, management: &ManagementConfig) -> Result<Vec<String>> {
+        let subscription = required(&management.subscription_id, "management.subscriptionId")?;
+        let resource_group = required(&management.resource_group, "management.resourceGroup")?;
+        let namespace = management
+            .namespace_name
+            .as_deref()
+            .unwrap_or(&self.namespace_name);
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.ServiceBus/namespaces/{}/queues?api-version=2024-01-01",
+            percent_encode_path_segment(subscription),
+            percent_encode_path_segment(resource_group),
+            percent_encode_path_segment(namespace)
+        );
+        let response = self
+            .authorized(self.http.get(&url), &url, ARM_SCOPE)
+            .await?
+            .send()
+            .await?;
+        match response.status().as_u16() {
+            200 => {
+                let body = response.json::<Value>().await?;
+                Ok(body
+                    .get("value")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.get("name").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect())
+            }
+            404 => Ok(Vec::new()),
+            status => bail!(
+                "ARM list Service Bus queues failed: {} {}",
+                status,
+                response.text().await.unwrap_or_default()
+            ),
+        }
+    }
+
     fn arm_queue_url(&self, queue: &str, management: &ManagementConfig) -> Result<String> {
         let subscription = required(&management.subscription_id, "management.subscriptionId")?;
         let resource_group = required(&management.resource_group, "management.resourceGroup")?;
@@ -595,6 +668,15 @@ impl ServiceBusClient {
 
     async fn authorization_header(&self, resource: &str, scope: &str) -> Result<String> {
         match &self.auth {
+            AuthProvider::StaticSasTokens { tokens_by_resource } => {
+                let token = tokens_by_resource
+                    .iter()
+                    .filter(|(prefix, _)| resource.starts_with(prefix.as_str()))
+                    .max_by_key(|(prefix, _)| prefix.len())
+                    .map(|(_, token)| token)
+                    .context("no static SAS token matches Service Bus resource")?;
+                Ok(token.clone())
+            }
             AuthProvider::Sas {
                 key_name,
                 key,
@@ -645,13 +727,13 @@ fn required<'a>(value: &'a Option<String>, name: &str) -> Result<&'a str> {
 }
 
 #[derive(Debug)]
-struct ParsedConnectionString {
-    fully_qualified_namespace: String,
-    shared_access_key_name: String,
-    shared_access_key: String,
+pub(crate) struct ParsedConnectionString {
+    pub(crate) fully_qualified_namespace: String,
+    pub(crate) shared_access_key_name: String,
+    pub(crate) shared_access_key: String,
 }
 
-fn parse_connection_string(value: &str) -> Result<ParsedConnectionString> {
+pub(crate) fn parse_connection_string(value: &str) -> Result<ParsedConnectionString> {
     let mut endpoint = None;
     let mut key_name = None;
     let mut key = None;
@@ -680,7 +762,7 @@ fn parse_connection_string(value: &str) -> Result<ParsedConnectionString> {
     })
 }
 
-fn sas_token(resource: &str, key_name: &str, key: &str, ttl_seconds: i64) -> String {
+pub(crate) fn sas_token(resource: &str, key_name: &str, key: &str, ttl_seconds: i64) -> String {
     let encoded_resource = percent_encode_query_value(resource);
     let expiry = (Utc::now() + Duration::seconds(ttl_seconds)).timestamp();
     let string_to_sign = format!("{encoded_resource}\n{expiry}");
@@ -689,6 +771,17 @@ fn sas_token(resource: &str, key_name: &str, key: &str, ttl_seconds: i64) -> Str
     format!(
         "SharedAccessSignature sr={encoded_resource}&sig={signature}&se={expiry}&skn={key_name}"
     )
+}
+
+pub(crate) fn service_bus_resource_url(namespace: &str, queue: &str) -> String {
+    let endpoint = format!(
+        "https://{}",
+        namespace
+            .trim_start_matches("sb://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/')
+    );
+    format!("{}/{}", endpoint, percent_encode_path(queue))
 }
 
 #[derive(Deserialize)]
@@ -1026,6 +1119,25 @@ fn extract_xml_u64(body: &str, tag: &str) -> Option<u64> {
     let end = format!("</{tag}>");
     let value = body.split(&start).nth(1)?.split(&end).next()?;
     value.trim().parse().ok()
+}
+
+fn extract_xml_titles(body: &str) -> Vec<String> {
+    body.split("<title")
+        .skip(1)
+        .filter_map(|part| part.split_once('>').map(|(_, rest)| rest))
+        .filter_map(|part| part.split("</title>").next())
+        .map(xml_unescape)
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 fn strip_query(value: &str) -> &str {

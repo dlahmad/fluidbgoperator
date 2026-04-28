@@ -55,6 +55,38 @@ spec:
                   name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
                   key: {{ .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretKey | quote }}
             {{- end }}
+            {{- if or .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName .Values.builtinPlugins.rabbitmq.manager.managementUrl }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.rabbitmq.manager.managementUrlSecretKey | quote }}
+                  optional: true
+            {{- end }}
+            {{- if or .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName .Values.builtinPlugins.rabbitmq.manager.managementUsername }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.rabbitmq.manager.managementUsernameSecretKey | quote }}
+                  optional: true
+            {{- end }}
+            {{- if or .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName .Values.builtinPlugins.rabbitmq.manager.managementPassword }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.rabbitmq.manager.managementPasswordSecretKey | quote }}
+                  optional: true
+            {{- end }}
+            {{- if or .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName .Values.builtinPlugins.rabbitmq.manager.amqpUrl .Values.builtinPlugins.rabbitmq.manager.managementUrl .Values.builtinPlugins.rabbitmq.manager.managementUsername .Values.builtinPlugins.rabbitmq.manager.managementPassword }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_VHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.rabbitmqManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.rabbitmq.manager.managementVhostSecretKey | quote }}
+                  optional: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health
@@ -149,10 +181,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.operator.auth.signingSecretName | quote }}
                   key: {{ .Values.operator.auth.signingSecretKey | quote }}
-            {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
-            - name: FLUIDBG_MANAGER_CONFIG_PATH
-              value: /etc/fluidbg-manager/config.yaml
-            {{- end }}
             {{- if .Values.builtinPlugins.azureServiceBus.manager.connectionStringSecretName }}
             - name: AZURE_SERVICEBUS_CONNECTION_STRING
               valueFrom:
@@ -164,12 +192,22 @@ spec:
             - name: AZURE_SERVICEBUS_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
-          {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
-          volumeMounts:
-            - name: manager-config
-              mountPath: /etc/fluidbg-manager
-              readOnly: true
-          {{- end }}
+            {{- with .Values.builtinPlugins.azureServiceBus.manager.authMode }}
+            - name: FLUIDBG_AZURE_SERVICEBUS_AUTH_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.builtinPlugins.azureServiceBus.manager.subscriptionId }}
+            - name: FLUIDBG_AZURE_SERVICEBUS_SUBSCRIPTION_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.builtinPlugins.azureServiceBus.manager.resourceGroup }}
+            - name: FLUIDBG_AZURE_SERVICEBUS_RESOURCE_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.builtinPlugins.azureServiceBus.manager.namespaceName }}
+            - name: FLUIDBG_AZURE_SERVICEBUS_NAMESPACE_NAME
+              value: {{ . | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health
@@ -180,15 +218,6 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.builtinPlugins.azureServiceBus.manager.resources | nindent 12 }}
-      {{- if .Values.builtinPlugins.azureServiceBus.manager.configSecretName }}
-      volumes:
-        - name: manager-config
-          secret:
-            secretName: {{ .Values.builtinPlugins.azureServiceBus.manager.configSecretName | quote }}
-            items:
-              - key: {{ .Values.builtinPlugins.azureServiceBus.manager.configSecretKey | quote }}
-                path: config.yaml
-      {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -61,10 +61,10 @@ The operator and built-in plugin images must also be available in the cluster.
 For local development, build/load them with the repository scripts. For a
 published release, use the GHCR defaults from the Helm chart.
 
-This demo embeds local RabbitMQ credentials because it creates a disposable
-broker in the demo namespace. Production installs should keep broker and cloud
-credentials in Kubernetes Secrets and enable plugin managers so privileged
-infrastructure credentials remain in the operator namespace.
+This demo uses local RabbitMQ credentials because it creates a disposable broker
+in the demo namespace. Credentials are plugin installation/runtime config, not
+BGD config. The chart renders local values into Secrets first and injects them
+via `secretKeyRef`; production installs should reference existing Secrets.
 
 ## Install Operator
 
@@ -78,6 +78,12 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --set operator.auth.createSigningSecret=true \
   --set operator.auth.signingSecretName=fluidbg-operator-auth \
   --set operator.auth.signingSecretValue=dev-signing-key-change-me \
+  --set builtinPlugins.rabbitmq.manager.enabled=true \
+  --set builtinPlugins.rabbitmq.manager.amqpUrl='amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f' \
+  --set builtinPlugins.rabbitmq.manager.managementUrl='http://rabbitmq.fluidbg-demo:15672' \
+  --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
+  --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
+  --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
   --set builtinPlugins.namespaces[0]=fluidbg-demo
 ```
 

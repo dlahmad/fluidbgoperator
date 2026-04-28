@@ -57,16 +57,22 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --set builtinPlugins.http.image.tag=dev \
   --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
   --set builtinPlugins.rabbitmq.image.tag=dev \
+  --set builtinPlugins.rabbitmq.manager.enabled=true \
+  --set builtinPlugins.rabbitmq.manager.amqpUrl='amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f' \
+  --set builtinPlugins.rabbitmq.manager.managementUrl='http://rabbitmq.fluidbg-demo:15672' \
+  --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
+  --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
+  --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
   --set operator.auth.createSigningSecret=true \
   --set operator.auth.signingSecretName=fluidbg-operator-auth \
   --set operator.auth.signingSecretValue=dev-signing-key-change-me \
   --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
 ```
 
-This demo embeds local RabbitMQ credentials in the example manifests because it
-creates its own disposable broker in `fluidbg-demo`. Production installs should
-put broker and cloud credentials in Kubernetes Secrets and use plugin managers
-so privileged infrastructure credentials stay in the operator namespace.
+This demo uses local RabbitMQ credentials because it creates its own disposable
+broker in `fluidbg-demo`. They are provided to the plugin installation, not to
+the BGD. The chart renders local values into Secrets first and injects them via
+`secretKeyRef`; production installs should reference existing Secrets instead.
 
 ## Run
 

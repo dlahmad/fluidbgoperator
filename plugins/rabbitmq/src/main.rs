@@ -18,7 +18,7 @@ mod manager;
 mod writer;
 
 use combiner::run_combiner;
-use config::{AppState, has_role, load_config};
+use config::{AppState, has_role, load_config, rabbitmq_amqp_url_from_env};
 use input::run_input_pipeline;
 use lifecycle::{
     activate_handler, cleanup_handler, drain_handler, drain_status_handler, health,
@@ -46,10 +46,7 @@ async fn main() -> Result<()> {
         bail!("no active roles configured via FLUIDBG_ACTIVE_ROLES");
     }
 
-    let amqp_url = config
-        .amqp_url
-        .clone()
-        .unwrap_or_else(|| "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string());
+    let amqp_url = rabbitmq_amqp_url_from_env()?;
     let state = AppState::new(config.clone(), roles.clone(), amqp_url.clone(), runtime);
 
     info!("rabbitmq plugin starting with roles {:?}", roles);
@@ -97,6 +94,7 @@ async fn run_manager() -> Result<()> {
         .route("/health", get(manager::health))
         .route("/manager/prepare", post(manager::prepare_handler))
         .route("/manager/cleanup", post(manager::cleanup_handler))
+        .route("/manager/sync", post(manager::sync_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
     axum::serve(listener, app).await?;

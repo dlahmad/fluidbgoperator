@@ -133,11 +133,20 @@ pub struct PropertyAssignment {
     pub container_name: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InceptorEnvVar {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginLifecycleResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignments: Vec<PropertyAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inceptor_env: Vec<InceptorEnvVar>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -162,9 +171,38 @@ pub struct TrafficShiftResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginManagerLifecycleRequest {
+pub struct ActiveInception {
+    pub namespace: String,
+    pub blue_green_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blue_green_uid: Option<String>,
+    pub inception_point: String,
+    pub plugin: String,
     pub roles: Vec<String>,
     pub config: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManagerLifecycleRequest {
+    pub namespace: String,
+    pub blue_green_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blue_green_uid: Option<String>,
+    pub inception_point: String,
+    pub plugin: String,
+    pub roles: Vec<String>,
+    pub config: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_inceptions: Vec<ActiveInception>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManagerSyncRequest {
+    pub plugin: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_inceptions: Vec<ActiveInception>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -114,6 +114,7 @@ pub struct ReconcileInceptionContext<'a> {
     pub blue_green_ref: &'a str,
     pub blue_green_uid: &'a str,
     pub auth_token: &'a str,
+    pub manager_inceptor_env: &'a [EnvVar],
 }
 
 pub fn secured_inception_config(
@@ -195,7 +196,7 @@ pub fn reconcile_inception_point(
         ..Default::default()
     };
 
-    let env_vars = vec![
+    let mut env_vars = vec![
         EnvVar {
             name: "FLUIDBG_OPERATOR_URL".to_string(),
             value: Some(context.operator_url.to_string()),
@@ -250,6 +251,8 @@ pub fn reconcile_inception_point(
             ..Default::default()
         },
     ];
+    env_vars.extend(plugin.spec.inceptor.env.clone());
+    env_vars.extend(context.manager_inceptor_env.to_vec());
 
     let volume_mounts = plugin
         .spec
@@ -826,6 +829,7 @@ mod tests {
             blue_green_ref: "order-processor-bg",
             blue_green_uid: "uid-123",
             auth_token: "signed-token",
+            manager_inceptor_env: &[],
         }
     }
 
@@ -1027,6 +1031,7 @@ mod tests {
             port: Some(9090),
             prepare_path: Some("/manager/prepare".to_string()),
             cleanup_path: Some("/manager/cleanup".to_string()),
+            sync_path: Some("/manager/sync".to_string()),
         });
         let ip = make_inception_point(
             "incoming-orders",
@@ -1162,6 +1167,7 @@ mod tests {
                 blue_green_ref: "order-processor-bg",
                 blue_green_uid: "uid-123",
                 auth_token: "signed-token",
+                manager_inceptor_env: &[],
             },
         )
         .unwrap();
@@ -1222,6 +1228,7 @@ mod tests {
                 blue_green_ref: "order-processor-bg",
                 blue_green_uid: "uid-123",
                 auth_token: "signed-token",
+                manager_inceptor_env: &[],
             },
         )
         .unwrap();
@@ -1285,6 +1292,7 @@ mod tests {
                     blue_green_ref: "order-processor-bg",
                     blue_green_uid: "uid-123",
                     auth_token: "signed-token",
+                    manager_inceptor_env: &[],
                 }
             )
             .is_err()
@@ -1332,6 +1340,7 @@ mod tests {
                     blue_green_ref: "order-processor-bg",
                     blue_green_uid: "uid-123",
                     auth_token: "signed-token",
+                    manager_inceptor_env: &[],
                 }
             )
             .is_ok()

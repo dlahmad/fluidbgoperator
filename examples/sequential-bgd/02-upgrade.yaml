@@ -43,12 +43,6 @@ spec:
       drain:
         maxWaitSeconds: 20
       config:
-        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f"
-        management:
-          url: "http://rabbitmq.fluidbg-demo:15672"
-          username: fluidbg
-          password: fluidbg
-          vhost: "/"
         duplicator:
           inputQueue: orders
           greenInputQueue: orders-green
@@ -93,12 +87,6 @@ spec:
       drain:
         maxWaitSeconds: 20
       config:
-        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f"
-        management:
-          url: "http://rabbitmq.fluidbg-demo:15672"
-          username: fluidbg
-          password: fluidbg
-          vhost: "/"
         combiner:
           greenOutputQueueEnvVar: OUTPUT_QUEUE
           blueOutputQueueEnvVar: OUTPUT_QUEUE

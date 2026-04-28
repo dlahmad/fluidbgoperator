@@ -9,15 +9,8 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Config {
-    #[serde(default)]
-    pub(crate) connection_string: Option<String>,
-    #[serde(default)]
-    pub(crate) fully_qualified_namespace: Option<String>,
-    #[serde(default)]
-    pub(crate) auth: Option<AuthConfig>,
-    #[serde(default)]
-    pub(crate) management: Option<ManagementConfig>,
     #[serde(default)]
     pub(crate) queue_declaration: QueueDeclarationConfig,
     #[serde(default)]
@@ -257,6 +250,91 @@ impl Drop for InFlightMessageGuard {
 
 pub(crate) fn load_config() -> Result<Config> {
     fluidbg_plugin_sdk::load_yaml_config()
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServiceBusRuntimeConfig {
+    pub(crate) connection_string: Option<String>,
+    pub(crate) fully_qualified_namespace: Option<String>,
+    pub(crate) auth: Option<AuthConfig>,
+    pub(crate) management: Option<ManagementConfig>,
+    pub(crate) static_sas_tokens: std::collections::BTreeMap<String, String>,
+}
+
+impl ServiceBusRuntimeConfig {
+    pub(crate) fn from_env() -> Self {
+        let auth_mode = std::env::var("FLUIDBG_AZURE_SERVICEBUS_AUTH_MODE")
+            .ok()
+            .and_then(|mode| match mode.as_str() {
+                "connectionString" | "connection-string" | "connection_string" => {
+                    Some(AuthMode::ConnectionString)
+                }
+                "workloadIdentity" | "workload-identity" | "workload_identity" => {
+                    Some(AuthMode::WorkloadIdentity)
+                }
+                _ => None,
+            });
+        let auth = AuthConfig {
+            mode: auth_mode,
+            tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+            client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+            federated_token_file: std::env::var("AZURE_FEDERATED_TOKEN_FILE").ok(),
+            authority_host: std::env::var("AZURE_AUTHORITY_HOST").ok(),
+            sas_token_ttl_seconds: std::env::var("FLUIDBG_AZURE_SERVICEBUS_SAS_TOKEN_TTL_SECONDS")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+        };
+        let management = ManagementConfig {
+            subscription_id: std::env::var("FLUIDBG_AZURE_SERVICEBUS_SUBSCRIPTION_ID").ok(),
+            resource_group: std::env::var("FLUIDBG_AZURE_SERVICEBUS_RESOURCE_GROUP").ok(),
+            namespace_name: std::env::var("FLUIDBG_AZURE_SERVICEBUS_NAMESPACE_NAME").ok(),
+            create_queues: env_bool("FLUIDBG_AZURE_SERVICEBUS_CREATE_QUEUES", true),
+            delete_queues: env_bool("FLUIDBG_AZURE_SERVICEBUS_DELETE_QUEUES", true),
+        };
+        Self {
+            connection_string: std::env::var("AZURE_SERVICEBUS_CONNECTION_STRING").ok(),
+            fully_qualified_namespace: std::env::var("AZURE_SERVICEBUS_NAMESPACE").ok(),
+            auth: Some(auth),
+            management: Some(management),
+            static_sas_tokens: std::env::var("FLUIDBG_AZURE_SERVICEBUS_SAS_TOKENS_JSON")
+                .ok()
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use serde_json::json;
+
+    #[test]
+    fn rollout_config_rejects_runtime_credentials() {
+        let parsed = serde_json::from_value::<Config>(json!({
+            "connectionString": "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=secret",
+            "fullyQualifiedNamespace": "example.servicebus.windows.net",
+            "auth": {
+                "mode": "connectionString"
+            },
+            "management": {
+                "subscriptionId": "sub",
+                "resourceGroup": "rg"
+            },
+            "duplicator": {
+                "inputQueue": "orders"
+            }
+        }));
+
+        assert!(parsed.is_err());
+    }
 }
 
 pub(crate) fn has_role(roles: &[PluginRole], role: PluginRole) -> bool {

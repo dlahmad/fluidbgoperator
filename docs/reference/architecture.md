@@ -194,7 +194,6 @@ inceptionPoints:
     drain:
       maxWaitSeconds: 60
     config:
-      amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
       duplicator:
         inputQueue: orders
         greenInputQueue: orders-green
@@ -311,11 +310,13 @@ For one `BlueGreenDeployment`, reconciliation does the following:
    supported field namespaces, plugin config schemas, and progressive capability.
 2. Resolve the current green Deployment and validate that progressive strategy,
    if configured, is supported by the selected splitter plugin.
-3. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`.
-4. Start plugin inceptors idle with only their secured config and per-inception
-   bearer token.
-5. Call manager `preparePath` endpoints so privileged infrastructure exists
-   before any inceptor moves traffic.
+3. Call manager `preparePath` endpoints with a per-inception JWT, secured
+   config, and active-inception inventory. The manager creates privileged
+   resources and returns scoped `inceptorEnv`.
+4. Render inceptor ConfigMaps, Deployments, and Services from `InceptionPlugin`
+   with secured config, per-inception bearer token, and manager-provided
+   `inceptorEnv`.
+5. Start plugin inceptors idle. They do not move traffic until activation.
 6. Call inceptor `preparePath` endpoints for non-traffic setup and assignment
    discovery. Inceptors must stay idle after `preparePath`; they may create
    non-privileged local resources and return green/blue assignments, but they
@@ -343,6 +344,9 @@ For one `BlueGreenDeployment`, reconciliation does the following:
    `drainStatusPath`, then call inceptor and manager `cleanupPath`.
 15. Remove temporary test/inceptor resources and restore direct assignment values
    where plugins declared restore templates.
+16. Independently, the orphan-cleanup loop calls manager `syncPath` with the
+   active-inception inventory so missed cleanup can be repaired after crashes or
+   forced BGD deletion.
 
 The operator also prevents two rollouts of the same `BlueGreenDeployment` from
 colliding while the previous rollout's temporary inception resources still

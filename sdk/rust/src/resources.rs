@@ -51,6 +51,25 @@ pub fn derived_shadow_queue_name(temp_queue_name: &str, shadow_suffix: &str) -> 
     }
 }
 
+pub fn derived_scoped_identity_name(
+    prefix: &str,
+    namespace: &str,
+    blue_green_ref: &str,
+    blue_green_uid: &str,
+    inception_point: &str,
+    max_len: usize,
+) -> String {
+    let suffix = stable_suffix(&[namespace, blue_green_ref, blue_green_uid, inception_point]);
+    let safe_prefix = sanitize(prefix);
+    let budget = max_len.saturating_sub(suffix.len() + 2).max(1);
+    let readable = sanitize(&format!("{namespace}-{blue_green_ref}-{inception_point}"));
+    let readable = readable.chars().take(budget).collect::<String>();
+    format!("{safe_prefix}-{readable}-{suffix}")
+        .chars()
+        .take(max_len)
+        .collect()
+}
+
 fn stable_suffix(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -105,7 +124,8 @@ fn sanitize_shadow_suffix(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        derived_shadow_queue_name, derived_temp_queue_name, derived_temp_queue_name_with_uid,
+        derived_scoped_identity_name, derived_shadow_queue_name, derived_temp_queue_name,
+        derived_temp_queue_name_with_uid,
     };
 
     #[test]
@@ -135,5 +155,31 @@ mod tests {
         let shadow = derived_shadow_queue_name("fluidbg-blue-input-1234567890abcdef", "_dlq");
 
         assert_eq!(shadow, "fluidbg-blue-input-1234567890abcdef_dlq");
+    }
+
+    #[test]
+    fn scoped_identity_names_are_bounded_and_stable() {
+        let name = derived_scoped_identity_name(
+            "fbg-rmq",
+            "very-long-namespace-name",
+            "very-long-blue-green-deployment-name",
+            "uid-123",
+            "very-long-inception-point-name",
+            48,
+        );
+
+        assert!(name.starts_with("fbg-rmq-"));
+        assert!(name.len() <= 48);
+        assert_eq!(
+            name,
+            derived_scoped_identity_name(
+                "fbg-rmq",
+                "very-long-namespace-name",
+                "very-long-blue-green-deployment-name",
+                "uid-123",
+                "very-long-inception-point-name",
+                48,
+            )
+        );
     }
 }

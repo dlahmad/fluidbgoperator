@@ -4,6 +4,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::models::PluginManagerLifecycleRequest;
+
 pub const PLUGIN_AUTH_TOKEN_ENV: &str = "FLUIDBG_PLUGIN_AUTH_TOKEN";
 pub const AUTHORIZATION_HEADER: &str = "authorization";
 pub const PLUGIN_AUTH_ISSUER: &str = "fluidbg-operator";
@@ -70,14 +72,59 @@ pub fn bearer_token(header_value: &str) -> Option<&str> {
 
 pub fn bearer_matches(header_value: Option<&str>, expected_token: Option<&str>) -> bool {
     let Some(expected_token) = expected_token else {
-        return true;
+        return false;
     };
+    if expected_token.is_empty() {
+        return false;
+    }
     let Some(header_value) = header_value else {
         return false;
     };
     bearer_token(header_value)
         .map(|actual| constant_time_eq(actual.as_bytes(), expected_token.as_bytes()))
         .unwrap_or(false)
+}
+
+pub fn require_bearer_token(
+    header_value: Option<&str>,
+    expected_token: Option<&str>,
+) -> Result<()> {
+    if bearer_matches(header_value, expected_token) {
+        Ok(())
+    } else {
+        bail!("missing or invalid bearer token")
+    }
+}
+
+pub fn verify_manager_bearer_token(
+    header_value: Option<&str>,
+    signing_key: &[u8],
+) -> Result<PluginAuthClaims> {
+    let header_value = header_value.ok_or_else(|| anyhow!("missing authorization header"))?;
+    let token = bearer_token(header_value).ok_or_else(|| anyhow!("missing bearer token"))?;
+    verify_plugin_auth_token(token, signing_key)
+}
+
+pub fn manager_request_matches_claims(
+    req: &PluginManagerLifecycleRequest,
+    claims: &PluginAuthClaims,
+) -> bool {
+    req.namespace == claims.namespace
+        && req.blue_green_ref == claims.blue_green_ref
+        && req.inception_point == claims.inception_point
+        && req.plugin == claims.plugin
+        && req.blue_green_uid.as_deref() == claims.blue_green_uid.as_deref()
+}
+
+pub fn require_manager_request_matches_claims(
+    req: &PluginManagerLifecycleRequest,
+    claims: &PluginAuthClaims,
+) -> Result<()> {
+    if manager_request_matches_claims(req, claims) {
+        Ok(())
+    } else {
+        bail!("manager lifecycle request does not match token claims")
+    }
 }
 
 pub fn sign_plugin_auth_token(claims: &PluginAuthClaims, signing_key: &[u8]) -> Result<String> {
@@ -183,7 +230,9 @@ mod tests {
 
     #[test]
     fn bearer_match_requires_expected_token() {
-        assert!(bearer_matches(None, None));
+        assert!(!bearer_matches(None, None));
+        assert!(!bearer_matches(Some("Bearer secret"), None));
+        assert!(!bearer_matches(Some("Bearer secret"), Some("")));
         assert!(bearer_matches(Some("Bearer secret"), Some("secret")));
         assert!(!bearer_matches(Some("Bearer wrong"), Some("secret")));
         assert!(!bearer_matches(Some("secret"), Some("secret")));
@@ -200,5 +249,36 @@ mod tests {
             claims
         );
         assert!(verify_plugin_auth_token(&token, b"wrong-key").is_err());
+    }
+
+    #[test]
+    fn manager_lifecycle_request_must_match_token_claims() {
+        let claims =
+            PluginAuthClaims::new_with_uid("app", "orders", "uid-1", "incoming", "rabbitmq");
+        let active = crate::models::ActiveInception {
+            namespace: "app".to_string(),
+            blue_green_ref: "orders".to_string(),
+            blue_green_uid: Some("uid-1".to_string()),
+            inception_point: "incoming".to_string(),
+            plugin: "rabbitmq".to_string(),
+            roles: vec!["duplicator".to_string()],
+            config: serde_json::json!({}),
+        };
+        let req = PluginManagerLifecycleRequest {
+            namespace: "app".to_string(),
+            blue_green_ref: "orders".to_string(),
+            blue_green_uid: Some("uid-1".to_string()),
+            inception_point: "incoming".to_string(),
+            plugin: "rabbitmq".to_string(),
+            roles: vec!["duplicator".to_string()],
+            config: serde_json::json!({}),
+            active_inceptions: vec![active],
+        };
+
+        assert!(manager_request_matches_claims(&req, &claims));
+
+        let mut tampered = req;
+        tampered.inception_point = "other".to_string();
+        assert!(!manager_request_matches_claims(&tampered, &claims));
     }
 }

@@ -113,6 +113,14 @@ builtinPlugins:
       amqpUrl: ""
       amqpUrlSecretName: ""
       amqpUrlSecretKey: amqp-url
+      managementUrl: ""
+      managementUrlSecretKey: management-url
+      managementUsername: ""
+      managementUsernameSecretKey: management-username
+      managementPassword: ""
+      managementPasswordSecretKey: management-password
+      managementVhost: "/"
+      managementVhostSecretKey: management-vhost
       podAnnotations: {}
       podLabels: {}
       resources: {}
@@ -125,11 +133,13 @@ builtinPlugins:
       podLabels: {}
     manager:
       enabled: false
-      configSecretName: ""
-      configSecretKey: config.yaml
       connectionStringSecretName: ""
       connectionStringSecretKey: connection-string
       fullyQualifiedNamespace: ""
+      authMode: ""
+      subscriptionId: ""
+      resourceGroup: ""
+      namespaceName: ""
       workloadIdentity:
         enabled: false
         serviceAccountName: ""

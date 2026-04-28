@@ -432,6 +432,28 @@ pub(super) async fn sign_inception_auth_token(
         .map_err(|err| ReconcileError::Store(format!("failed to sign plugin auth token: {err}")))
 }
 
+pub(super) async fn sign_manager_sync_auth_token(
+    client: &kube::Client,
+    auth: &AuthConfig,
+    plugin: &InceptionPlugin,
+) -> std::result::Result<String, ReconcileError> {
+    let signing_key = read_operator_signing_key(
+        client,
+        &auth.signing_secret_namespace,
+        &auth.signing_secret_name,
+        &auth.signing_secret_key,
+    )
+    .await?;
+    let claims = fluidbg_plugin_sdk::PluginAuthClaims::new(
+        "fluidbg-system",
+        "__manager_sync__",
+        "__manager_sync__",
+        plugin.metadata.name.as_deref().unwrap_or(""),
+    );
+    fluidbg_plugin_sdk::sign_plugin_auth_token(&claims, &signing_key)
+        .map_err(|err| ReconcileError::Store(format!("failed to sign manager sync token: {err}")))
+}
+
 pub(super) async fn validate_inception_auth_token(
     client: &kube::Client,
     auth: &AuthConfig,

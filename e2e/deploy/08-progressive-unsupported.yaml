@@ -22,11 +22,11 @@ spec:
     port: 9090
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
   fieldNamespaces: [queue]
   configSchema:
     type: object
     properties:
-      amqpUrl: { type: string }
       splitter:
         type: object
         properties:
@@ -87,7 +87,6 @@ spec:
         name: rabbitmq-no-progressive
       roles: [splitter, observer]
       config:
-        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
         splitter:
           inputQueue: orders
           greenInputQueue: orders-green

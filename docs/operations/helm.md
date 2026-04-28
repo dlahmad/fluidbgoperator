@@ -234,11 +234,17 @@ builtinPlugins:
       enabled: true
       amqpUrlSecretName: rabbitmq-admin
       amqpUrlSecretKey: amqp-url
+      managementUrlSecretKey: management-url
+      managementUsernameSecretKey: management-username
+      managementPasswordSecretKey: management-password
+      managementVhostSecretKey: management-vhost
 ```
 
-For local-only installs, `builtinPlugins.rabbitmq.manager.amqpUrl` may be set
-directly. The chart still stores it in a Kubernetes Secret first and mounts it
-into the manager through `secretKeyRef`.
+RabbitMQ AMQP and management settings are plugin installation/runtime config,
+not BGD config. The manager pod receives the privileged base credential from an
+existing Secret or from local Helm values stored into a Secret. During the
+authenticated manager prepare call, the manager returns the per-inception
+environment variables that the operator injects into the inceptor pod.
 
 For Azure Service Bus workload identity, create a manager ServiceAccount in the
 operator namespace and annotate it for Microsoft Entra Workload ID. Privileged
@@ -253,12 +259,22 @@ builtinPlugins:
     manager:
       enabled: true
       fullyQualifiedNamespace: my-namespace.servicebus.windows.net
+      authMode: workloadIdentity
+      subscriptionId: 00000000-0000-0000-0000-000000000000
+      resourceGroup: rg-servicebus
+      namespaceName: my-namespace
       workloadIdentity:
         enabled: true
         serviceAccountName: fluidbg-azure-servicebus
         podAnnotations:
           azure.workload.identity/service-account-token-expiration: "3600"
 ```
+
+Azure Service Bus connection strings, namespace names, auth mode, and ARM
+management settings are plugin installation/runtime config. The manager gets
+the base Secret or workload identity in the operator namespace and returns the
+per-inception runtime environment over the authenticated manager prepare call;
+these fields are not accepted in BGD `inceptionPoints.config`.
 
 ## Plugin Namespaces
 

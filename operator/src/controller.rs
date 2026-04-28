@@ -12,6 +12,7 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::crd::blue_green::{BGDPhase, BlueGreenDeployment};
+use crate::crd::inception_plugin::InceptionPlugin;
 use crate::state_store::StateStore;
 use crate::state_store::VerificationMode;
 use crate::strategy::PromotionAction;
@@ -112,6 +113,7 @@ pub async fn run_controller(client: kube::Client, auth: AuthConfig, store: Arc<d
 
 pub async fn run_orphan_cleanup(
     client: kube::Client,
+    auth: AuthConfig,
     store: Arc<dyn StateStore>,
     interval: Duration,
 ) {
@@ -121,6 +123,9 @@ pub async fn run_orphan_cleanup(
         let lease = lease_config_from_env();
         if let Err(err) = cleanup_orphaned_blue_green_refs(&client, &store, &lease).await {
             error!("orphan cleanup failed: {}", err);
+        }
+        if let Err(err) = sync_plugin_managers(&client, &auth).await {
+            error!("plugin manager sync failed: {}", err);
         }
     }
 }
@@ -513,6 +518,20 @@ async fn cleanup_single_orphaned_blue_green_ref(
             "cleaned {} store records for orphaned BGD '{}'",
             removed, blue_green_key
         );
+    }
+    Ok(())
+}
+
+async fn sync_plugin_managers(
+    client: &kube::Client,
+    auth: &AuthConfig,
+) -> std::result::Result<(), ReconcileError> {
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
+    for plugin in plugins.list(&Default::default()).await?.items {
+        if plugin.spec.manager.is_none() {
+            continue;
+        }
+        plugin_lifecycle::invoke_plugin_manager_sync(client, &plugin, auth).await?;
     }
     Ok(())
 }

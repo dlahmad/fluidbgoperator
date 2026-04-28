@@ -37,6 +37,21 @@ paths:
       responses:
         "200":
           description: Manager cleanup completed.
+  /manager/sync:
+    post:
+      operationId: managerSync
+      description: Authenticated manager inventory sync. Managers use this to garbage-collect scoped credentials and plugin-owned resources that missed normal cleanup.
+      security:
+        - pluginAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginManagerSyncRequest"
+      responses:
+        "200":
+          description: Manager sync completed.
   /prepare:
     post:
       operationId: prepare
@@ -163,6 +178,8 @@ paths:
     post:
       operationId: write
       description: Optional plugin writer endpoint used by test containers to inject traffic.
+      security:
+        - pluginAuth: []
       requestBody:
         required: true
         content:
@@ -278,11 +295,73 @@ components:
           items:
             $ref: "#/components/schemas/PropertyAssignment"
           default: []
-    PluginManagerLifecycleRequest:
+        inceptorEnv:
+          type: array
+          description: Environment variables the operator must inject into the per-inception inceptor before the inceptor pod is created.
+          items:
+            $ref: "#/components/schemas/InceptorEnvVar"
+          default: []
+    InceptorEnvVar:
       type: object
-      required: [roles, config]
+      required: [name, value]
       additionalProperties: false
       properties:
+        name:
+          type: string
+        value:
+          type: string
+    PluginManagerLifecycleRequest:
+      type: object
+      required: [namespace, blueGreenRef, inceptionPoint, plugin, roles, config]
+      additionalProperties: false
+      properties:
+        namespace:
+          type: string
+        blueGreenRef:
+          type: string
+        blueGreenUid:
+          type: string
+        inceptionPoint:
+          type: string
+        plugin:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        config: {}
+        activeInceptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveInception"
+          default: []
+    PluginManagerSyncRequest:
+      type: object
+      required: [plugin]
+      additionalProperties: false
+      properties:
+        plugin:
+          type: string
+        activeInceptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveInception"
+          default: []
+    ActiveInception:
+      type: object
+      required: [namespace, blueGreenRef, inceptionPoint, plugin, roles, config]
+      additionalProperties: false
+      properties:
+        namespace:
+          type: string
+        blueGreenRef:
+          type: string
+        blueGreenUid:
+          type: string
+        inceptionPoint:
+          type: string
+        plugin:
+          type: string
         roles:
           type: array
           items:

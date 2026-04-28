@@ -17,7 +17,7 @@ mod servicebus;
 mod writer;
 
 use combiner::run_combiner;
-use config::{AppState, has_role, load_config};
+use config::{AppState, ServiceBusRuntimeConfig, has_role, load_config};
 use input::run_input_pipeline;
 use lifecycle::{
     activate_handler, cleanup_handler, drain_handler, drain_status_handler, health,
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         bail!("no active roles configured via FLUIDBG_ACTIVE_ROLES");
     }
 
-    let service_bus = ServiceBusClient::from_config(&config)?;
+    let service_bus = ServiceBusClient::from_runtime_config(&ServiceBusRuntimeConfig::from_env())?;
     let state = AppState::new(config, roles.clone(), runtime, service_bus);
 
     info!("azure service bus plugin starting with roles {:?}", roles);
@@ -94,6 +94,7 @@ async fn run_manager() -> Result<()> {
         .route("/health", get(manager::health))
         .route("/manager/prepare", post(manager::prepare_handler))
         .route("/manager/cleanup", post(manager::cleanup_handler))
+        .route("/manager/sync", post(manager::sync_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
     axum::serve(listener, app).await?;

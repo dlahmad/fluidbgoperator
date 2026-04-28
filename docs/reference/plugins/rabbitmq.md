@@ -18,7 +18,8 @@ title: RabbitMQ Plugin
 RabbitMQ uses split plugin mode when `InceptionPlugin.spec.manager` is enabled.
 The manager runs in the operator namespace and owns queue create/delete
 permissions. Per-inception inceptors run in the application namespace and
-receive only rewritten temporary queue names plus the per-inception token.
+receive only rewritten temporary queue names, a per-inception token, and scoped
+RabbitMQ runtime credentials returned by authenticated manager prepare.
 
 ```mermaid
 flowchart TD
@@ -56,8 +57,6 @@ Top-level fields:
 
 | Field | Required | Used By | Meaning |
 |---|---|---|---|
-| `amqpUrl` | no | all inceptor roles | AMQP connection URL. Defaults to the local development RabbitMQ URL when omitted. |
-| `management` | no | drain status | RabbitMQ management API access. Enables strict ready plus unacknowledged message checks. |
 | `queueDeclaration` | no | manager or inceptor setup | Declaration settings for temporary queues. |
 | `shadowQueue` | no | manager, drain | Optional additional queue next to each temporary queue, commonly used for dead-letter style flows. |
 | `duplicator` | when role active | `duplicator` | Base input and green/blue input queue names plus env vars to patch. |
@@ -135,7 +134,7 @@ that point, the message is not acknowledged and RabbitMQ can redeliver it.
 | Verifier notification fails after retry | The source message is not acknowledged where the role still owns a delivery; the operator case is not registered, preventing false promotion counts. |
 | Operator registration fails after verifier notification | The plugin logs the error. The case is not counted until registration succeeds on a later delivery. |
 | Green-only progressive observation | The verifier may be notified, but no operator case is registered. |
-| Drain status without management API | The plugin can only prove ready-message absence through AMQP. It reports the limitation in `message`. |
+| Drain status without management env | The plugin can only prove ready-message absence through AMQP. It reports the limitation in `message`. |
 | Drain timeout | The operator records `TimedOutMaybeSuccessful` and proceeds with cleanup. |
 
 ## Drain And Cleanup
@@ -147,7 +146,7 @@ Regular temporary queue messages move back to the matching base queue. Temporary
 shadow queue messages move back to the matching base shadow queue, not the
 regular base queue.
 
-With `management.url`, drain status waits for `messages_ready == 0` and
+With `FLUIDBG_RABBITMQ_MANAGEMENT_URL`, drain status waits for `messages_ready == 0` and
 `messages_unacknowledged == 0` on all relevant temporary queues and shadow
 queues. Consumer counts are diagnostic only; if no messages remain, attached
 consumers do not block cleanup.
@@ -155,17 +154,23 @@ consumers do not block cleanup.
 Cleanup deletes only derived queue names recomputed from token claims and active
 roles. Derived names include namespace, BGD name, BGD UID, inception point, role,
 and logical queue purpose. User-supplied queue names are not trusted for manager
-cleanup.
+cleanup. The manager also supports `/manager/sync`; the operator periodically
+sends the active inception inventory so the manager can remove scoped RabbitMQ
+users and FluidBG-owned temporary queues that missed normal cleanup.
 
 ## Security Boundary
 
 The manager verifies the per-inception JWT and derives namespace, BGD,
 inception point, and plugin identity from claims. This prevents an attacker who
 controls the application namespace from using a BGD to request arbitrary queue
-creation or deletion. Inceptors do not receive RabbitMQ management credentials
-when manager mode is enabled.
+creation or deletion.
 
-Manager AMQP credentials should come from an existing Kubernetes Secret in
-production. If the Helm value `builtinPlugins.rabbitmq.manager.amqpUrl` is used
-for local development, the chart creates a Secret and the manager consumes it
-through `secretKeyRef`; the value is not embedded directly in the Deployment.
+RabbitMQ connection and management credentials are never valid BGD config.
+Configure them at plugin installation time. The manager reads
+`FLUIDBG_RABBITMQ_MANAGER_AMQP_URL` and
+`FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_*` from Secrets. On prepare it creates a
+bounded, deterministic, per-inception RabbitMQ user with permissions limited to
+the derived temporary queues, configured shadow queues, and explicitly required
+base queues for movement/writer/consumer behavior. It returns
+`FLUIDBG_RABBITMQ_AMQP_URL` and optional `FLUIDBG_RABBITMQ_MANAGEMENT_*` values
+for that scoped user as `inceptorEnv`.

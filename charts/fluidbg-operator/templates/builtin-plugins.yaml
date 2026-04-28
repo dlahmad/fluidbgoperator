@@ -32,19 +32,13 @@ spec:
     port: 9090
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
   {{- end }}
   fieldNamespaces: [queue]
   configSchema:
     type: object
+    additionalProperties: false
     properties:
-      amqpUrl: { type: string }
-      management:
-        type: object
-        properties:
-          url: { type: string }
-          username: { type: string }
-          password: { type: string }
-          vhost: { type: string }
       queueDeclaration:
         type: object
         properties:
@@ -132,6 +126,7 @@ spec:
   fieldNamespaces: [http]
   configSchema:
     type: object
+    additionalProperties: false
     properties:
       port: { type: integer }
       proxyPort: { type: integer }
@@ -197,32 +192,13 @@ spec:
     port: 9090
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
   {{- end }}
   fieldNamespaces: [queue, servicebus]
   configSchema:
     type: object
+    additionalProperties: false
     properties:
-      connectionString: { type: string }
-      fullyQualifiedNamespace: { type: string }
-      auth:
-        type: object
-        properties:
-          mode:
-            type: string
-            enum: [connectionString, workloadIdentity]
-          tenantId: { type: string }
-          clientId: { type: string }
-          federatedTokenFile: { type: string }
-          authorityHost: { type: string }
-          sasTokenTtlSeconds: { type: integer }
-      management:
-        type: object
-        properties:
-          subscriptionId: { type: string }
-          resourceGroup: { type: string }
-          namespaceName: { type: string }
-          createQueues: { type: boolean }
-          deleteQueues: { type: boolean }
       queueDeclaration:
         type: object
         properties:

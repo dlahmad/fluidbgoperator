@@ -52,8 +52,10 @@ async fn main() {
 
     let ctrl_store = store.clone();
     let ctrl_client = client.clone();
+    let ctrl_auth = auth.clone();
     let orphan_store = store.clone();
     let orphan_client = client.clone();
+    let orphan_auth = auth.clone();
     let orphan_interval = Duration::from_secs(
         std::env::var("FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS")
             .ok()
@@ -62,12 +64,13 @@ async fn main() {
             .unwrap_or(60),
     );
     tokio::spawn(async move {
-        fluidbg_operator::controller::run_controller(ctrl_client, auth, ctrl_store).await;
+        fluidbg_operator::controller::run_controller(ctrl_client, ctrl_auth, ctrl_store).await;
     });
 
     tokio::spawn(async move {
         fluidbg_operator::controller::run_orphan_cleanup(
             orphan_client,
+            orphan_auth,
             orphan_store,
             orphan_interval,
         )

@@ -41,12 +41,6 @@ spec:
       drain:
         maxWaitSeconds: 60
       config:
-        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
-        management:
-          url: "http://rabbitmq.fluidbg-system:15672"
-          username: fluidbg
-          password: fluidbg
-          vhost: "/"
         queueDeclaration:
           durable: true
           arguments:
@@ -77,12 +71,6 @@ spec:
       drain:
         maxWaitSeconds: 60
       config:
-        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
-        management:
-          url: "http://rabbitmq.fluidbg-system:15672"
-          username: fluidbg
-          password: fluidbg
-          vhost: "/"
         queueDeclaration:
           durable: true
           arguments:

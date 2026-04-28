@@ -12,21 +12,23 @@ mod version;
 pub use auth::{
     AUTHORIZATION_HEADER, PLUGIN_AUTH_AUDIENCE, PLUGIN_AUTH_ISSUER, PLUGIN_AUTH_TOKEN_ENV,
     PluginAuthClaims, auth_token_from_env, bearer_matches, bearer_token, bearer_value,
-    sign_plugin_auth_token, verify_plugin_auth_token,
+    manager_request_matches_claims, require_bearer_token, require_manager_request_matches_claims,
+    sign_plugin_auth_token, verify_manager_bearer_token, verify_plugin_auth_token,
 };
 pub use config::{active_roles, has_role, load_yaml_config, traffic_percent_from_env};
 pub use fields::{condition_matches, extract_json_path, match_conditions};
 pub use http::{extract_http_test_id, resolve_http_field};
 pub use models::{
-    AssignmentKind, AssignmentTarget, FilterCondition, HttpWriteRequest, NotificationFilter,
-    ObservationNotification, ObserverConfig, PayloadSelection, PluginDrainStatusResponse,
-    PluginLifecycleResponse, PluginManagerLifecycleRequest, PluginRole, PropertyAssignment,
-    RegisterTestCaseRequest, TestIdSelector, TrafficRoute, TrafficShiftRequest,
-    TrafficShiftResponse,
+    ActiveInception, AssignmentKind, AssignmentTarget, FilterCondition, HttpWriteRequest,
+    InceptorEnvVar, NotificationFilter, ObservationNotification, ObserverConfig, PayloadSelection,
+    PluginDrainStatusResponse, PluginLifecycleResponse, PluginManagerLifecycleRequest,
+    PluginManagerSyncRequest, PluginRole, PropertyAssignment, RegisterTestCaseRequest,
+    TestIdSelector, TrafficRoute, TrafficShiftRequest, TrafficShiftResponse,
 };
 pub use notify::{RegisterTestCaseArgs, notify_observer, register_test_case, render_path};
 pub use resources::{
-    derived_shadow_queue_name, derived_temp_queue_name, derived_temp_queue_name_with_uid,
+    derived_scoped_identity_name, derived_shadow_queue_name, derived_temp_queue_name,
+    derived_temp_queue_name_with_uid,
 };
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};

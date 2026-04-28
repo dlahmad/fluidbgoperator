@@ -11,11 +11,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Config {
-    #[serde(default)]
-    pub(crate) amqp_url: Option<String>,
-    #[serde(default)]
-    pub(crate) management: Option<ManagementConfig>,
     #[serde(default)]
     pub(crate) queue_declaration: QueueDeclarationConfig,
     #[serde(default)]
@@ -53,19 +50,6 @@ pub(crate) struct ShadowQueueConfig {
     pub(crate) suffix: String,
     #[serde(default)]
     pub(crate) queue_declaration: QueueDeclarationConfig,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ManagementConfig {
-    #[serde(default)]
-    pub(crate) url: Option<String>,
-    #[serde(default)]
-    pub(crate) username: Option<String>,
-    #[serde(default)]
-    pub(crate) password: Option<String>,
-    #[serde(default)]
-    pub(crate) vhost: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -184,6 +168,11 @@ pub(crate) fn load_config() -> Result<Config> {
     fluidbg_plugin_sdk::load_yaml_config()
 }
 
+pub(crate) fn rabbitmq_amqp_url_from_env() -> Result<String> {
+    std::env::var("FLUIDBG_RABBITMQ_AMQP_URL")
+        .context("missing FLUIDBG_RABBITMQ_AMQP_URL; configure RabbitMQ runtime credentials on the plugin installation")
+}
+
 pub(crate) fn has_role(roles: &[PluginRole], role: PluginRole) -> bool {
     fluidbg_plugin_sdk::has_role(roles, role)
 }
@@ -250,4 +239,27 @@ pub(crate) fn shadow_queue_name(config: &Config, queue: &str) -> Option<String> 
         .shadow_queue
         .as_ref()
         .map(|shadow| fluidbg_plugin_sdk::derived_shadow_queue_name(queue, &shadow.suffix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use serde_json::json;
+
+    #[test]
+    fn rollout_config_rejects_runtime_credentials() {
+        let parsed = serde_json::from_value::<Config>(json!({
+            "amqpUrl": "amqp://admin:admin@rabbitmq/%2f",
+            "management": {
+                "url": "http://rabbitmq:15672",
+                "username": "admin",
+                "password": "admin"
+            },
+            "duplicator": {
+                "inputQueue": "orders"
+            }
+        }));
+
+        assert!(parsed.is_err());
+    }
 }

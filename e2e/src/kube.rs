@@ -917,6 +917,16 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string(),
         "--set".to_string(),
+        "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string(),
+        "--set".to_string(),
+        "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.fluidbg-system:15672".to_string(),
+        "--set".to_string(),
+        "builtinPlugins.rabbitmq.manager.managementUsername=fluidbg".to_string(),
+        "--set".to_string(),
+        "builtinPlugins.rabbitmq.manager.managementPassword=fluidbg".to_string(),
+        "--set".to_string(),
+        "builtinPlugins.rabbitmq.manager.managementVhost=/".to_string(),
+        "--set".to_string(),
         "builtinPlugins.azureServiceBus.enabled=false".to_string(),
     ];
     if config.state_store == crate::config::StateStore::Postgres {

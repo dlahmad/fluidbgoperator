@@ -118,6 +118,7 @@ pub(crate) async fn prepare_handler(
     if inceptor_infra_disabled() {
         return Ok(Json(PluginLifecycleResponse {
             assignments: build_prepare_assignments(&state.config, &state.roles),
+            ..Default::default()
         }));
     }
 
@@ -162,6 +163,7 @@ pub(crate) async fn prepare_handler(
 
     Ok(Json(PluginLifecycleResponse {
         assignments: build_prepare_assignments(&state.config, &state.roles),
+        ..Default::default()
     }))
 }
 
@@ -183,6 +185,7 @@ pub(crate) async fn cleanup_handler(
     if inceptor_infra_disabled() {
         return Ok(Json(PluginLifecycleResponse {
             assignments: Vec::new(),
+            ..Default::default()
         }));
     }
 
@@ -222,6 +225,7 @@ pub(crate) async fn cleanup_handler(
 
     Ok(Json(PluginLifecycleResponse {
         assignments: Vec::new(),
+        ..Default::default()
     }))
 }
 
@@ -236,6 +240,7 @@ pub(crate) async fn drain_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(PluginLifecycleResponse {
         assignments: build_drain_assignments(&state.config, &state.roles),
+        ..Default::default()
     }))
 }
 

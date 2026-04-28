@@ -44,8 +44,8 @@ flowchart LR
     OP -->|"creates ConfigMap/Deployment/Service"| RI
     OP -->|"creates ConfigMap/Deployment/Service"| AI
     OP -->|"creates ConfigMap/Deployment/Service"| HI
-    OP -->|"manager prepare/cleanup<br/>Bearer per-inception JWT"| RM
-    OP -->|"manager prepare/cleanup<br/>Bearer per-inception JWT"| AM
+    OP -->|"manager prepare/cleanup/sync<br/>Bearer JWT"| RM
+    OP -->|"manager prepare/cleanup/sync<br/>Bearer JWT"| AM
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| RI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| AI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| HI
@@ -96,6 +96,12 @@ Manager rules:
   Queue-style names include namespace, BGD name, BGD UID, inception point, role,
   and logical purpose so recreated BGDs and concurrent BGDs cannot collide.
 - Never trust BGD-provided temporary queue names for create/delete authority.
+- Return inceptor runtime environment only from authenticated manager prepare.
+  The operator injects those values before creating the inceptor pod.
+- Implement `syncPath` so the operator can periodically send the active
+  inception inventory. Managers use that inventory to delete scoped credentials
+  and plugin-owned temporary resources that missed normal cleanup because a
+  manager or operator died at the wrong time.
 
 Inceptor rules:
 
@@ -125,11 +131,12 @@ sequenceDiagram
     O->>O: sign per-inception JWT
     O->>O: derive secured temp resource names
     loop each inception point
-        O->>I: create ConfigMap/Deployment/Service with token only
-        I->>I: stay idle until prepared
         O->>M: POST /manager/prepare + Bearer JWT
         M->>M: verify JWT signature
         M->>T: create derived temporary resources
+        M-->>O: inceptorEnv with scoped runtime access
+        O->>I: create ConfigMap/Deployment/Service with token + inceptorEnv
+        I->>I: stay idle until prepared
         O->>I: POST /prepare + Bearer same JWT
         I->>I: exact token match, setup only, remain idle
         I-->>O: assignments for app containers
@@ -202,6 +209,29 @@ sequenceDiagram
     M->>T: delete derived temporary resources
     O->>O: delete inceptor Deployments/Services/ConfigMaps/Pods
 ```
+
+## Manager Sync
+
+```mermaid
+sequenceDiagram
+    participant O as Operator orphan cleanup loop
+    participant M as Manager
+    participant K as Kubernetes API
+    participant T as Transport
+
+    O->>K: list active BGDs and inception points for plugin
+    O->>O: sign manager-sync JWT
+    O->>M: POST /manager/sync + activeInceptions
+    M->>M: verify JWT and plugin identity
+    M->>T: list scoped credentials/resources
+    M->>T: delete entries not represented in activeInceptions
+```
+
+The sync request contains the active namespace, BGD name, BGD UID, inception
+point, roles, and BGD plugin config. It deliberately does not contain privileged
+transport credentials. Managers recompute derived temporary names from that
+inventory and remove only resources with FluidBG-owned prefixes that are absent
+from the active set.
 
 Plugin-specific drain and failure details are intentionally documented once in
 the built-in plugin references: [RabbitMQ](plugins/rabbitmq.md), [Azure Service

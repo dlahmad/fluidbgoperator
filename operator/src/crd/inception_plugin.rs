@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use k8s_openapi::api::core::v1::EnvVar;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub struct VolumeMount {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInceptor {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvVar>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<ContainerPort>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -115,6 +118,8 @@ pub struct PluginManager {
     pub prepare_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_path: Option<String>,
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]

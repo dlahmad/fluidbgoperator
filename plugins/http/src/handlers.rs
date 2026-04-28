@@ -6,7 +6,7 @@ use axum::response::IntoResponse;
 use fluidbg_plugin_sdk::{
     AUTHORIZATION_HEADER, HttpWriteRequest, PluginDrainStatusResponse, PluginLifecycleResponse,
     PluginRole, TrafficRoute, TrafficShiftRequest, TrafficShiftResponse, bearer_matches,
-    routes_to_blue,
+    require_bearer_token, routes_to_blue,
 };
 use serde_json::Value;
 use tracing::warn;
@@ -139,8 +139,13 @@ pub(crate) async fn proxy_handler(
 
 pub(crate) async fn write_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::Json(req): axum::Json<HttpWriteRequest>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_operator_response(&state, &headers) {
+        return err;
+    }
+
     let Some(_guard) =
         ActiveRequestGuard::try_new(state.mode.clone(), state.active_requests.clone())
     else {
@@ -281,4 +286,15 @@ fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), Statu
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
+}
+
+fn authorize_operator_response(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+    let header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    require_bearer_token(header, state.runtime.auth_token())
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "unauthorized".to_string()))
 }
