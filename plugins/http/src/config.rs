@@ -45,7 +45,7 @@ impl Config {
         self.port.unwrap_or(9090)
     }
 
-    pub(crate) fn routed_proxy_target(&self, route: TrafficRoute) -> Option<&str> {
+    pub(crate) fn routed_proxy_target(&self, route: TrafficRoute) -> Option<String> {
         match route {
             TrafficRoute::Blue => self
                 .blue_endpoint
@@ -57,11 +57,26 @@ impl Config {
                 .or(self.real_endpoint.as_deref()),
             _ => self.real_endpoint.as_deref(),
         }
+        .map(resolve_runtime_endpoint)
     }
 
-    pub(crate) fn write_target(&self) -> Option<&str> {
-        self.target_url.as_deref().or(self.real_endpoint.as_deref())
+    pub(crate) fn write_target(&self) -> Option<String> {
+        self.target_url
+            .as_deref()
+            .or(self.real_endpoint.as_deref())
+            .map(resolve_runtime_endpoint)
     }
+}
+
+fn resolve_runtime_endpoint(endpoint: &str) -> String {
+    let test_container_url = std::env::var("FLUIDBG_TEST_CONTAINER_URL").unwrap_or_default();
+    resolve_runtime_endpoint_with(endpoint, &test_container_url)
+}
+
+pub(crate) fn resolve_runtime_endpoint_with(endpoint: &str, test_container_url: &str) -> String {
+    endpoint
+        .replace("{{testContainerUrl}}", test_container_url)
+        .replace("{testContainerUrl}", test_container_url)
 }
 
 #[derive(Debug, Deserialize, Clone)]

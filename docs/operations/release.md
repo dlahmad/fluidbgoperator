@@ -52,6 +52,10 @@ Images:
 - `ghcr.io/<owner>/fbg-plugin-http:<version>`
 - `ghcr.io/<owner>/fbg-plugin-rabbitmq:<version>`
 - `ghcr.io/<owner>/fbg-plugin-azure-servicebus:<version>`
+- `ghcr.io/<owner>/fluidbg-example-order-app:<version>`
+- `ghcr.io/<owner>/fluidbg-example-producer:<version>`
+- `ghcr.io/<owner>/fluidbg-example-sink:<version>`
+- `ghcr.io/<owner>/fluidbg-example-verifier:<version>`
 
 Helm chart:
 

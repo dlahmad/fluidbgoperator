@@ -75,7 +75,7 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
     use fluidbg_plugin_sdk::{FilterCondition, NotificationFilter, TestIdSelector, TrafficRoute};
 
-    use crate::config::Config;
+    use crate::config::{Config, resolve_runtime_endpoint_with};
     use crate::filters::{extract_test_id, matching_filter};
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
             egress: None,
         };
 
-        assert_eq!(config.write_target(), Some("http://blue"));
+        assert_eq!(config.write_target(), Some("http://blue".to_string()));
     }
 
     #[test]
@@ -216,11 +216,22 @@ mod tests {
 
         assert_eq!(
             config.routed_proxy_target(TrafficRoute::Green),
-            Some("http://green")
+            Some("http://green".to_string())
         );
         assert_eq!(
             config.routed_proxy_target(TrafficRoute::Blue),
-            Some("http://blue")
+            Some("http://blue".to_string())
+        );
+    }
+
+    #[test]
+    fn proxy_target_can_reference_operator_test_container_url() {
+        assert_eq!(
+            resolve_runtime_endpoint_with(
+                "{{testContainerUrl}}/audit",
+                "http://fluidbg-test-verifier:8080"
+            ),
+            "http://fluidbg-test-verifier:8080/audit"
         );
     }
 }

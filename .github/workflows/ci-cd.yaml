@@ -32,6 +32,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: ghcr.io
   IMAGE_NAMES: fbg-operator fbg-plugin-http fbg-plugin-rabbitmq fbg-plugin-azure-servicebus
+  EXAMPLE_IMAGE_NAMES: fluidbg-example-order-app fluidbg-example-producer fluidbg-example-sink fluidbg-example-verifier
 
 jobs:
   resolve:
@@ -89,12 +90,21 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
       - name: Compile e2e Python apps
-        run: python -m py_compile e2e/blue-app/app.py e2e/green-app/app.py e2e/test-app/app.py
+        run: |
+          python -m py_compile \
+            e2e/blue-app/app.py \
+            e2e/green-app/app.py \
+            e2e/test-app/app.py \
+            examples/sequential-bgd/app/app.py \
+            examples/sequential-bgd/producer/producer.py \
+            examples/sequential-bgd/sink/sink.py \
+            examples/sequential-bgd/verifier/verifier.py
       - name: Check shell scripts
         run: |
           bash -n e2e/run-test.sh
           bash -n scripts/build-linux-binaries.sh
           bash -n scripts/build-images.sh
+          bash -n scripts/build-example-images.sh
 
   manifests:
     name: CRDs and Helm templates
@@ -293,6 +303,9 @@ jobs:
           ./scripts/build-images.sh \
             --tag "ci-${{ matrix.arch }}" \
             --platform "${{ matrix.platform }}"
+          ./scripts/build-example-images.sh \
+            --tag "ci-${{ matrix.arch }}" \
+            --platform "${{ matrix.platform }}"
       - name: Build and push release images
         if: needs.resolve.outputs.is_release == 'true'
         env:
@@ -300,6 +313,12 @@ jobs:
           DOCKER_BUILD_CACHE_TO: ${{ format('type=registry,ref={0}/{1}/fluidbg-build-cache:images-{2},mode=max', env.REGISTRY, steps.image_namespace.outputs.value, matrix.arch) }}
         run: |
           ./scripts/build-images.sh \
+            --registry "${REGISTRY}/${{ steps.image_namespace.outputs.value }}" \
+            --tag "${{ needs.resolve.outputs.version }}-${{ matrix.arch }}" \
+            --tag "latest-${{ matrix.arch }}" \
+            --platform "${{ matrix.platform }}" \
+            --push
+          ./scripts/build-example-images.sh \
             --registry "${REGISTRY}/${{ steps.image_namespace.outputs.value }}" \
             --tag "${{ needs.resolve.outputs.version }}-${{ matrix.arch }}" \
             --tag "latest-${{ matrix.arch }}" \
@@ -321,7 +340,7 @@ jobs:
       - name: Publish manifests
         run: |
           set -euo pipefail
-          for image in ${IMAGE_NAMES}; do
+          for image in ${IMAGE_NAMES} ${EXAMPLE_IMAGE_NAMES}; do
             base="${REGISTRY}/${{ needs.resolve.outputs.image_namespace }}/${image}"
             docker buildx imagetools create \
               -t "${base}:${{ needs.resolve.outputs.version }}" \

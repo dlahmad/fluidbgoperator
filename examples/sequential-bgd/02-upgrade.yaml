@@ -1,0 +1,128 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-flow
+  namespace: fluidbg-demo
+spec:
+  selector:
+    matchLabels:
+      fluidbg.io/name: order-flow
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: order-flow
+      template:
+        metadata:
+          labels:
+            app: order-flow
+            fluidbg.io/name: order-flow
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: app
+              image: ghcr.io/dlahmad/fluidbg-example-order-app:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AMQP_URL
+                  value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/"
+                - name: INPUT_QUEUE
+                  value: orders
+                - name: OUTPUT_QUEUE
+                  value: results
+                - name: OUTPUT_PREFIX
+                  value: v2
+                - name: HTTP_UPSTREAM
+                  value: "http://unused-before-plugin-prepare"
+  inceptionPoints:
+    - name: incoming-orders
+      pluginRef:
+        name: rabbitmq
+      roles: [duplicator, observer]
+      drain:
+        maxWaitSeconds: 20
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-demo:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
+        duplicator:
+          inputQueue: orders
+          greenInputQueue: orders-green
+          blueInputQueue: orders-blue
+          greenInputQueueEnvVar: INPUT_QUEUE
+          blueInputQueueEnvVar: INPUT_QUEUE
+        observer:
+          testId:
+            field: queue.body
+            jsonPath: $.orderId
+          match:
+            - field: queue.body
+              jsonPath: $.type
+              matches: "^demo-order$"
+          notifyPath: /observe/{testId}/incoming-orders
+    - name: audit-http
+      pluginRef:
+        name: http
+      roles: [observer]
+      drain:
+        maxWaitSeconds: 20
+      config:
+        port: 9090
+        realEndpoint: "http://order-flow-sink.fluidbg-demo:8080"
+        envVarName: HTTP_UPSTREAM
+        testId:
+          field: http.body
+          jsonPath: $.orderId
+        filters:
+          - match:
+              - field: http.path
+                equals: /audit
+              - field: http.body
+                jsonPath: $.type
+                matches: "^demo-order$"
+            notifyPath: /observe/{testId}/audit-http
+            payload: request
+    - name: outgoing-results
+      pluginRef:
+        name: rabbitmq
+      roles: [combiner]
+      drain:
+        maxWaitSeconds: 20
+      config:
+        amqpUrl: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f"
+        management:
+          url: "http://rabbitmq.fluidbg-demo:15672"
+          username: fluidbg
+          password: fluidbg
+          vhost: "/"
+        combiner:
+          greenOutputQueueEnvVar: OUTPUT_QUEUE
+          blueOutputQueueEnvVar: OUTPUT_QUEUE
+          greenOutputQueue: results-green
+          blueOutputQueue: results-blue
+          outputQueue: results
+  tests:
+    - name: verifier
+      image: ghcr.io/dlahmad/fluidbg-example-verifier:latest
+      port: 8080
+      dataVerification:
+        verifyPath: /result/{testId}
+        timeoutSeconds: 120
+      env:
+        - name: PORT
+          value: "8080"
+        - name: EXPECTED_PREFIX
+          value: v2
+        - name: SINK_URL
+          value: "http://order-flow-sink.fluidbg-demo:8080"
+  promotion:
+    data:
+      minTestCases: 3
+      successRate: 1.0
+      timeoutSeconds: 300
+    strategy:
+      type: hard-switch

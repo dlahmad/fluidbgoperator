@@ -1,0 +1,94 @@
+# Sequential Order Flow Demo
+
+This example shows one blue-green rollout with live queue traffic:
+
+- a producer publishes orders to RabbitMQ
+- the application under test consumes each order
+- the application calls an HTTP audit endpoint
+- the application publishes an output message
+- one normal downstream demo sink service receives and logs the HTTP audit calls and final output messages
+- one verifier test container asks the sink whether the candidate effects arrived
+- the operator promotes only after the sink has seen both effects for candidate traffic
+
+## Images
+
+The example YAML uses published GHCR images:
+
+- `ghcr.io/dlahmad/fluidbg-example-order-app:latest`
+- `ghcr.io/dlahmad/fluidbg-example-producer:latest`
+- `ghcr.io/dlahmad/fluidbg-example-sink:latest`
+- `ghcr.io/dlahmad/fluidbg-example-verifier:latest`
+
+For local development, build and load replacement images with the same tags:
+
+```sh
+docker build -t ghcr.io/dlahmad/fluidbg-example-order-app:latest examples/sequential-bgd/app
+docker build -t ghcr.io/dlahmad/fluidbg-example-producer:latest examples/sequential-bgd/producer
+docker build -t ghcr.io/dlahmad/fluidbg-example-sink:latest examples/sequential-bgd/sink
+docker build -t ghcr.io/dlahmad/fluidbg-example-verifier:latest examples/sequential-bgd/verifier
+
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name <kind-cluster>
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name <kind-cluster>
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name <kind-cluster>
+kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name <kind-cluster>
+```
+
+The sink is intentionally not the test container. It simulates a downstream
+service that would already exist in a real system: it consumes the stable
+`results` queue and exposes a stable HTTP audit endpoint. The verifier is a
+separate operator-created test container that only queries the sink API to
+decide whether candidate traffic is safe to promote.
+
+The operator and built-in plugin images must also be available in the cluster.
+For local development, build/load them with the repository scripts. For a
+published release, use the GHCR defaults in the Helm chart.
+
+## Run
+
+Install the operator chart into the system namespace and register built-in
+plugins in the demo namespace:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set operator.auth.createSigningSecret=true \
+  --set operator.auth.signingSecretName=fluidbg-operator-auth \
+  --set operator.auth.signingSecretValue=dev-signing-key-change-me \
+  --set builtinPlugins.namespaces[0]=fluidbg-demo
+```
+
+Apply the initial version:
+
+```sh
+kubectl apply -f examples/sequential-bgd/01-base.yaml
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow -n fluidbg-demo --timeout=180s
+```
+
+Apply the upgraded version:
+
+```sh
+kubectl apply -f examples/sequential-bgd/02-upgrade.yaml
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow -n fluidbg-demo --timeout=300s
+```
+
+Watch what happened:
+
+```sh
+kubectl get bgd order-flow -n fluidbg-demo -o wide
+kubectl logs -n fluidbg-demo deploy/order-flow-producer
+kubectl logs -n fluidbg-demo deploy/order-flow-sink --tail=300
+kubectl logs -n fluidbg-demo -l fluidbg.io/test-name=verifier --tail=100
+kubectl get deploy -n fluidbg-demo --show-labels
+```
+
+The producer emits incrementing `sequence` values. The sink logs lines like
+`HTTP sequence=42` and `OUTPUT sequence=42`, plus a current missing-sequence
+summary for the HTTP stream, output stream, and completed HTTP+output pairs.
+During a normal run the producer keeps a single increasing counter, so the user
+can inspect the sink logs during and after promotion and see whether any number
+disappeared.
+The base version emits `v1-*` results. The upgraded candidate emits `v2-*`
+results. The verifier passes a test case only after the separate sink service
+has logged both the HTTP audit call and the output message for that `v2`
+candidate sequence.
