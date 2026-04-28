@@ -135,12 +135,14 @@ HTTP stream, the output stream, or the completed HTTP+output pair stream.
 
 - `incoming-orders` uses the RabbitMQ plugin as duplicator and observer. It
   splits incoming orders into blue/green temporary queues and registers test
-  cases from real messages.
+  cases from real messages. It sets `temporaryQueueIdentifier: "incoming-orders"`
+  so temporary input queues are easy to recognize in RabbitMQ.
 - `audit-http` uses the HTTP plugin as observer. The application calls the
   plugin-provided endpoint through `HTTP_UPSTREAM`, while the plugin forwards to
   the normal downstream sink service.
 - `outgoing-results` uses the RabbitMQ plugin as combiner. It combines candidate
-  output messages back into the stable `results` queue consumed by the sink.
+  output messages back into the stable `results` queue consumed by the sink. It
+  sets `temporaryQueueIdentifier: "outgoing-results"` for the temporary output queues.
 
 Promotion is allowed only after at least three candidate cases passed with a
 success rate of `1.0`.

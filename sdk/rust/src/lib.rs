@@ -28,7 +28,8 @@ pub use models::{
 pub use notify::{RegisterTestCaseArgs, notify_observer, register_test_case, render_path};
 pub use resources::{
     derived_scoped_identity_name, derived_shadow_queue_name, derived_temp_queue_name,
-    derived_temp_queue_name_with_uid,
+    derived_temp_queue_name_with_uid, derived_temp_queue_name_with_uid_and_identifier,
+    temporary_queue_identifier_token,
 };
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};

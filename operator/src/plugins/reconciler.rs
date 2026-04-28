@@ -412,78 +412,95 @@ fn rewrite_queue_temp_names(
     blue_green_uid: &str,
     inception_point: &str,
 ) {
+    let duplicator_identifier = temporary_queue_identifier(config, "duplicator");
+    let splitter_identifier = temporary_queue_identifier(config, "splitter");
+    let combiner_identifier = temporary_queue_identifier(config, "combiner");
     set_nested_string(
         config,
         &["duplicator", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "duplicator",
             "green-input",
+            duplicator_identifier.as_deref(),
         ),
     );
     set_nested_string(
         config,
         &["duplicator", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "duplicator",
             "blue-input",
+            duplicator_identifier.as_deref(),
         ),
     );
     set_nested_string(
         config,
         &["splitter", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "splitter",
             "green-input",
+            splitter_identifier.as_deref(),
         ),
     );
     set_nested_string(
         config,
         &["splitter", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "splitter",
             "blue-input",
+            splitter_identifier.as_deref(),
         ),
     );
     set_nested_string(
         config,
         &["combiner", "greenOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "combiner",
             "green-output",
+            combiner_identifier.as_deref(),
         ),
     );
     set_nested_string(
         config,
         &["combiner", "blueOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
             namespace,
             blue_green_ref,
             blue_green_uid,
             inception_point,
             "combiner",
             "blue-output",
+            combiner_identifier.as_deref(),
         ),
     );
+}
+
+fn temporary_queue_identifier(config: &serde_json::Value, role: &str) -> Option<String> {
+    config
+        .get(role)
+        .and_then(|role| role.get("temporaryQueueIdentifier"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
 }
 
 fn set_nested_string(config: &mut serde_json::Value, path: &[&str], value: String) {
@@ -729,7 +746,8 @@ mod tests {
                             "properties": {
                                 "inputQueue": { "type": "string" },
                                 "greenInputQueue": { "type": "string" },
-                                "blueInputQueue": { "type": "string" }
+                                "blueInputQueue": { "type": "string" },
+                                "temporaryQueueIdentifier": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
                             }
                         },
                         "splitter": {
@@ -737,7 +755,8 @@ mod tests {
                             "properties": {
                                 "inputQueue": { "type": "string" },
                                 "greenInputQueue": { "type": "string" },
-                                "blueInputQueue": { "type": "string" }
+                                "blueInputQueue": { "type": "string" },
+                                "temporaryQueueIdentifier": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
                             }
                         },
                         "observer": { "type": "object" },
@@ -1040,7 +1059,8 @@ mod tests {
                 "duplicator": {
                     "inputQueue": "orders",
                     "greenInputQueue": "attacker-chosen-green",
-                    "blueInputQueue": "attacker-chosen-blue"
+                    "blueInputQueue": "attacker-chosen-blue",
+                    "temporaryQueueIdentifier": "incoming-orders"
                 }
             }),
         );
@@ -1062,16 +1082,25 @@ mod tests {
         assert_eq!(
             duplicator.get("greenInputQueue").unwrap().as_str(),
             Some(
-                fluidbg_plugin_sdk::derived_temp_queue_name_with_uid(
+                fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
                     "production",
                     "order-processor-bg",
                     "uid-123",
                     "incoming-orders",
                     "duplicator",
-                    "green-input"
+                    "green-input",
+                    Some("incoming-orders")
                 )
                 .as_str()
             )
+        );
+        assert!(
+            duplicator
+                .get("greenInputQueue")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .starts_with("fluidbg-green-in-incomiada9-")
         );
         assert_eq!(
             resources.deployments[0]

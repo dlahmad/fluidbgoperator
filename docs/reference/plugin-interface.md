@@ -116,7 +116,13 @@ use only route/purpose plus a stable hash, for example
 `fluidbg-green-in-<hash>`, `fluidbg-blue-in-<hash>`,
 `fluidbg-green-out-<hash>`, and `fluidbg-blue-out-<hash>`. The hash input
 includes namespace, BGD name, BGD UID, inception point, role, and logical
-purpose, but those values are not exposed in the queue name.
+purpose, but those values are not exposed in the queue name. Queue role blocks
+may set `temporaryQueueIdentifier` to a semantic value up to 40 characters
+using letters, digits, `.`, `_`, or `-`. The SDK converts it to a fixed
+10-character safe token before including it in the queue name, for example
+`fluidbg-green-in-incomiada9-<hash>`. Generated temporary queue names remain
+bounded by the plugin queue-name limit while still allowing operators to
+identify which base queue or inception point a temporary queue belongs to.
 
 ## Inceptor Discovery
 

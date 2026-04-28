@@ -71,6 +71,15 @@ Top-level fields:
 queue should dead-letter into a shadow queue, configure RabbitMQ arguments such
 as `x-dead-letter-exchange` and `x-dead-letter-routing-key` explicitly.
 
+`duplicator`, `splitter`, and `combiner` may set
+`temporaryQueueIdentifier` to a semantic value up to 40 characters using
+letters, digits, `.`, `_`, or `-`. The SDK converts it to a fixed 10-character
+safe token before including it in derived temporary queue names, for example
+`fluidbg-green-in-incomiada9-<hash>`. Generated queue names remain within the
+RabbitMQ-safe 63-character bound while still letting operators identify which
+base queue or inception point owns a temporary queue without embedding long or
+sensitive names.
+
 `shadowQueue.suffix` is preserved after validation. For short names it is
 appended directly. For already-long generated temporary names it is inserted
 before the stable hash suffix so the resulting queue name stays bounded and

@@ -411,4 +411,28 @@ mod tests {
 
         assert!(parsed.is_err());
     }
+
+    #[test]
+    fn role_configs_tolerate_rewritten_temporary_queue_identifier() {
+        let parsed = serde_json::from_value::<Config>(json!({
+            "splitter": {
+                "inputQueue": "orders",
+                "temporaryQueueIdentifier": "incoming-orders"
+            },
+            "combiner": {
+                "outputQueue": "results",
+                "temporaryQueueIdentifier": "outgoing-results"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            parsed.splitter.as_ref().unwrap().input_queue.as_deref(),
+            Some("orders")
+        );
+        assert_eq!(
+            parsed.combiner.as_ref().unwrap().output_queue.as_deref(),
+            Some("results")
+        );
+    }
 }

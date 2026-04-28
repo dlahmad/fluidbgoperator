@@ -28,6 +28,27 @@ pub fn derived_temp_queue_name_with_uid(
     role: &str,
     logical: &str,
 ) -> String {
+    derived_temp_queue_name_with_uid_and_identifier(
+        namespace,
+        blue_green_ref,
+        blue_green_uid,
+        inception_point,
+        role,
+        logical,
+        None,
+    )
+}
+
+pub fn derived_temp_queue_name_with_uid_and_identifier(
+    namespace: &str,
+    blue_green_ref: &str,
+    blue_green_uid: &str,
+    inception_point: &str,
+    role: &str,
+    logical: &str,
+    temporary_queue_identifier: Option<&str>,
+) -> String {
+    let identifier = temporary_queue_identifier.and_then(temporary_queue_identifier_token);
     let suffix = stable_suffix(&[
         namespace,
         blue_green_ref,
@@ -35,8 +56,16 @@ pub fn derived_temp_queue_name_with_uid(
         inception_point,
         role,
         logical,
+        identifier.as_deref().unwrap_or(""),
     ]);
-    format!("fluidbg-{}-{suffix}", temp_queue_kind(logical))
+    match identifier.as_deref() {
+        Some(identifier) => format!(
+            "fluidbg-{}-{}-{suffix}",
+            temp_queue_kind(logical),
+            identifier
+        ),
+        None => format!("fluidbg-{}-{suffix}", temp_queue_kind(logical)),
+    }
 }
 
 pub fn derived_shadow_queue_name(temp_queue_name: &str, shadow_suffix: &str) -> String {
@@ -84,6 +113,27 @@ fn temp_queue_kind(logical: &str) -> &'static str {
         "blue-output" => "blue-out",
         _ => "tmp",
     }
+}
+
+pub fn temporary_queue_identifier_token(value: &str) -> Option<String> {
+    let normalized = sanitize_identifier(value);
+    if normalized.is_empty() {
+        return None;
+    }
+    let suffix = stable_suffix(&[value]).chars().take(4).collect::<String>();
+    let prefix_len = 10usize.saturating_sub(suffix.len());
+    let prefix = normalized.chars().take(prefix_len).collect::<String>();
+    Some(format!("{prefix}{suffix}"))
+}
+
+fn sanitize_identifier(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|ch| {
+            let ch = ch.to_ascii_lowercase();
+            ch.is_ascii_alphanumeric().then_some(ch)
+        })
+        .collect()
 }
 
 pub fn derived_scoped_identity_name(
@@ -160,7 +210,8 @@ fn sanitize_shadow_suffix(value: &str) -> String {
 mod tests {
     use super::{
         derived_scoped_identity_name, derived_shadow_queue_name, derived_temp_queue_name,
-        derived_temp_queue_name_with_uid,
+        derived_temp_queue_name_with_uid, derived_temp_queue_name_with_uid_and_identifier,
+        temporary_queue_identifier_token,
     };
 
     #[test]
@@ -185,6 +236,62 @@ mod tests {
             derived_temp_queue_name_with_uid("ns", "bgd", "uid-b", "incoming", "splitter", "blue");
 
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derived_temp_names_include_optional_semantic_identifier_token() {
+        let token = temporary_queue_identifier_token("incoming-orders").unwrap();
+        let name = derived_temp_queue_name_with_uid_and_identifier(
+            "ns",
+            "bgd",
+            "uid",
+            "incoming",
+            "duplicator",
+            "green-input",
+            Some("incoming-orders"),
+        );
+
+        assert_eq!(token.len(), 10);
+        assert!(token.starts_with("incomi"));
+        assert!(name.starts_with(&format!("fluidbg-green-in-{token}-")));
+        assert!(name.len() <= 63);
+        assert!(!name.contains("incoming"));
+    }
+
+    #[test]
+    fn semantic_identifier_token_and_queue_name_are_bounded_for_long_input() {
+        let token = temporary_queue_identifier_token(
+            "very-long-human-meaningful-identifier-that-would-never-fit-in-a-queue-name",
+        )
+        .unwrap();
+        let name = derived_temp_queue_name_with_uid_and_identifier(
+            "ns",
+            "bgd",
+            "uid",
+            "incoming",
+            "duplicator",
+            "green-input",
+            Some("very-long-human-meaningful-identifier-that-would-never-fit-in-a-queue-name"),
+        );
+
+        assert_eq!(token.len(), 10);
+        assert!(name.len() <= 63);
+    }
+
+    #[test]
+    fn derived_temp_names_ignore_empty_identifier_after_normalization() {
+        let name = derived_temp_queue_name_with_uid_and_identifier(
+            "ns",
+            "bgd",
+            "uid",
+            "incoming",
+            "duplicator",
+            "green-input",
+            Some("----"),
+        );
+
+        assert!(name.starts_with("fluidbg-green-in-"));
+        assert!(!name.starts_with("fluidbg-green-in--"));
     }
 
     #[test]

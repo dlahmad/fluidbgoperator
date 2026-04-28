@@ -47,6 +47,7 @@ spec:
           blueInputQueue: orders-blue
           greenInputQueueEnvVar: INPUT_QUEUE
           blueInputQueueEnvVar: INPUT_QUEUE
+          temporaryQueueIdentifier: "incoming-orders"
         observer:
           testId:
             field: queue.body
@@ -69,6 +70,7 @@ spec:
           greenOutputQueue: results-green
           blueOutputQueue: results-blue
           outputQueue: results
+          temporaryQueueIdentifier: "outgoing-results"
         observer:
           testId:
             field: queue.body

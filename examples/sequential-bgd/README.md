@@ -126,6 +126,12 @@ results. The verifier passes a test case only after the separate sink service
 has logged both the HTTP audit call and the output message for that `v2`
 candidate sequence.
 
+The RabbitMQ inception points set semantic `temporaryQueueIdentifier` values so
+the generated queues are recognizable without embedding full deployment or base
+queue names. Input temporary queues include the token derived from
+`incoming-orders`; output temporary queues include the token derived from
+`outgoing-results`.
+
 ## Cleanup
 
 Delete the `BlueGreenDeployment` while the operator is still installed, and wait
