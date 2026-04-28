@@ -1,5 +1,8 @@
 use sha2::{Digest, Sha256};
 
+const MAX_DERIVED_QUEUE_NAME_LEN: usize = 63;
+const STABLE_SUFFIX_LEN: usize = 16;
+
 pub fn derived_temp_queue_name(
     namespace: &str,
     blue_green_ref: &str,
@@ -43,11 +46,33 @@ pub fn derived_shadow_queue_name(temp_queue_name: &str, shadow_suffix: &str) -> 
         .all(|ch| ch == '-' || ch == '_' || ch == '.')
     {
         temp_queue_name.to_string()
-    } else {
+    } else if temp_queue_name.chars().count() + shadow_suffix.chars().count()
+        <= MAX_DERIVED_QUEUE_NAME_LEN
+    {
         format!("{temp_queue_name}{shadow_suffix}")
+    } else if let Some((prefix, suffix)) = stable_suffix_from_name(temp_queue_name) {
+        let budget = MAX_DERIVED_QUEUE_NAME_LEN
+            .saturating_sub(shadow_suffix.chars().count() + 1 + suffix.len())
+            .max(1);
+        let prefix = prefix
+            .trim_end_matches(['-', '_', '.'])
             .chars()
-            .take(63)
-            .collect()
+            .take(budget)
+            .collect::<String>();
+        format!("{prefix}{shadow_suffix}-{suffix}")
+    } else {
+        let budget = MAX_DERIVED_QUEUE_NAME_LEN.saturating_sub(shadow_suffix.chars().count());
+        let base = temp_queue_name.chars().take(budget).collect::<String>();
+        format!("{base}{shadow_suffix}")
+    }
+}
+
+fn stable_suffix_from_name(name: &str) -> Option<(&str, &str)> {
+    let (prefix, suffix) = name.rsplit_once('-')?;
+    if suffix.len() == STABLE_SUFFIX_LEN && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some((prefix, suffix))
+    } else {
+        None
     }
 }
 
@@ -155,6 +180,35 @@ mod tests {
         let shadow = derived_shadow_queue_name("fluidbg-blue-input-1234567890abcdef", "_dlq");
 
         assert_eq!(shadow, "fluidbg-blue-input-1234567890abcdef_dlq");
+    }
+
+    #[test]
+    fn derived_shadow_names_keep_suffix_for_max_length_temp_names() {
+        let logical = "very-long-logical-queue-name-that-will-be-truncated";
+        let temp = derived_temp_queue_name_with_uid(
+            "very-long-namespace-name",
+            "very-long-blue-green-deployment-name",
+            "uid-1234567890",
+            "very-long-inception-point-name",
+            "duplicator",
+            logical,
+        );
+        assert_eq!(temp.len(), 63);
+        let stable_suffix = temp.rsplit_once('-').unwrap().1;
+
+        let shadow = derived_shadow_queue_name(&temp, "_dlq");
+
+        assert!(shadow.ends_with(&format!("_dlq-{stable_suffix}")));
+        assert_ne!(shadow, temp);
+        assert!(shadow.len() <= 63);
+    }
+
+    #[test]
+    fn derived_shadow_names_are_bounded_for_user_base_queues() {
+        let shadow = derived_shadow_queue_name(&"basequeue".repeat(10), ".deadletter");
+
+        assert!(shadow.ends_with(".deadletter"));
+        assert!(shadow.len() <= 63);
     }
 
     #[test]

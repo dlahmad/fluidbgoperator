@@ -74,8 +74,11 @@ max delivery count, TTL, dead-letter-on-expiration, duplicate detection,
 sessions, partitioning, forwarding, and entity status. The plugin does not
 implicitly set forwarding or dead-letter properties.
 
-`shadowQueue.suffix` is appended literally after validation and
-`shadowQueue.queueDeclaration` configures shadow queues independently.
+`shadowQueue.suffix` is preserved after validation. For short names it is
+appended directly. For already-long generated temporary names it is inserted
+before the stable hash suffix so the resulting queue name stays bounded and
+still cannot collide. `shadowQueue.queueDeclaration` configures shadow queues
+independently.
 
 ## Authentication
 
