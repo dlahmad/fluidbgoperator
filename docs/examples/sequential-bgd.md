@@ -149,7 +149,7 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
   --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
   --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
-  --set builtinPlugins.namespaces[0]=fluidbg-demo
+  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
 ```
 
 ## Run The Demo
