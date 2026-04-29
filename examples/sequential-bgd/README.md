@@ -133,10 +133,18 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
 ```
 
-Apply the initial version:
+Apply the initial version. This manifest also installs the demo infrastructure
+containers into the cluster: the `fluidbg-demo` namespace, the disposable
+RabbitMQ broker, the downstream sink, the producer, and the initial
+BlueGreenDeployment.
 
 ```sh
 kubectl apply -f examples/sequential-bgd/01-base.yaml
+
+kubectl wait --for=condition=available deployment/rabbitmq -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-sink -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-producer -n fluidbg-demo --timeout=180s
+
 GEN=$(kubectl get bluegreendeployment order-flow -n fluidbg-demo -o jsonpath='{.metadata.generation}')
 kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bluegreendeployment/order-flow -n fluidbg-demo --timeout=180s
 kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bluegreendeployment/order-flow -n fluidbg-demo --timeout=180s
