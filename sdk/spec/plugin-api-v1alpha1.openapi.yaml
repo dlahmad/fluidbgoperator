@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FluidBG Plugin API
-  version: 0.1.0
+  version: 0.1.7
   description: |
     Language-neutral HTTP contract used between the FluidBG operator, plugins,
     and test containers. The plugin API version is fluidbg.plugin/v1alpha1.

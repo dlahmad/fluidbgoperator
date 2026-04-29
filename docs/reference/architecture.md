@@ -146,7 +146,7 @@ metadata:
   name: http
 spec:
   description: "HTTP transport plugin for observing, mocking, and writing HTTP traffic"
-  image: ghcr.io/dlahmad/fbg-plugin-http:0.1.0
+  image: ghcr.io/dlahmad/fbg-plugin-http:latest
   supportedRoles: [splitter, observer, mock, writer]
   topology: standalone
   lifecycle:

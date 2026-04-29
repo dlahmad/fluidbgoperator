@@ -89,8 +89,8 @@ spec:
     spec:
       containers:
         - name: sink
-          image: ghcr.io/dlahmad/fluidbg-example-sink:latest
-          imagePullPolicy: IfNotPresent
+          image: fluidbg/fluidbg-example-sink:dev
+          imagePullPolicy: Never
           ports:
             - containerPort: 8080
           env:
@@ -130,8 +130,8 @@ spec:
     spec:
       containers:
         - name: producer
-          image: ghcr.io/dlahmad/fluidbg-example-producer:latest
-          imagePullPolicy: IfNotPresent
+          image: fluidbg/fluidbg-example-producer:dev
+          imagePullPolicy: Never
           env:
             - name: AMQP_URL
               value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/"
@@ -164,8 +164,8 @@ spec:
           terminationGracePeriodSeconds: 1
           containers:
             - name: app
-              image: ghcr.io/dlahmad/fluidbg-example-order-app:latest
-              imagePullPolicy: IfNotPresent
+              image: fluidbg/fluidbg-example-order-app:dev
+              imagePullPolicy: Never
               env:
                 - name: AMQP_URL
                   value: "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/"

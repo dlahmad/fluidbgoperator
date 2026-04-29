@@ -6,8 +6,8 @@ title: Security Policy
 
 ## Supported Versions
 
-This project currently supports the latest `main` branch and tagged releases
-from `v0.1.0` onward.
+This project currently supports the latest `main` branch and the latest tagged
+release.
 
 ## Reporting Vulnerabilities
 

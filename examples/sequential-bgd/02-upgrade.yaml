@@ -22,8 +22,8 @@ spec:
           terminationGracePeriodSeconds: 1
           containers:
             - name: app
-              image: ghcr.io/dlahmad/fluidbg-example-order-app:latest
-              imagePullPolicy: IfNotPresent
+              image: fluidbg/fluidbg-example-order-app:dev
+              imagePullPolicy: Never
               env:
                 - name: AMQP_URL
                   value: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/
@@ -114,7 +114,8 @@ spec:
           terminationGracePeriodSeconds: 1
           containers:
             - name: verifier
-              image: ghcr.io/dlahmad/fluidbg-example-verifier:latest
+              image: fluidbg/fluidbg-example-verifier:dev
+              imagePullPolicy: Never
               ports:
                 - containerPort: 8080
               readinessProbe:

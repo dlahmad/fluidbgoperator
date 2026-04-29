@@ -10,8 +10,8 @@ OCI Helm chart when it runs from a pushed `v*.*.*` tag. Manual workflow runs and
 normal branch pushes never create releases.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The release path builds stripped static musl release binaries, publishes
@@ -34,9 +34,9 @@ multiple jobs. Cargo caches are shared by purpose:
 - `cargo-linux-amd64-musl` for static amd64 release binaries.
 - `cargo-linux-arm64-musl` for static arm64 release binaries.
 
-Image builds reuse the downloaded `fluidbg-dist-<arch>` executable artifacts and
-export BuildKit layer caches to `ghcr.io/<owner>/fluidbg-build-cache`.
-Pull requests read cache metadata but do not push cache updates.
+Image builds reuse the downloaded `fluidbg-dist-<arch>` executable artifacts.
+BuildKit layer caches use the GitHub Actions cache backend, so cache entries are
+not published as GHCR packages and do not become release artifacts.
 
 GitHub Release assets contain executable archives and chart packages only:
 
@@ -52,10 +52,9 @@ Images:
 - `ghcr.io/<owner>/fbg-plugin-http:<version>`
 - `ghcr.io/<owner>/fbg-plugin-rabbitmq:<version>`
 - `ghcr.io/<owner>/fbg-plugin-azure-servicebus:<version>`
-- `ghcr.io/<owner>/fluidbg-example-order-app:<version>`
-- `ghcr.io/<owner>/fluidbg-example-producer:<version>`
-- `ghcr.io/<owner>/fluidbg-example-sink:<version>`
-- `ghcr.io/<owner>/fluidbg-example-verifier:<version>`
+
+Example/test application images are intentionally not release artifacts. Build
+them locally for kind demos or publish them to your own registry if needed.
 
 Helm chart:
 

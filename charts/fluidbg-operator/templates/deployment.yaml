@@ -43,7 +43,7 @@ spec:
         {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
       containers:
         - name: operator
-          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.operator.securityContext | nindent 12 }}

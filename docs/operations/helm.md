@@ -26,13 +26,20 @@ still performed in the namespace of the BGD object.
 ## Production Image Values
 
 The checked-in chart defaults point at this repository's GHCR packages. For a
-fork, replace `dlahmad` with the publishing owner.
+fork, replace `dlahmad` with the publishing owner. Empty image tags use
+`global.imageTag`, then chart `appVersion`; set `latest` only if you
+intentionally want moving images.
 
 ```yaml
+global:
+  # One shared version for the operator and all built-in plugins.
+  imageTag: ""
+
 operator:
   image:
     repository: ghcr.io/dlahmad/fbg-operator
-    tag: 0.1.0
+    # Optional operator-specific override. Empty uses global.imageTag/appVersion.
+    tag: ""
   auth:
     signingSecretNamespace: fluidbg-system
     signingSecretName: fluidbg-operator-auth
@@ -42,11 +49,13 @@ builtinPlugins:
   http:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-http
-      tag: 0.1.0
+      # Optional plugin-specific override.
+      tag: ""
   rabbitmq:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
-      tag: 0.1.0
+      # Optional plugin-specific override.
+      tag: ""
   azureServiceBus:
     inceptorWorkloadIdentity:
       enabled: false
@@ -58,7 +67,28 @@ builtinPlugins:
         serviceAccountName: ""
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
-      tag: 0.1.0
+      # Optional plugin-specific override.
+      tag: ""
+```
+
+Typical pinned install:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set global.imageTag=0.1.7
+```
+
+Pin one plugin differently while the operator and other plugins use the shared
+version:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set global.imageTag=0.1.7 \
+  --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 
 ## State Store And HA

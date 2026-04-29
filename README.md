@@ -103,10 +103,6 @@ Published release image names are:
 - `ghcr.io/dlahmad/fbg-plugin-http`
 - `ghcr.io/dlahmad/fbg-plugin-rabbitmq`
 - `ghcr.io/dlahmad/fbg-plugin-azure-servicebus`
-- `ghcr.io/dlahmad/fluidbg-example-order-app`
-- `ghcr.io/dlahmad/fluidbg-example-producer`
-- `ghcr.io/dlahmad/fluidbg-example-sink`
-- `ghcr.io/dlahmad/fluidbg-example-verifier`
 
 Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base. Release amd64 and arm64 binaries are built on native GitHub-hosted Linux runners instead of compiling under emulation.
 
@@ -117,7 +113,7 @@ Observed arm64 image sizes:
 | `ghcr.io/dlahmad/fbg-operator` | 16.5 MB |
 | `ghcr.io/dlahmad/fbg-plugin-http` | 12.1 MB |
 | `ghcr.io/dlahmad/fbg-plugin-rabbitmq` | 13.9 MB |
-| `ghcr.io/dlahmad/fbg-plugin-azure-servicebus` | TBD |
+| `ghcr.io/dlahmad/fbg-plugin-azure-servicebus` | 13.5 MB |
 
 ## Documentation
 

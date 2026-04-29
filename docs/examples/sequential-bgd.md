@@ -81,27 +81,18 @@ flowchart LR
 
 ## Images
 
-The example YAML uses published GHCR images:
-
-- `ghcr.io/dlahmad/fluidbg-example-order-app:latest`
-- `ghcr.io/dlahmad/fluidbg-example-producer:latest`
-- `ghcr.io/dlahmad/fluidbg-example-sink:latest`
-- `ghcr.io/dlahmad/fluidbg-example-verifier:latest`
-
-For local development, build and load replacement images with the same tags:
+The example application images are not published release artifacts. Build them
+locally and load them into kind with the tags used by the YAML:
 
 ```bash
-docker build -t ghcr.io/dlahmad/fluidbg-example-order-app:latest examples/sequential-bgd/app
-docker build -t ghcr.io/dlahmad/fluidbg-example-producer:latest examples/sequential-bgd/producer
-docker build -t ghcr.io/dlahmad/fluidbg-example-sink:latest examples/sequential-bgd/sink
-docker build -t ghcr.io/dlahmad/fluidbg-example-verifier:latest examples/sequential-bgd/verifier
+./scripts/build-example-images.sh --registry fluidbg --tag dev
 
 KIND_CLUSTER="$(kind get clusters | head -n 1)"
 
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-order-app:latest --name "$KIND_CLUSTER"
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-producer:latest --name "$KIND_CLUSTER"
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-sink:latest --name "$KIND_CLUSTER"
-kind load docker-image ghcr.io/dlahmad/fluidbg-example-verifier:latest --name "$KIND_CLUSTER"
+kind load docker-image fluidbg/fluidbg-example-order-app:dev --name "$KIND_CLUSTER"
+kind load docker-image fluidbg/fluidbg-example-producer:dev --name "$KIND_CLUSTER"
+kind load docker-image fluidbg/fluidbg-example-sink:dev --name "$KIND_CLUSTER"
+kind load docker-image fluidbg/fluidbg-example-verifier:dev --name "$KIND_CLUSTER"
 ```
 
 The operator and built-in plugin images must also be available in the cluster.

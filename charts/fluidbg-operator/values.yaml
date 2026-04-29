@@ -1,11 +1,17 @@
 nameOverride: ""
 fullnameOverride: ""
 
+global:
+  # Shared image tag for the operator and all built-in plugin images. Empty
+  # defaults to Chart.appVersion. Component-specific image.tag values override
+  # this value.
+  imageTag: ""
+
 operator:
   replicaCount: 1
   image:
     repository: ghcr.io/dlahmad/fbg-operator
-    tag: 0.1.0
+    tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   podAnnotations: {}
@@ -102,12 +108,12 @@ builtinPlugins:
     enabled: true
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-http
-      tag: 0.1.0
+      tag: ""
   rabbitmq:
     enabled: true
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
-      tag: 0.1.0
+      tag: ""
     manager:
       enabled: false
       amqpUrl: ""
@@ -150,4 +156,4 @@ builtinPlugins:
       resources: {}
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-azure-servicebus
-      tag: 0.1.0
+      tag: ""

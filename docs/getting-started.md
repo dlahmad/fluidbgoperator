@@ -24,10 +24,13 @@ cargo test --workspace --locked
 ```sh
 ./scripts/build-linux-binaries.sh
 ./scripts/build-images.sh --tag dev
+./scripts/build-example-images.sh --registry fluidbg --tag dev
 ```
 
 `build-linux-binaries.sh` builds Linux musl static executables inside Docker by
 default so the produced Docker images are valid even when invoked from macOS.
+Example images are local demo/test images only; the release pipeline does not
+publish them to GHCR.
 
 For a local kind cluster:
 
@@ -35,6 +38,11 @@ For a local kind cluster:
 kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
 kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
 kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name fluidbg-dev
+kind load docker-image fluidbg/fbg-plugin-azure-servicebus:dev --name fluidbg-dev
+kind load docker-image fluidbg/fluidbg-example-order-app:dev --name fluidbg-dev
+kind load docker-image fluidbg/fluidbg-example-producer:dev --name fluidbg-dev
+kind load docker-image fluidbg/fluidbg-example-sink:dev --name fluidbg-dev
+kind load docker-image fluidbg/fluidbg-example-verifier:dev --name fluidbg-dev
 ```
 
 ## Install With Helm
