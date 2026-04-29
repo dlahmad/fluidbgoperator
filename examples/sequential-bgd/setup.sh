@@ -79,21 +79,15 @@ helm_args=(
     upgrade --install fluidbg "$ROOT_DIR/charts/fluidbg-operator"
     --namespace "$SYSTEM_NAMESPACE"
     --create-namespace
+    -f "$SCRIPT_DIR/operator-values.yaml"
     --set "global.imageTag=$OPERATOR_IMAGE_TAG"
     --set "operator.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-operator"
     --set "operator.image.pullPolicy=$OPERATOR_IMAGE_PULL_POLICY"
     --set "builtinPlugins.http.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-http"
     --set "builtinPlugins.rabbitmq.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-rabbitmq"
     --set "builtinPlugins.azureServiceBus.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus"
-    --set operator.auth.createSigningSecret=true
-    --set operator.auth.signingSecretName=fluidbg-operator-auth
-    --set operator.auth.signingSecretValue=dev-signing-key-change-me
-    --set builtinPlugins.rabbitmq.manager.enabled=true
     --set "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.$NAMESPACE:5672/%2f"
     --set "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.$NAMESPACE:15672"
-    --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg
-    --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg
-    --set builtinPlugins.rabbitmq.manager.managementVhost=/
     --set "builtinPlugins.namespaces[0]=$NAMESPACE"
 )
 

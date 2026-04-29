@@ -134,22 +134,18 @@ via `secretKeyRef`; production installs should reference existing Secrets.
 ## Install Operator
 
 Install the Helm chart into the system namespace and register the built-in
-plugins in the demo namespace:
+plugins in the demo namespace. Run this from the repository root:
 
 ```bash
-helm upgrade --install fluidbg charts/fluidbg-operator \
+kubectl create namespace fluidbg-demo --dry-run=client -o yaml | kubectl apply -f -
+
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set operator.auth.createSigningSecret=true \
-  --set operator.auth.signingSecretName=fluidbg-operator-auth \
-  --set operator.auth.signingSecretValue=dev-signing-key-change-me \
-  --set builtinPlugins.rabbitmq.manager.enabled=true \
-  --set builtinPlugins.rabbitmq.manager.amqpUrl='amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f' \
-  --set builtinPlugins.rabbitmq.manager.managementUrl='http://rabbitmq.fluidbg-demo:15672' \
-  --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
-  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
+  -f examples/sequential-bgd/operator-values.yaml
+
+kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n fluidbg-demo --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n fluidbg-demo --timeout=60s
 ```
 
 ## Run The Demo
@@ -255,3 +251,20 @@ and 50% of input messages to the candidate, the producer usually emits more
 than 12 messages before promotion. Pending cases do not block the next step
 once the finalized sample passes, but the final drain keeps verifier resources
 alive until every already-registered case has passed, failed, or timed out.
+
+## Cleanup
+
+Use the cleanup helper to remove the demo BGD, wait for finalizer cleanup,
+uninstall the Helm release, and delete the demo namespaces:
+
+```bash
+examples/sequential-bgd/cleanup.sh
+```
+
+The script also removes the FluidBG CRDs by default because this demo is
+intended for a disposable kind cluster. On a shared cluster, keep cluster-scoped
+CRDs with:
+
+```bash
+DELETE_CRDS=0 examples/sequential-bgd/cleanup.sh
+```

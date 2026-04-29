@@ -13,8 +13,12 @@ The chart at `charts/fluidbg-operator` installs:
 
 ## Basic Install
 
+Run local chart commands from the repository root. Use `./charts/...` for local
+installs; `charts/fluidbg-operator` without `./` can be parsed as a Helm
+repository chart reference.
+
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace
 ```
@@ -74,7 +78,7 @@ builtinPlugins:
 Typical pinned install:
 
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
   --set global.imageTag=0.1.8
@@ -84,7 +88,7 @@ Pin one plugin differently while the operator and other plugins use the shared
 version:
 
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
   --set global.imageTag=0.1.8 \
@@ -341,5 +345,5 @@ changes, apply the generated CRDs explicitly before upgrading the chart:
 
 ```sh
 kubectl apply -f crds/
-helm upgrade fluidbg charts/fluidbg-operator -n fluidbg-system
+helm upgrade fluidbg ./charts/fluidbg-operator -n fluidbg-system
 ```

@@ -47,8 +47,12 @@ kind load docker-image fluidbg/fluidbg-example-verifier:dev --name fluidbg-dev
 
 ## Install With Helm
 
+Run local chart commands from the repository root. The `./` prefix matters:
+without it, Helm can interpret `charts/fluidbg-operator` as a repository chart
+reference instead of a local path.
+
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace
 ```
@@ -57,7 +61,7 @@ If your `BlueGreenDeployment` resources live in application namespaces, install
 built-in plugin CRs into those namespaces too:
 
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
   --set builtinPlugins.namespaces='{fluidbg-system,my-app-namespace}'

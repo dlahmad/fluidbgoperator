@@ -95,32 +95,12 @@ flowchart LR
 ```
 
 The operator and built-in plugin images must also be available in the cluster.
-For local development, build/load them with the repository scripts. For a
-published release, use the GHCR defaults in the Helm chart. If you are testing
-local `:dev` operator/plugin images, set the chart image values explicitly:
+For local development, `setup.sh` builds/loads them and sets the chart image
+values. For a published release, use the GHCR defaults from the Helm chart.
 
-```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
-  --namespace fluidbg-system \
-  --create-namespace \
-  --set operator.image.repository=fluidbg/fbg-operator \
-  --set operator.image.tag=dev \
-  --set operator.image.pullPolicy=Never \
-  --set builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http \
-  --set builtinPlugins.http.image.tag=dev \
-  --set builtinPlugins.rabbitmq.image.repository=fluidbg/fbg-plugin-rabbitmq \
-  --set builtinPlugins.rabbitmq.image.tag=dev \
-  --set builtinPlugins.rabbitmq.manager.enabled=true \
-  --set builtinPlugins.rabbitmq.manager.amqpUrl='amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f' \
-  --set builtinPlugins.rabbitmq.manager.managementUrl='http://rabbitmq.fluidbg-demo:15672' \
-  --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
-  --set operator.auth.createSigningSecret=true \
-  --set operator.auth.signingSecretName=fluidbg-operator-auth \
-  --set operator.auth.signingSecretValue=dev-signing-key-change-me \
-  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
-```
+Avoid long `--set` chains for the manual install. A checked-in values file is
+used below so shell line-continuation whitespace and `zsh` globbing cannot
+break the command.
 
 This demo uses local RabbitMQ credentials because it creates its own disposable
 broker in `fluidbg-demo`. They are provided to the plugin installation, not to
@@ -143,25 +123,20 @@ rm -rf "$tmpdir"
 
 ## Run
 
-If you did not use `setup.sh`, install the operator chart into the system
-namespace and register built-in plugins in the demo namespace:
+If you did not use `setup.sh`, run these commands from the repository root to
+install the operator chart into the system namespace and register built-in
+plugins in the demo namespace:
 
 ```sh
 kubectl create namespace fluidbg-demo --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set operator.auth.createSigningSecret=true \
-  --set operator.auth.signingSecretName=fluidbg-operator-auth \
-  --set operator.auth.signingSecretValue=dev-signing-key-change-me \
-  --set builtinPlugins.rabbitmq.manager.enabled=true \
-  --set builtinPlugins.rabbitmq.manager.amqpUrl='amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f' \
-  --set builtinPlugins.rabbitmq.manager.managementUrl='http://rabbitmq.fluidbg-demo:15672' \
-  --set builtinPlugins.rabbitmq.manager.managementUsername=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementPassword=fluidbg \
-  --set builtinPlugins.rabbitmq.manager.managementVhost='/' \
-  --set 'builtinPlugins.namespaces[0]=fluidbg-demo'
+  -f examples/sequential-bgd/operator-values.yaml
+
+kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n fluidbg-demo --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n fluidbg-demo --timeout=60s
 ```
 
 Apply the initial version. This manifest also installs the demo infrastructure
@@ -257,13 +232,17 @@ cumulative candidate sample threshold for each step passes.
 
 ## Cleanup
 
-Delete the `BlueGreenDeployment` while the operator is still installed, and wait
-until the CR disappears so the finalizer can clean inceptors, verifier
-resources, and plugin state before Helm removes the operator:
+Use the cleanup helper to remove the demo BGD, wait for finalizer cleanup,
+uninstall the Helm release, and delete the demo namespaces:
 
 ```sh
-kubectl delete bluegreendeployment order-flow -n fluidbg-demo --ignore-not-found
-kubectl wait --for=delete bluegreendeployment/order-flow -n fluidbg-demo --timeout=180s
-helm uninstall fluidbg -n fluidbg-system --ignore-not-found --wait
-kubectl delete namespace fluidbg-demo --ignore-not-found
+examples/sequential-bgd/cleanup.sh
+```
+
+By default the cleanup script also removes the FluidBG CRDs because this demo is
+intended for a disposable kind cluster. On a shared cluster, keep cluster-scoped
+CRDs with:
+
+```sh
+DELETE_CRDS=0 examples/sequential-bgd/cleanup.sh
 ```

@@ -1,0 +1,17 @@
+operator:
+  auth:
+    createSigningSecret: true
+    signingSecretName: fluidbg-operator-auth
+    signingSecretValue: dev-signing-key-change-me
+
+builtinPlugins:
+  namespaces:
+    - fluidbg-demo
+  rabbitmq:
+    manager:
+      enabled: true
+      amqpUrl: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f
+      managementUrl: http://rabbitmq.fluidbg-demo:15672
+      managementUsername: fluidbg
+      managementPassword: fluidbg
+      managementVhost: /

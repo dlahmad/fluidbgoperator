@@ -78,8 +78,12 @@ KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 E2E_STATE_STORE=postgres OPERATOR_REPLIC
 
 ## Install
 
+Run local chart commands from the repository root. The `./` prefix matters:
+without it, Helm can interpret `charts/fluidbg-operator` as a repository chart
+reference instead of a local path.
+
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace
 ```
@@ -89,7 +93,7 @@ Because `InceptionPlugin` resources are namespaced, install built-in plugin CRs
 into every application namespace that should use the chart-provided plugins:
 
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
   --set builtinPlugins.namespaces='{fluidbg-system,my-app-namespace}'
