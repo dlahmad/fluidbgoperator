@@ -28,14 +28,9 @@ a native cross toolchain instead of running Cargo under QEMU.
 Example images are local demo/test images only and are not published by the
 release pipeline.
 
-Observed local arm64 dev image sizes:
-
-| Image | Size |
-|---|---:|
-| `fluidbg/fbg-operator:dev` | 16.5 MB |
-| `fluidbg/fbg-plugin-http:dev` | 12.1 MB |
-| `fluidbg/fbg-plugin-rabbitmq:dev` | 13.9 MB |
-| `fluidbg/fbg-plugin-azure-servicebus:dev` | 13.5 MB |
+The README records current release image sizes per CPU architecture. Local
+`dev` image sizes can be larger because Docker reports local image store size,
+not compressed registry transfer size.
 
 ## E2E Loop
 

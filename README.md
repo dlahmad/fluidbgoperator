@@ -106,14 +106,14 @@ Published release image names are:
 
 Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base. Release amd64 and arm64 binaries are built on native GitHub-hosted Linux runners instead of compiling under emulation.
 
-Observed arm64 image sizes:
+Observed release image sizes, measured as compressed registry transfer size:
 
-| Image | Size |
-|---|---:|
-| `ghcr.io/dlahmad/fbg-operator` | 16.5 MB |
-| `ghcr.io/dlahmad/fbg-plugin-http` | 12.1 MB |
-| `ghcr.io/dlahmad/fbg-plugin-rabbitmq` | 13.9 MB |
-| `ghcr.io/dlahmad/fbg-plugin-azure-servicebus` | 13.5 MB |
+| Image | linux/amd64 | linux/arm64 |
+|---|---:|---:|
+| `ghcr.io/dlahmad/fbg-operator` | 6.0 MB | 5.7 MB |
+| `ghcr.io/dlahmad/fbg-plugin-http` | 3.5 MB | 3.3 MB |
+| `ghcr.io/dlahmad/fbg-plugin-rabbitmq` | 4.2 MB | 4.0 MB |
+| `ghcr.io/dlahmad/fbg-plugin-azure-servicebus` | 3.6 MB | 3.4 MB |
 
 ## Documentation
 
