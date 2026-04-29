@@ -240,6 +240,10 @@ jobs:
           docker build -t fluidbg/blue-app:dev e2e/blue-app
           docker build -t fluidbg/green-app:dev e2e/green-app
           docker build -t fluidbg/test-app:dev e2e/test-app
+          tmpdir="$(mktemp -d)"
+          printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
+          docker build --platform linux/amd64 -t rabbitmq:4.2-management-alpine "$tmpdir"
+          rm -rf "$tmpdir"
           kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name fluidbg-dev
@@ -247,6 +251,7 @@ jobs:
           kind load docker-image fluidbg/blue-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/green-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/test-app:dev --name fluidbg-dev
+          kind load docker-image rabbitmq:4.2-management-alpine --name fluidbg-dev
       - name: Run full e2e
         env:
           KIND_CLUSTER: fluidbg-dev

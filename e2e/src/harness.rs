@@ -20,11 +20,11 @@ impl E2eHarness {
         let kube = Kube::new().await?;
 
         regenerate_crds(&config)?;
-        deploy_infrastructure(&config, &kube).await?;
-        reset_previous_resources(&config, &kube).await?;
         if config.build_images {
             build_and_load_images(&config)?;
         }
+        deploy_infrastructure(&config, &kube).await?;
+        reset_previous_resources(&config, &kube).await?;
         install_operator(&config, &kube).await?;
 
         Ok(Self {
@@ -74,6 +74,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
     let operator_image = format!("fluidbg/fbg-operator:{}", config.image_tag);
     let http_plugin_image = format!("fluidbg/fbg-plugin-http:{}", config.image_tag);
     let rabbitmq_plugin_image = format!("fluidbg/fbg-plugin-rabbitmq:{}", config.image_tag);
+    let rabbitmq_infra_image = "rabbitmq:4.2-management-alpine";
     prefetch_linux_rust_dependencies(config, &arch)?;
     command::run(
         &config
@@ -154,6 +155,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
             &config.root_dir.join("e2e/test-app").to_string_lossy(),
         ],
     )?;
+    build_single_platform_alias(rabbitmq_infra_image, rabbitmq_infra_image, &arch)?;
     if config.state_store == StateStore::Postgres {
         command::run(
             "docker",
@@ -174,6 +176,7 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
             "fluidbg/blue-app:dev",
             "fluidbg/green-app:dev",
             "fluidbg/test-app:dev",
+            rabbitmq_infra_image,
         ] {
             command::run("kind", ["load", "docker-image", image, "--name", &cluster])?;
         }
@@ -190,6 +193,34 @@ fn build_and_load_images(config: &E2eConfig) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn build_single_platform_alias(source: &str, tag: &str, arch: &str) -> Result<()> {
+    let dir = std::env::temp_dir().join(format!(
+        "fluidbg-e2e-image-{}-{}",
+        std::process::id(),
+        tag.replace(['/', ':'], "-")
+    ));
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let dockerfile = dir.join("Dockerfile");
+    std::fs::write(&dockerfile, format!("FROM {source}\n"))
+        .with_context(|| format!("write {}", dockerfile.display()))?;
+    let build_result = command::run(
+        "docker",
+        [
+            "build",
+            "--platform",
+            &format!("linux/{arch}"),
+            "-t",
+            tag,
+            &dir.to_string_lossy(),
+        ],
+    );
+    let cleanup_result = std::fs::remove_dir_all(&dir)
+        .with_context(|| format!("remove temporary image context {}", dir.display()));
+    build_result?;
+    cleanup_result?;
     Ok(())
 }
 

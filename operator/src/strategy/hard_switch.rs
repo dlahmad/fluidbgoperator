@@ -27,17 +27,18 @@ impl HardSwitchStrategy {
 #[async_trait::async_trait]
 impl PromotionStrategy for HardSwitchStrategy {
     async fn decide(&self, counts: &Counts, _current_step: Option<i32>) -> PromotionAction {
+        let total = counts.passed + counts.failed + counts.timed_out;
+
         if counts.pending > 0 {
             if let Some(best_possible_rate) = self.best_possible_rate(counts)
                 && best_possible_rate < self.success_rate
             {
                 return PromotionAction::Rollback;
             }
-            return PromotionAction::ContinueObserving;
-        }
-
-        let total = counts.passed + counts.failed + counts.timed_out;
-        if total < self.min_test_cases {
+            if total < self.min_test_cases {
+                return PromotionAction::ContinueObserving;
+            }
+        } else if total < self.min_test_cases {
             return PromotionAction::ContinueObserving;
         }
 
@@ -97,9 +98,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continue_observing_when_pending_cases_exist() {
+    async fn promote_when_sample_passed_even_if_new_cases_are_pending() {
         let strategy = HardSwitchStrategy {
             min_test_cases: 3,
+            success_rate: 0.8,
+        };
+        let counts = Counts {
+            passed: 4,
+            failed: 0,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(
+            strategy.decide(&counts, None).await,
+            PromotionAction::Promote
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_observing_when_pending_cases_exist_but_sample_is_too_small() {
+        let strategy = HardSwitchStrategy {
+            min_test_cases: 5,
             success_rate: 0.8,
         };
         let counts = Counts {

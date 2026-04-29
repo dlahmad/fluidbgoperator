@@ -77,7 +77,7 @@ Typical pinned install:
 helm upgrade --install fluidbg charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.1.7
+  --set global.imageTag=0.1.8
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -87,7 +87,7 @@ version:
 helm upgrade --install fluidbg charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.1.7 \
+  --set global.imageTag=0.1.8 \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 

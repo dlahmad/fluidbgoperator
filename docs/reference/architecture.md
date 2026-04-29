@@ -225,10 +225,21 @@ promotion:
       steps:
         - { trafficPercent: 5, observeCases: 20, successRate: 0.99 }
         - { trafficPercent: 25, observeCases: 50, successRate: 0.98 }
-        - { trafficPercent: 100, observeCases: 50, successRate: 0.98 }
+        - { trafficPercent: 100, observeCases: 100, successRate: 0.98 }
       rollbackOnStepFailure: true
       stepTimeoutMinutes: 15
 ```
+
+`minTestCases` and progressive `observeCases` are finalized sample thresholds.
+Only passed, failed, and timed-out cases count toward the threshold.
+Progressive `observeCases` values are cumulative per rollout, not per-step
+deltas. For example, steps `3`, `8`, `12` advance at 3 finalized candidate
+cases, then 8 total finalized candidate cases, then promote at 12 total
+finalized candidate cases. Newly registered pending cases do not force the
+operator to chase a moving tail of continuous traffic once the configured
+finalized sample has already met the success rate. Pending cases can still
+force rollback while observing if even treating every pending case as a future
+pass cannot recover the required success rate.
 
 `candidatePatch` is an optional, typed test-time overlay for the candidate
 DeploymentSpec. It is applied only while the candidate is being tested. On
@@ -501,7 +512,8 @@ verifier resolved successfully.
 | Registered case stays pending | The tracker polls `verifyPath` until the case timeout, then marks it timed out. Timed-out cases count against the success rate. |
 | Verifier returns failure | The case is failed. Hard-switch and progressive strategies roll back once the configured success threshold cannot be recovered. |
 | Minimum case count or success threshold is not met before promotion timeout | The rollout rolls back and then drains/cleans temporary resources. |
-| Final hard-switch or progressive step passes | The rollout enters `Draining`, promotes the candidate wiring, waits for plugin drain status, then cleans inception/test resources and marks `Completed`. |
+| Final hard-switch or progressive step passes while newer cases are pending | The rollout can enter `Draining` after the finalized sample passes, but verifier/test resources stay alive until every already-registered case is terminal: passed, failed, or timed out. This prevents cleanup from deleting evidence for an admitted case. |
+| Final hard-switch or progressive step passes | The rollout enters `Draining`, promotes the candidate wiring, waits for plugin drain status and terminal registered cases, then cleans inception/test resources and marks `Completed`. |
 | Drain does not finish before the inception point drain timeout | The operator records `TimedOutMaybeSuccessful` for that drain and proceeds to cleanup. This is explicit risk reporting, not a zero-loss guarantee. |
 | BGD is updated during an active rollout | By default the update is deferred. The active rollout continues from its stored spec snapshot and status includes `UpdateDeferred=True`; the new generation starts after terminal cleanup. |
 | BGD is updated with `updatePolicy.activeRollout: force-replace` before drain starts | The operator stops waiting for the active tests, starts rollback-style plugin drain for the frozen active snapshot, restores traffic to the current green path, waits for drain completion or configured drain timeouts, marks the interrupted rollout `RolledBack`, cleans up, then starts the new generation. |

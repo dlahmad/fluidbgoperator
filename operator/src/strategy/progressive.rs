@@ -37,15 +37,15 @@ impl PromotionStrategy for ProgressiveStrategy {
         let step = &self.steps[step_idx];
         let total = counts.passed + counts.failed + counts.timed_out;
 
-        if total < step.observe_cases {
-            return PromotionAction::ContinueObserving;
-        }
-
         if counts.pending > 0 {
             if self.rollback_on_step_failure && Self::best_possible_rate(counts) < step.success_rate
             {
                 return PromotionAction::Rollback;
             }
+            if total < step.observe_cases {
+                return PromotionAction::ContinueObserving;
+            }
+        } else if total < step.observe_cases {
             return PromotionAction::ContinueObserving;
         }
 
@@ -178,10 +178,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continue_observing_when_pending_cases_exist() {
+    async fn advance_when_sample_passed_even_if_new_cases_are_pending() {
         let strategy = ProgressiveStrategy::from_steps(make_steps(), true);
         let counts = Counts {
             passed: 20,
+            failed: 0,
+            timed_out: 0,
+            pending: 1,
+        };
+        assert_eq!(
+            strategy.decide(&counts, Some(0)).await,
+            PromotionAction::AdvanceStep {
+                step: 1,
+                traffic_percent: 25
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_observing_when_pending_cases_exist_but_sample_is_too_small() {
+        let strategy = ProgressiveStrategy::from_steps(make_steps(), true);
+        let counts = Counts {
+            passed: 10,
             failed: 0,
             timed_out: 0,
             pending: 1,

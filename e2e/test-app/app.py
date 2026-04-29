@@ -29,6 +29,19 @@ def complete_http_proxy_case_if_ready(case):
         case["status"] = "observing"
 
 
+def complete_delayed_case_if_ready(case):
+    ready_at = case.get("verify_ready_at")
+    if ready_at is not None and time.time() < ready_at:
+        case["status"] = "observing"
+        return False
+    if ready_at is not None:
+        case.pop("verify_ready_at", None)
+        case["status"] = "passed"
+        case["error_message"] = None
+        return True
+    return False
+
+
 def is_http_proxy_message(payload):
     original = payload.get("originalMessage") or {}
     return original.get("action") == "http-proxy-check"
@@ -99,8 +112,15 @@ def observe(test_id, inception_point):
             elif is_http_proxy_message(payload):
                 complete_http_proxy_case_if_ready(case)
             elif original.get("shouldPass", True):
-                case["status"] = "passed"
-                case["error_message"] = None
+                delay = int(original.get("verifyDelaySeconds", 0) or 0)
+                if delay > 0:
+                    if "verify_ready_at" not in case:
+                        case["verify_ready_at"] = time.time() + delay
+                    if not complete_delayed_case_if_ready(case):
+                        case["status"] = "observing"
+                else:
+                    case["status"] = "passed"
+                    case["error_message"] = None
             else:
                 case["status"] = "failed"
                 case["error_message"] = original.get(
@@ -128,6 +148,8 @@ def observe(test_id, inception_point):
 def result(test_id):
     with cases_lock:
         case = cases.get(test_id, {})
+        if case:
+            complete_delayed_case_if_ready(case)
     status = case.get("status", "pending")
     if status == "passed":
         return jsonify({"passed": True, "testId": test_id, "errorMessage": None})

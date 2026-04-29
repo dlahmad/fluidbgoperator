@@ -79,6 +79,23 @@ flowchart LR
 - `app/`, `producer/`, `sink/`, and `verifier/` contain the small demo
   container images.
 
+## One-Time Setup
+
+For a local kind demo, run the setup helper. It builds and loads the example
+images, preloads the disposable RabbitMQ image, installs the operator and
+built-in plugins with Helm, and creates `fluidbg-demo`. It does not apply the
+BGD manifests, so you can apply the base and upgrade YAMLs manually at will.
+
+```bash
+./examples/sequential-bgd/setup.sh
+```
+
+The script accepts optional environment overrides:
+
+```bash
+KIND_CLUSTER=desktop IMAGE_TAG=dev OPERATOR_IMAGE_TAG=dev ./examples/sequential-bgd/setup.sh
+```
+
 ## Images
 
 The example application images are not published release artifacts. Build them
@@ -93,11 +110,21 @@ kind load docker-image fluidbg/fluidbg-example-order-app:dev --name "$KIND_CLUST
 kind load docker-image fluidbg/fluidbg-example-producer:dev --name "$KIND_CLUSTER"
 kind load docker-image fluidbg/fluidbg-example-sink:dev --name "$KIND_CLUSTER"
 kind load docker-image fluidbg/fluidbg-example-verifier:dev --name "$KIND_CLUSTER"
+
+KIND_ARCH="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')"
+tmpdir="$(mktemp -d)"
+printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
+docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4.2-management-alpine "$tmpdir"
+kind load docker-image rabbitmq:4.2-management-alpine --name "$KIND_CLUSTER"
+rm -rf "$tmpdir"
 ```
 
 The operator and built-in plugin images must also be available in the cluster.
 For local development, build/load them with the repository scripts. For a
 published release, use the GHCR defaults from the Helm chart.
+The RabbitMQ step deliberately loads a single-platform image into kind; this
+avoids kind pulling a multi-architecture image index from Docker Hub during the
+demo run.
 
 This demo uses local RabbitMQ credentials because it creates a disposable broker
 in the demo namespace. Credentials are plugin installation/runtime config, not
@@ -220,4 +247,11 @@ changes do not restart the inceptor pod.
 
 Promotion is progressive: candidate traffic starts at 10%, moves to 50%, then
 to 100%. Every step requires a success rate of `1.0` for observed candidate
-cases before the next percentage is applied.
+cases before the next percentage is applied. The step thresholds are cumulative
+finalized candidate sample counts, not per-step deltas. With the demo settings
+`3`, `8`, `12`, the rollout advances at 3 total finalized candidate cases, then
+8 total, then promotes at 12 total. Because the first two stages route only 10%
+and 50% of input messages to the candidate, the producer usually emits more
+than 12 messages before promotion. Pending cases do not block the next step
+once the finalized sample passes, but the final drain keeps verifier resources
+alive until every already-registered case has passed, failed, or timed out.

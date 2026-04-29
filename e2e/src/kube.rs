@@ -363,6 +363,12 @@ impl Kube {
                 .ok()
                 .flatten()
                 .is_some(),
+            "namespace" => Api::<Namespace>::all(self.client.clone())
+                .get_opt(name)
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
             _ => false,
         }
     }
@@ -514,6 +520,9 @@ impl Kube {
                     name,
                 )
                 .await
+            }
+            "namespace" => {
+                delete_if_exists(&Api::<Namespace>::all(self.client.clone()), name).await
             }
             other => bail!("unsupported delete resource {other}"),
         }

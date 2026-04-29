@@ -33,6 +33,23 @@ service that would already exist in a real system: it consumes the stable
 separate operator-created test container that only queries the sink API to
 decide whether candidate traffic is safe to promote.
 
+## One-Time Setup
+
+For a local kind demo, run the setup helper. It builds and loads the example
+images, preloads the disposable RabbitMQ image, installs the operator and
+built-in plugins with Helm, and creates `fluidbg-demo`. It does not apply the
+BGD manifests, so you can apply the base and upgrade YAMLs manually at will.
+
+```sh
+./examples/sequential-bgd/setup.sh
+```
+
+The script accepts optional environment overrides:
+
+```sh
+KIND_CLUSTER=desktop IMAGE_TAG=dev OPERATOR_IMAGE_TAG=dev ./examples/sequential-bgd/setup.sh
+```
+
 ## Topology
 
 ```mermaid
@@ -110,10 +127,24 @@ broker in `fluidbg-demo`. They are provided to the plugin installation, not to
 the BGD. The chart renders local values into Secrets first and injects them via
 `secretKeyRef`; production installs should reference existing Secrets instead.
 
+If you run the demo on kind, preload the disposable RabbitMQ infrastructure
+image as a single-platform local image before applying `01-base.yaml`. This
+keeps the demo independent from Docker Hub pulls inside the kind node:
+
+```sh
+KIND_CLUSTER="$(kind get clusters | head -n 1)"
+KIND_ARCH="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')"
+tmpdir="$(mktemp -d)"
+printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
+docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4.2-management-alpine "$tmpdir"
+kind load docker-image rabbitmq:4.2-management-alpine --name "$KIND_CLUSTER"
+rm -rf "$tmpdir"
+```
+
 ## Run
 
-Install the operator chart into the system namespace and register built-in
-plugins in the demo namespace:
+If you did not use `setup.sh`, install the operator chart into the system
+namespace and register built-in plugins in the demo namespace:
 
 ```sh
 kubectl create namespace fluidbg-demo --dry-run=client -o yaml | kubectl apply -f -
@@ -208,14 +239,21 @@ cases only for candidate-routed messages, while current-routed messages keep
 flowing through the current app and still end up in the same downstream sink.
 The promotion strategy is progressive: every step requires a success rate of
 `1.0` for observed candidate cases before the next traffic percentage is
-applied.
+applied. These thresholds use cumulative finalized candidate sample counts, not
+per-step deltas. With the demo settings `3`, `8`, `12`, the rollout advances at
+3 total finalized candidate cases, then 8 total, then promotes at 12 total.
+Because the first two stages route only 10% and 50% of input messages to the
+candidate, the producer usually emits more than 12 messages before promotion.
+New pending cases do not make the rollout chase a moving tail of producer
+traffic, but final cleanup waits until every already-registered case has passed,
+failed, or timed out.
 
 The `trafficPercent` value is the candidate-side percentage. The RabbitMQ
 splitter hashes the message body and routes it to the candidate/blue queue when
 the hash falls into the configured percentage bucket. This is deterministic per
 message body, not a pod restart and not a random coin flip per poll. In this
 demo the operator starts at 10%, advances to 50%, and finally to 100% after the
-candidate cases observed at each step pass.
+cumulative candidate sample threshold for each step passes.
 
 ## Cleanup
 

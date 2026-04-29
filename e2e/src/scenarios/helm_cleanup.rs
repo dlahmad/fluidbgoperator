@@ -91,6 +91,9 @@ async fn cleanup_blue_green_deployments_created_by_suite(
             )
             .await?;
     }
+    if !harness.kube.exists("namespace", &cfg.namespace, "").await {
+        return Ok(());
+    }
     harness
         .kube
         .wait_no_inception_resources(&cfg.namespace)

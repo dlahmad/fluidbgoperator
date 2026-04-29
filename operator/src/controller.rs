@@ -190,6 +190,21 @@ async fn reconcile(
     let Some(_local_lock) = try_acquire_local_reconcile_lock(&bgd, &ctx) else {
         return Ok(Action::requeue(std::time::Duration::from_secs(1)));
     };
+    if bgd.metadata.deletion_timestamp.is_some() {
+        let Some(name) = name else {
+            return Ok(Action::await_change());
+        };
+        let api: Api<BlueGreenDeployment> = Api::namespaced(client, &reconcile_namespace);
+        let latest = match api.get(&name).await {
+            Ok(latest) => latest,
+            Err(kube::Error::Api(error)) if error.code == 404 => {
+                return Ok(Action::await_change());
+            }
+            Err(error) => return Err(ReconcileError::K8s(error)),
+        };
+        cleanup_deleted_bgd(Arc::new(latest), ctx).await?;
+        return Ok(Action::await_change());
+    }
     match run_with_bgd_lease(
         bgd.as_ref(),
         client.clone(),
@@ -283,7 +298,7 @@ async fn reconcile_locked(
         .unwrap_or(BGDPhase::Pending);
 
     if bgd.metadata.deletion_timestamp.is_some() {
-        cleanup_deleted_bgd(&bgd, &ctx, &name, &namespace).await?;
+        cleanup_deleted_bgd(bgd, ctx).await?;
         return Ok(Action::await_change());
     }
 
@@ -460,7 +475,8 @@ async fn reconcile_locked(
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Draining => {
-            reconcile_draining(&bgd, &client, &namespace, &ctx.auth).await?;
+            reconcile_draining(&bgd, &client, &namespace, &ctx.auth, &ctx.store, &state_key)
+                .await?;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Completed | BGDPhase::RolledBack => {
@@ -482,18 +498,28 @@ async fn reconcile_locked(
 }
 
 async fn cleanup_deleted_bgd(
-    bgd: &BlueGreenDeployment,
-    ctx: &Arc<Ctx>,
-    name: &str,
-    namespace: &str,
+    bgd: Arc<BlueGreenDeployment>,
+    ctx: Arc<Ctx>,
 ) -> std::result::Result<(), ReconcileError> {
+    let name = bgd
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+    let namespace = bgd.namespace().ok_or_else(|| {
+        ReconcileError::Store(format!(
+            "BlueGreenDeployment '{}' is missing metadata.namespace",
+            name
+        ))
+    })?;
     info!("cleaning deleted BlueGreenDeployment '{}'", name);
-    cleanup_inception_resources(bgd, &ctx.client, namespace).await?;
-    cleanup_test_resources(bgd, &ctx.client, namespace).await?;
-    delete_rollout_spec_snapshot(bgd, &ctx.client, namespace).await?;
+    cleanup_inception_resources(&bgd, &ctx.client, &namespace).await?;
+    cleanup_test_resources(&bgd, &ctx.client, &namespace).await?;
+    delete_rollout_spec_snapshot(&bgd, &ctx.client, &namespace).await?;
     let removed = ctx
         .store
-        .cleanup_blue_green(&blue_green_state_key(namespace, name))
+        .cleanup_blue_green(&blue_green_state_key(&namespace, &name))
         .await
         .map_err(|e| ReconcileError::Store(e.to_string()))?;
     if removed > 0 {
@@ -502,7 +528,7 @@ async fn cleanup_deleted_bgd(
             removed, name
         );
     }
-    remove_finalizer(bgd, &ctx.client, namespace).await?;
+    remove_finalizer(&bgd, &ctx.client, &namespace).await?;
     Ok(())
 }
 

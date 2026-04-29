@@ -6,19 +6,25 @@ use super::super::plugin_lifecycle::{
     invoke_plugin_manager_lifecycle,
 };
 use super::super::resources::{cleanup_inception_resources, cleanup_test_resources};
-use super::super::status::{update_inception_point_drain_statuses, update_status_phase};
+use super::super::status::{
+    update_inception_point_drain_statuses, update_status_counts, update_status_phase,
+};
 use super::super::{AuthConfig, ReconcileError};
 use crate::crd::blue_green::{
     ActiveRolloutUpdatePolicy, BGDPhase, BlueGreenDeployment, InceptionPointDrainPhase,
     InceptionPointDrainStatus,
 };
 use crate::crd::inception_plugin::InceptionPlugin;
+use crate::state_store::StateStore;
+use std::sync::Arc;
 
 pub(in crate::controller) async fn reconcile_draining(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
     namespace: &str,
     auth: &AuthConfig,
+    store: &Arc<dyn StateStore>,
+    state_key: &str,
 ) -> std::result::Result<(), ReconcileError> {
     let drain_started_at = bgd
         .status
@@ -116,7 +122,41 @@ pub(in crate::controller) async fn reconcile_draining(
         return Ok(());
     }
 
-    finalize_draining(bgd, client, namespace, auth).await
+    let counts = store
+        .counts(state_key)
+        .await
+        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+    let latest_failure_message = store
+        .latest_failure_message(state_key)
+        .await
+        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+    let finalized = counts.passed + counts.failed + counts.timed_out;
+    let success_rate = if finalized > 0 {
+        counts.passed as f64 / finalized as f64
+    } else {
+        0.0
+    };
+    update_status_counts(
+        bgd,
+        client,
+        namespace,
+        &counts,
+        success_rate,
+        latest_failure_message,
+    )
+    .await;
+    if counts.pending > 0 {
+        return Ok(());
+    }
+
+    finalize_draining(
+        bgd,
+        client,
+        namespace,
+        auth,
+        counts.failed > 0 || counts.timed_out > 0,
+    )
+    .await
 }
 
 async fn finalize_draining(
@@ -124,6 +164,7 @@ async fn finalize_draining(
     client: &kube::Client,
     namespace: &str,
     auth: &AuthConfig,
+    terminal_counts_have_failure: bool,
 ) -> std::result::Result<(), ReconcileError> {
     let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
     for ip in &bgd.spec.inception_points {
@@ -153,20 +194,7 @@ async fn finalize_draining(
     cleanup_inception_resources(bgd, client, namespace).await?;
     cleanup_test_resources(bgd, client, namespace).await?;
 
-    let final_phase = if force_replace_interrupted_rollout(bgd)
-        || bgd
-            .status
-            .as_ref()
-            .and_then(|status| status.test_cases_failed)
-            .unwrap_or_default()
-            > 0
-        || bgd
-            .status
-            .as_ref()
-            .and_then(|status| status.test_cases_timed_out)
-            .unwrap_or_default()
-            > 0
-    {
+    let final_phase = if force_replace_interrupted_rollout(bgd) || terminal_counts_have_failure {
         BGDPhase::RolledBack
     } else {
         BGDPhase::Completed

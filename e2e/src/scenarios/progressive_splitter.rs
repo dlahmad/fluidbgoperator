@@ -74,15 +74,19 @@ pub async fn progressive_splitter_promotion(
         .first_pod_name_by_selector(&cfg.namespace, &format!("app={input_plugin}"))
         .await?;
 
-    let target_published = 120;
     let mut published = 0;
     let mut live_shift_verified = false;
+    let mut delayed_case_published = false;
+    let mut drain_saw_pending = false;
     for _ in 1..=180 {
         let status_json = harness
             .kube
             .bgd_json("order-processor-progressive-upgrade", &cfg.namespace)
             .await?;
         let status = bgd_status(&status_json);
+        if status.phase == "Draining" && status.test_cases_pending > 0 {
+            drain_saw_pending = true;
+        }
         if status.current_traffic_percent == 100
             && !live_shift_verified
             && status.phase == "Observing"
@@ -97,7 +101,11 @@ pub async fn progressive_splitter_promotion(
                 );
             }
             live_shift_verified = true;
-            while published < target_published {
+            published += 1;
+            publish_progressive_message_with_delay(harness, published, 20).await?;
+            delayed_case_published = true;
+            let live_shift_target = published + 6;
+            while published < live_shift_target {
                 published += 1;
                 publish_progressive_message(harness, published).await?;
             }
@@ -123,11 +131,11 @@ pub async fn progressive_splitter_promotion(
     if status.phase != "Completed" {
         bail!("expected progressive BGD Completed, got {}", status.phase);
     }
-    if status.test_cases_observed >= target_published {
-        bail!(
-            "expected green-routed progressive messages to be skipped; observed={} published={target_published}",
-            status.test_cases_observed
-        );
+    if !delayed_case_published {
+        bail!("expected progressive scenario to publish a delayed verification case");
+    }
+    if !drain_saw_pending {
+        bail!("expected progressive drain to wait while a delayed case was pending");
     }
     if status.test_cases_pending != 0 {
         bail!(
@@ -177,12 +185,25 @@ pub async fn progressive_splitter_promotion(
 }
 
 async fn publish_progressive_message(harness: &mut E2eHarness, index: u64) -> Result<()> {
+    publish_progressive_message_with_delay(harness, index, 0).await
+}
+
+async fn publish_progressive_message_with_delay(
+    harness: &mut E2eHarness,
+    index: u64,
+    verify_delay_seconds: u64,
+) -> Result<()> {
+    let delay_field = if verify_delay_seconds > 0 {
+        format!(r#","verifyDelaySeconds":{verify_delay_seconds}"#)
+    } else {
+        String::new()
+    };
     harness
         .rabbitmq
         .publish(
             "orders",
             &format!(
-                r#"{{"orderId":"progressive-{index}","type":"progressive-order","action":"process"}}"#
+                r#"{{"orderId":"progressive-{index}","type":"progressive-order","action":"process"{delay_field}}}"#
             ),
         )
         .await

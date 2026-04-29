@@ -3,6 +3,7 @@ mod force_delete;
 mod force_replace;
 mod helm_cleanup;
 mod http_proxy;
+mod namespace_deletion;
 mod progressive_splitter;
 mod progressive_unsupported;
 mod rabbitmq_promotion;
@@ -36,5 +37,6 @@ pub async fn run_full_suite(harness: &mut E2eHarness) -> Result<()> {
     let force_replaced =
         force_replace::force_replace_drains_before_new_generation(harness, &http).await?;
     force_delete::force_deleted_bgd_is_cleaned_as_orphan(harness, &force_replaced).await?;
+    namespace_deletion::namespace_deletion_does_not_deadlock_bgd_finalizers(harness).await?;
     helm_cleanup::helm_uninstall_cleans_operator_resources(harness, E2E_BGDS).await
 }
