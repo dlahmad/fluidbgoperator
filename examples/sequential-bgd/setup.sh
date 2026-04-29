@@ -14,6 +14,13 @@ OPERATOR_IMAGE_TAG="${OPERATOR_IMAGE_TAG:-dev}"
 BUILD_EXAMPLE_IMAGES="${BUILD_EXAMPLE_IMAGES:-1}"
 BUILD_OPERATOR_IMAGES="${BUILD_OPERATOR_IMAGES:-1}"
 RABBITMQ_IMAGE="${RABBITMQ_IMAGE:-rabbitmq:4.2-management-alpine}"
+if [ -z "${OPERATOR_IMAGE_PULL_POLICY:-}" ]; then
+    if [ "$BUILD_OPERATOR_IMAGES" = "1" ] || [ "$OPERATOR_IMAGE_REGISTRY" != "ghcr.io/dlahmad" ]; then
+        OPERATOR_IMAGE_PULL_POLICY="Never"
+    else
+        OPERATOR_IMAGE_PULL_POLICY="IfNotPresent"
+    fi
+fi
 
 if [ -z "$KIND_CLUSTER" ]; then
     echo "No kind cluster found. Set KIND_CLUSTER or create a kind cluster first." >&2
@@ -30,6 +37,7 @@ echo "  system namespace:  $SYSTEM_NAMESPACE"
 echo "  platform:          $PLATFORM"
 echo "  example images:    $IMAGE_REGISTRY/*:$IMAGE_TAG"
 echo "  operator images:   $OPERATOR_IMAGE_REGISTRY/*:$OPERATOR_IMAGE_TAG"
+echo "  pull policy:       $OPERATOR_IMAGE_PULL_POLICY"
 
 if [ "$BUILD_EXAMPLE_IMAGES" = "1" ]; then
     "$ROOT_DIR/scripts/build-example-images.sh" --registry "$IMAGE_REGISTRY" --tag "$IMAGE_TAG"
@@ -72,6 +80,11 @@ helm_args=(
     --namespace "$SYSTEM_NAMESPACE"
     --create-namespace
     --set "global.imageTag=$OPERATOR_IMAGE_TAG"
+    --set "operator.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-operator"
+    --set "operator.image.pullPolicy=$OPERATOR_IMAGE_PULL_POLICY"
+    --set "builtinPlugins.http.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-http"
+    --set "builtinPlugins.rabbitmq.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-rabbitmq"
+    --set "builtinPlugins.azureServiceBus.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus"
     --set operator.auth.createSigningSecret=true
     --set operator.auth.signingSecretName=fluidbg-operator-auth
     --set operator.auth.signingSecretValue=dev-signing-key-change-me
@@ -83,16 +96,6 @@ helm_args=(
     --set builtinPlugins.rabbitmq.manager.managementVhost=/
     --set "builtinPlugins.namespaces[0]=$NAMESPACE"
 )
-
-if [ "$BUILD_OPERATOR_IMAGES" = "1" ]; then
-    helm_args+=(
-        --set "operator.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-operator"
-        --set operator.image.pullPolicy=Never
-        --set "builtinPlugins.http.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-http"
-        --set "builtinPlugins.rabbitmq.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-rabbitmq"
-        --set "builtinPlugins.azureServiceBus.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus"
-    )
-fi
 
 helm "${helm_args[@]}"
 
