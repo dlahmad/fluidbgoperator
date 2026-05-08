@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn auth_claims_must_match_testcase_registration_identity() {
-        let claims = PluginAuthClaims::new("app", "orders", "incoming", "rabbitmq");
+        let claims = PluginAuthClaims::new("app", "orders", "incoming", "managed");
 
         assert!(claims_match_request(
             &claims,

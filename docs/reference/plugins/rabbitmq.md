@@ -18,8 +18,9 @@ title: RabbitMQ Plugin
 RabbitMQ uses split plugin mode when `InceptionPlugin.spec.manager` is enabled.
 The manager runs in the operator namespace and owns queue create/delete
 permissions. Per-inception inceptors run in the application namespace and
-receive only rewritten temporary queue names, a per-inception token, and scoped
-RabbitMQ runtime credentials returned by authenticated manager prepare.
+receive only the manager's effective inceptor config, a per-inception token,
+and scoped RabbitMQ runtime credentials returned by authenticated manager
+prepare. The operator treats RabbitMQ config as opaque plugin data.
 
 ```mermaid
 flowchart TD
@@ -97,6 +98,11 @@ regular temporary queues.
 | `observer` | Applies `observer.match`, extracts `testId`, posts `observer.notifyPath`, then registers operator cases for `blue`, `both`, and `unknown` routes. | None. |
 | `writer` | Exposes `/write` and publishes the supplied JSON payload to `writer.targetQueue`. | Test-container env injection can point callers to the writer service. |
 | `consumer` | Consumes from `consumer.inputQueue` for plugin-driven read flows. | None. |
+
+`duplicator`, `splitter`, `combiner`, and `consumer` are mutually exclusive
+movement roles for one RabbitMQ inceptor. `observer` and `writer` are additive:
+for example `combiner, observer, writer` still runs the combiner worker and also
+exposes observer callbacks and `/write`.
 
 Progressive shifting uses `POST /traffic`; `FLUIDBG_TRAFFIC_PERCENT` is only the
 startup default. Normal step changes do not restart the plugin pod.

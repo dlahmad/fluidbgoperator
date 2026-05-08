@@ -67,6 +67,11 @@ the test container created for the rollout.
 | `mock` | For matched requests, can return `200 mocked by fluidbg` instead of forwarding upstream. | None. |
 | `writer` | Exposes `/write` and forwards verifier-initiated HTTP calls to `targetUrl` or fallback endpoint. | Patches `writeEnvVar` for the verifier container. |
 
+HTTP roles are additive. The fallback proxy is active only when `splitter`,
+`observer`, or `mock` is selected. `/write` is active only when `writer` is
+selected. Selecting `writer` does not disable proxy/observer behavior, and
+selecting proxy roles does not expose `/write`.
+
 Progressive shifting uses `POST /traffic`; `FLUIDBG_TRAFFIC_PERCENT` is only the
 startup default. Normal step changes do not restart the plugin pod.
 

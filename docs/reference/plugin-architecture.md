@@ -96,6 +96,9 @@ Manager rules:
   Queue-style names include namespace, BGD name, BGD UID, inception point, role,
   and logical purpose so recreated BGDs and concurrent BGDs cannot collide.
 - Never trust BGD-provided temporary queue names for create/delete authority.
+- Return the effective inceptor config from manager prepare when manager-side
+  derivation changes runtime config. The operator must not derive or interpret
+  queue names.
 - Return inceptor runtime environment only from authenticated manager prepare.
   The operator injects those values before creating the inceptor pod.
 - Implement `syncPath` so the operator can periodically send the active

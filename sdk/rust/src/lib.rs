@@ -5,6 +5,7 @@ mod http;
 mod models;
 mod notify;
 mod resources;
+mod roles;
 mod routing;
 mod runtime;
 mod version;
@@ -31,6 +32,7 @@ pub use resources::{
     derived_temp_queue_name_with_uid, derived_temp_queue_name_with_uid_and_identifier,
     temporary_queue_identifier_token,
 };
+pub use roles::{QueueWorkerRole, queue_worker_role};
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};

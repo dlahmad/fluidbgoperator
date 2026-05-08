@@ -110,9 +110,10 @@ inceptionPoints:
 ```
 
 For queue-style built-in plugins, user-supplied temporary queue fields describe
-intent only. The operator and plugin manager rewrite temporary queue names to
-derived names before any create/delete operation or inceptor assignment. Names
-use only route/purpose plus a stable hash, for example
+intent only. The plugin manager rewrites temporary queue names to derived names
+before any create/delete operation or inceptor assignment, then returns the
+effective inceptor config to the operator as opaque plugin config. The operator
+does not know or derive queue names. Names use only route/purpose plus a stable hash, for example
 `fluidbg-green-in-<hash>`, `fluidbg-blue-in-<hash>`,
 `fluidbg-green-out-<hash>`, and `fluidbg-blue-out-<hash>`. The hash input
 includes namespace, BGD name, BGD UID, inception point, role, and logical
@@ -123,6 +124,20 @@ using letters, digits, `.`, `_`, or `-`. The SDK converts it to a fixed
 `fluidbg-green-in-incomiada9-<hash>`. Generated temporary queue names remain
 bounded by the plugin queue-name limit while still allowing operators to
 identify which base queue or inception point a temporary queue belongs to.
+
+Role composition is plugin-defined. For the built-in queue plugins,
+`duplicator`, `splitter`, `combiner`, and `consumer` are mutually exclusive
+movement roles because each one owns a different polling loop and routing
+contract. `observer` and `writer` are additive: they can be selected together
+with a movement role without disabling that worker. The HTTP plugin has no
+background movement worker, so `splitter`, `observer`, `mock`, and `writer` can
+be combined when the config makes sense.
+
+Plugins express unsupported combinations through
+`InceptionPlugin.spec.roleConstraints.mutuallyExclusive`. The operator validates
+those constraints before calling managers or creating inceptors. Violations set
+the BGD to `phase: Invalid` with a `ReconcileFailed` condition whose
+`reason` is `InvalidSpec`.
 
 ## Inceptor Discovery
 

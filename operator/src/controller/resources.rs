@@ -429,7 +429,7 @@ pub(super) async fn sign_inception_auth_token(
         plugin.metadata.name.as_deref().unwrap_or(""),
     );
     fluidbg_plugin_sdk::sign_plugin_auth_token(&claims, &signing_key)
-        .map_err(|err| ReconcileError::Store(format!("failed to sign plugin auth token: {err}")))
+        .map_err(|err| ReconcileError::Auth(format!("failed to sign plugin auth token: {err}")))
 }
 
 pub(super) async fn sign_manager_sync_auth_token(
@@ -451,7 +451,7 @@ pub(super) async fn sign_manager_sync_auth_token(
         plugin.metadata.name.as_deref().unwrap_or(""),
     );
     fluidbg_plugin_sdk::sign_plugin_auth_token(&claims, &signing_key)
-        .map_err(|err| ReconcileError::Store(format!("failed to sign manager sync token: {err}")))
+        .map_err(|err| ReconcileError::Auth(format!("failed to sign manager sync token: {err}")))
 }
 
 pub(super) async fn validate_inception_auth_token(
@@ -1171,8 +1171,8 @@ mod tests {
                                 name: "verifier".to_string(),
                                 image: Some("verifier:dev".to_string()),
                                 env: Some(vec![EnvVar {
-                                    name: "AMQP_URL".to_string(),
-                                    value: Some("amqp://rabbitmq".to_string()),
+                                    name: "UPSTREAM_URL".to_string(),
+                                    value: Some("http://upstream".to_string()),
                                     ..Default::default()
                                 }]),
                                 readiness_probe: Some(Probe {
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(probe.path.as_deref(), Some("/health"));
         assert_eq!(
             pod_spec.containers[0].env.as_ref().unwrap()[0].name,
-            "AMQP_URL"
+            "UPSTREAM_URL"
         );
     }
 

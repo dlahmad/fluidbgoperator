@@ -115,6 +115,7 @@ pub struct ReconcileInceptionContext<'a> {
     pub blue_green_uid: &'a str,
     pub auth_token: &'a str,
     pub manager_inceptor_env: &'a [EnvVar],
+    pub manager_config: Option<&'a serde_json::Value>,
 }
 
 pub fn secured_inception_config(
@@ -122,23 +123,11 @@ pub fn secured_inception_config(
     ip: &InceptionPoint,
     context: &ReconcileInceptionContext<'_>,
 ) -> serde_json::Value {
-    let mut config = ip.config.clone();
-    if plugin.spec.field_namespaces.iter().any(|ns| ns == "queue")
-        || plugin
-            .spec
-            .field_namespaces
-            .iter()
-            .any(|ns| ns == "servicebus")
-    {
-        rewrite_queue_temp_names(
-            &mut config,
-            context.namespace,
-            context.blue_green_ref,
-            context.blue_green_uid,
-            &ip.name,
-        );
-    }
-    config
+    let _ = plugin;
+    context
+        .manager_config
+        .cloned()
+        .unwrap_or_else(|| ip.config.clone())
 }
 
 pub fn reconcile_inception_point(
@@ -146,10 +135,7 @@ pub fn reconcile_inception_point(
     ip: &InceptionPoint,
     context: ReconcileInceptionContext<'_>,
 ) -> Result<ReconciledResources, String> {
-    crate::validation::validate_roles(&plugin.spec.supported_roles, &ip.roles)?;
-
-    crate::plugins::schema::validate_config_against_schema(&ip.config, &plugin.spec.config_schema)
-        .map_err(|errs| format!("config validation failed: {:?}", errs))?;
+    validate_inception_point(plugin, ip)?;
 
     let config_name = inception_config_map_name(context.blue_green_ref, &ip.name);
     let role_str = ip
@@ -405,117 +391,20 @@ pub fn reconcile_inception_point(
     })
 }
 
-fn rewrite_queue_temp_names(
-    config: &mut serde_json::Value,
-    namespace: &str,
-    blue_green_ref: &str,
-    blue_green_uid: &str,
-    inception_point: &str,
-) {
-    let duplicator_identifier = temporary_queue_identifier(config, "duplicator");
-    let splitter_identifier = temporary_queue_identifier(config, "splitter");
-    let combiner_identifier = temporary_queue_identifier(config, "combiner");
-    set_nested_string(
-        config,
-        &["duplicator", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "duplicator",
-            "green-input",
-            duplicator_identifier.as_deref(),
-        ),
-    );
-    set_nested_string(
-        config,
-        &["duplicator", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "duplicator",
-            "blue-input",
-            duplicator_identifier.as_deref(),
-        ),
-    );
-    set_nested_string(
-        config,
-        &["splitter", "greenInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "splitter",
-            "green-input",
-            splitter_identifier.as_deref(),
-        ),
-    );
-    set_nested_string(
-        config,
-        &["splitter", "blueInputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "splitter",
-            "blue-input",
-            splitter_identifier.as_deref(),
-        ),
-    );
-    set_nested_string(
-        config,
-        &["combiner", "greenOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "combiner",
-            "green-output",
-            combiner_identifier.as_deref(),
-        ),
-    );
-    set_nested_string(
-        config,
-        &["combiner", "blueOutputQueue"],
-        fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-            namespace,
-            blue_green_ref,
-            blue_green_uid,
-            inception_point,
-            "combiner",
-            "blue-output",
-            combiner_identifier.as_deref(),
-        ),
-    );
-}
+pub fn validate_inception_point(
+    plugin: &InceptionPlugin,
+    ip: &InceptionPoint,
+) -> Result<(), String> {
+    crate::validation::validate_role_selection(
+        &plugin.spec.supported_roles,
+        &ip.roles,
+        plugin.spec.role_constraints.as_ref(),
+    )?;
 
-fn temporary_queue_identifier(config: &serde_json::Value, role: &str) -> Option<String> {
-    config
-        .get(role)
-        .and_then(|role| role.get("temporaryQueueIdentifier"))
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
-}
+    crate::plugins::schema::validate_config_against_schema(&ip.config, &plugin.spec.config_schema)
+        .map_err(|errs| format!("config validation failed: {:?}", errs))?;
 
-fn set_nested_string(config: &mut serde_json::Value, path: &[&str], value: String) {
-    let mut current = config;
-    for segment in &path[..path.len().saturating_sub(1)] {
-        let Some(next) = current.get_mut(*segment) else {
-            return;
-        };
-        current = next;
-    }
-    if let Some(last) = path.last()
-        && let Some(obj) = current.as_object_mut()
-    {
-        obj.insert((*last).to_string(), serde_json::Value::String(value));
-    }
+    Ok(())
 }
 
 fn ensure_config_mount(container: &mut Container) {
@@ -656,8 +545,8 @@ fn render_env_injection_set(
 #[cfg(test)]
 mod tests {
     use crate::crd::inception_plugin::{
-        ContainerPort, InceptionPlugin, InceptionPluginSpec, Injects, PluginFeatures,
-        PluginManager, PluginRole, Topology, VolumeMount,
+        ContainerPort, InceptionPlugin, InceptionPluginSpec, Injects, MutuallyExclusiveRoleGroup,
+        PluginFeatures, PluginManager, PluginRole, PluginRoleConstraints, Topology, VolumeMount,
     };
 
     use super::*;
@@ -669,6 +558,7 @@ mod tests {
                 description: "HTTP transport plugin".to_string(),
                 image: "fluidbg/fbg-plugin-http:latest".to_string(),
                 supported_roles: vec![PluginRole::Observer, PluginRole::Mock, PluginRole::Writer],
+                role_constraints: None,
                 topology: Topology::Standalone,
                 field_namespaces: vec!["http".to_string()],
                 config_schema: serde_json::json!({
@@ -722,12 +612,12 @@ mod tests {
         )
     }
 
-    fn make_rabbitmq_plugin() -> InceptionPlugin {
+    fn make_managed_transport_plugin() -> InceptionPlugin {
         InceptionPlugin::new(
-            "rabbitmq",
+            "managed-transport",
             InceptionPluginSpec {
-                description: "RabbitMQ transport plugin".to_string(),
-                image: "fluidbg/fbg-plugin-rabbitmq:latest".to_string(),
+                description: "Managed transport plugin".to_string(),
+                image: "fluidbg/managed-transport:latest".to_string(),
                 supported_roles: vec![
                     PluginRole::Duplicator,
                     PluginRole::Splitter,
@@ -736,27 +626,36 @@ mod tests {
                     PluginRole::Consumer,
                     PluginRole::Combiner,
                 ],
+                role_constraints: Some(PluginRoleConstraints {
+                    mutually_exclusive: vec![MutuallyExclusiveRoleGroup {
+                        roles: vec![
+                            PluginRole::Duplicator,
+                            PluginRole::Splitter,
+                            PluginRole::Combiner,
+                            PluginRole::Consumer,
+                        ],
+                        reason: Some("Only one movement role can own the test worker.".to_string()),
+                    }],
+                }),
                 topology: Topology::Standalone,
-                field_namespaces: vec!["queue".to_string()],
+                field_namespaces: vec!["event".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "duplicator": {
                             "type": "object",
                             "properties": {
-                                "inputQueue": { "type": "string" },
-                                "greenInputQueue": { "type": "string" },
-                                "blueInputQueue": { "type": "string" },
-                                "temporaryQueueIdentifier": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+                                "source": { "type": "string" },
+                                "greenTarget": { "type": "string" },
+                                "blueTarget": { "type": "string" }
                             }
                         },
                         "splitter": {
                             "type": "object",
                             "properties": {
-                                "inputQueue": { "type": "string" },
-                                "greenInputQueue": { "type": "string" },
-                                "blueInputQueue": { "type": "string" },
-                                "temporaryQueueIdentifier": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+                                "source": { "type": "string" },
+                                "greenTarget": { "type": "string" },
+                                "blueTarget": { "type": "string" }
                             }
                         },
                         "observer": { "type": "object" },
@@ -791,6 +690,7 @@ mod tests {
                 description: "A test plugin".to_string(),
                 image: "example.com/fake-plugin:1".to_string(),
                 supported_roles: vec![PluginRole::Observer],
+                role_constraints: None,
                 topology: Topology::Standalone,
                 field_namespaces: vec!["custom".to_string()],
                 config_schema: serde_json::json!({
@@ -849,6 +749,7 @@ mod tests {
             blue_green_uid: "uid-123",
             auth_token: "signed-token",
             manager_inceptor_env: &[],
+            manager_config: None,
         }
     }
 
@@ -972,19 +873,19 @@ mod tests {
 
     #[test]
     fn standalone_produces_deployment_and_service() {
-        let plugin = make_rabbitmq_plugin();
+        let plugin = make_managed_transport_plugin();
         let ip = make_inception_point(
-            "incoming-orders",
+            "incoming-events",
             vec![PluginRole::Duplicator, PluginRole::Observer],
             serde_json::json!({
                 "duplicator": {
-                    "inputQueue": "orders",
-                    "greenInputQueue": "orders-green",
-                    "blueInputQueue": "orders-blue"
+                    "source": "orders",
+                    "greenTarget": "orders-green",
+                    "blueTarget": "orders-blue"
                 },
                 "observer": {
-                    "testId": {"field": "queue.body", "jsonPath": "$.orderId"},
-                    "match": [{"field": "queue.body", "jsonPath": "$.type", "matches": "^order$"}],
+                    "testId": {"field": "event.body", "jsonPath": "$.orderId"},
+                    "match": [{"field": "event.body", "jsonPath": "$.type", "matches": "^order$"}],
                     "notifyPath": "/trigger"
                 }
             }),
@@ -998,7 +899,7 @@ mod tests {
         let deploy = &resources.deployments[0];
         assert_eq!(
             deploy.metadata.name.as_deref(),
-            Some(inception_instance_base_name("order-processor-bg", "incoming-orders").as_str())
+            Some(inception_instance_base_name("order-processor-bg", "incoming-events").as_str())
         );
         assert_eq!(
             deploy
@@ -1025,7 +926,7 @@ mod tests {
                 .containers[0]
                 .image
                 .as_deref(),
-            Some("fluidbg/fbg-plugin-rabbitmq:latest")
+            Some("fluidbg/managed-transport:latest")
         );
         assert_eq!(
             deploy
@@ -1042,10 +943,10 @@ mod tests {
     }
 
     #[test]
-    fn queue_temp_names_are_derived_for_inceptors_and_manager_owned_infra() {
-        let mut plugin = make_rabbitmq_plugin();
+    fn manager_config_is_mounted_without_operator_transport_rewrites() {
+        let mut plugin = make_managed_transport_plugin();
         plugin.spec.manager = Some(PluginManager {
-            service_name: "fluidbg-rabbitmq-manager".to_string(),
+            service_name: "fluidbg-managed-transport-manager".to_string(),
             namespace: Some("fluidbg-system".to_string()),
             port: Some(9090),
             prepare_path: Some("/manager/prepare".to_string()),
@@ -1053,19 +954,33 @@ mod tests {
             sync_path: Some("/manager/sync".to_string()),
         });
         let ip = make_inception_point(
-            "incoming-orders",
+            "incoming-events",
             vec![PluginRole::Duplicator],
             serde_json::json!({
                 "duplicator": {
-                    "inputQueue": "orders",
-                    "greenInputQueue": "attacker-chosen-green",
-                    "blueInputQueue": "attacker-chosen-blue",
-                    "temporaryQueueIdentifier": "incoming-orders"
+                    "source": "orders",
+                    "greenTarget": "attacker-chosen-green",
+                    "blueTarget": "attacker-chosen-blue"
                 }
             }),
         );
+        let manager_config = serde_json::json!({
+            "duplicator": {
+                "source": "orders",
+                "greenTarget": "manager-derived-green",
+                "blueTarget": "manager-derived-blue"
+            }
+        });
 
-        let resources = reconcile_inception_point(&plugin, &ip, test_context()).unwrap();
+        let resources = reconcile_inception_point(
+            &plugin,
+            &ip,
+            ReconcileInceptionContext {
+                manager_config: Some(&manager_config),
+                ..test_context()
+            },
+        )
+        .unwrap();
         let config_yaml = resources.config_maps[0]
             .data
             .as_ref()
@@ -1075,32 +990,9 @@ mod tests {
         let config: serde_json::Value = serde_yaml::from_str(config_yaml).unwrap();
         let duplicator = config.get("duplicator").unwrap();
 
-        assert_ne!(
-            duplicator.get("greenInputQueue").unwrap().as_str(),
-            Some("attacker-chosen-green")
-        );
         assert_eq!(
-            duplicator.get("greenInputQueue").unwrap().as_str(),
-            Some(
-                fluidbg_plugin_sdk::derived_temp_queue_name_with_uid_and_identifier(
-                    "production",
-                    "order-processor-bg",
-                    "uid-123",
-                    "incoming-orders",
-                    "duplicator",
-                    "green-input",
-                    Some("incoming-orders")
-                )
-                .as_str()
-            )
-        );
-        assert!(
-            duplicator
-                .get("greenInputQueue")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .starts_with("fluidbg-green-in-incomiada9-")
+            duplicator.get("greenTarget").unwrap().as_str(),
+            Some("manager-derived-green")
         );
         assert_eq!(
             resources.deployments[0]
@@ -1150,14 +1042,14 @@ mod tests {
     }
 
     #[test]
-    fn queue_temp_names_are_inserted_when_user_omits_them() {
-        let plugin = make_rabbitmq_plugin();
+    fn operator_does_not_invent_transport_specific_config() {
+        let plugin = make_managed_transport_plugin();
         let ip = make_inception_point(
-            "incoming-orders",
+            "incoming-events",
             vec![PluginRole::Splitter],
             serde_json::json!({
                 "splitter": {
-                    "inputQueue": "orders"
+                    "source": "orders"
                 }
             }),
         );
@@ -1172,8 +1064,8 @@ mod tests {
         let config: serde_json::Value = serde_yaml::from_str(config_yaml).unwrap();
         let splitter = config.get("splitter").unwrap();
 
-        assert!(splitter.get("greenInputQueue").is_some());
-        assert!(splitter.get("blueInputQueue").is_some());
+        assert!(splitter.get("greenTarget").is_none());
+        assert!(splitter.get("blueTarget").is_none());
     }
 
     #[test]
@@ -1182,7 +1074,7 @@ mod tests {
         let ip = make_inception_point(
             "custom-point",
             vec![PluginRole::Observer],
-            serde_json::json!({"target": "custom-queue"}),
+            serde_json::json!({"target": "custom-target"}),
         );
         let resources = reconcile_inception_point(
             &plugin,
@@ -1197,6 +1089,7 @@ mod tests {
                 blue_green_uid: "uid-123",
                 auth_token: "signed-token",
                 manager_inceptor_env: &[],
+                manager_config: None,
             },
         )
         .unwrap();
@@ -1242,7 +1135,7 @@ mod tests {
         let ip = make_inception_point(
             "custom-point",
             vec![PluginRole::Observer],
-            serde_json::json!({"target": "custom-queue"}),
+            serde_json::json!({"target": "custom-target"}),
         );
 
         let resources = reconcile_inception_point(
@@ -1258,6 +1151,7 @@ mod tests {
                 blue_green_uid: "uid-123",
                 auth_token: "signed-token",
                 manager_inceptor_env: &[],
+                manager_config: None,
             },
         )
         .unwrap();
@@ -1322,10 +1216,35 @@ mod tests {
                     blue_green_uid: "uid-123",
                     auth_token: "signed-token",
                     manager_inceptor_env: &[],
+                    manager_config: None,
                 }
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn mutually_exclusive_role_combination_rejected_before_rendering() {
+        let plugin = make_managed_transport_plugin();
+        let ip = make_inception_point(
+            "bad-point",
+            vec![
+                PluginRole::Splitter,
+                PluginRole::Observer,
+                PluginRole::Writer,
+                PluginRole::Combiner,
+            ],
+            serde_json::json!({
+                "splitter": { "source": "input", "greenTarget": "green", "blueTarget": "blue" },
+                "combiner": {}
+            }),
+        );
+
+        let err = validate_inception_point(&plugin, &ip)
+            .expect_err("conflicting movement roles must be rejected");
+
+        assert!(err.contains("unsupported role combination"));
+        assert!(err.contains("splitter, combiner"));
     }
 
     #[test]
@@ -1341,8 +1260,9 @@ mod tests {
                 description: "Consumer".to_string(),
                 image: "test:v1".to_string(),
                 supported_roles: vec![PluginRole::Consumer],
+                role_constraints: None,
                 topology: Topology::Standalone,
-                field_namespaces: vec!["queue".to_string()],
+                field_namespaces: vec!["event".to_string()],
                 config_schema: serde_json::json!({"type": "object"}),
                 config_template: None,
                 inceptor: crate::crd::inception_plugin::PluginInceptor {
@@ -1370,6 +1290,7 @@ mod tests {
                     blue_green_uid: "uid-123",
                     auth_token: "signed-token",
                     manager_inceptor_env: &[],
+                    manager_config: None,
                 }
             )
             .is_ok()

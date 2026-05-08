@@ -147,6 +147,8 @@ pub struct PluginLifecycleResponse {
     pub assignments: Vec<PropertyAssignment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inceptor_env: Vec<InceptorEnvVar>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

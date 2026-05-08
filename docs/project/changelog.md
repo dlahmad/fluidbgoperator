@@ -4,6 +4,15 @@ title: Changelog
 
 # Changelog
 
+## 0.2.0 - 2026-05-08
+
+- Kept queue-specific temporary name derivation inside queue plugin managers.
+- Added manager-returned effective inceptor config to the plugin SDK contract.
+- Removed unused operator-side queue filter/selector helper modules.
+- Updated plugin architecture docs to state that the operator treats transport config as opaque plugin data.
+- Fixed queue plugin role composition so additive `observer` and `writer` roles no longer disable splitter, duplicator, combiner, or consumer workers.
+- Added plugin-declared role constraints and consistent BGD status diagnostics for invalid specs and reconcile failures.
+
 ## 0.1.8 - 2026-04-29
 
 - Added Rust plugin SDK and versioned OpenAPI plugin contract.

@@ -18,6 +18,16 @@ pub(crate) async fn proxy_handler(
     State(state): State<AppState>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
+    if !state.runtime.has_role(PluginRole::Splitter)
+        && !state.runtime.has_role(PluginRole::Observer)
+        && !state.runtime.has_role(PluginRole::Mock)
+    {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            "fluidbg http proxy role is not active".to_string(),
+        );
+    }
+
     let Some(_guard) =
         ActiveRequestGuard::try_new(state.mode.clone(), state.active_requests.clone())
     else {
@@ -145,6 +155,12 @@ pub(crate) async fn write_handler(
     if let Err(err) = authorize_operator_response(&state, &headers) {
         return err;
     }
+    if !state.runtime.has_role(PluginRole::Writer) {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            "fluidbg http writer role is not active".to_string(),
+        );
+    }
 
     let Some(_guard) =
         ActiveRequestGuard::try_new(state.mode.clone(), state.active_requests.clone())
@@ -269,6 +285,9 @@ pub(crate) async fn traffic_shift_handler(
     axum::Json(req): axum::Json<TrafficShiftRequest>,
 ) -> Result<axum::Json<TrafficShiftResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
+    if !state.runtime.has_role(PluginRole::Splitter) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     state
         .traffic_percent
         .store(req.traffic_percent.min(100) as usize, Ordering::SeqCst);

@@ -61,8 +61,8 @@ use resources::{
 };
 use status::{
     ensure_rollout_generation, reset_status_for_new_rollout, update_drain_started_at,
-    update_status_counts, update_status_phase, update_status_progress,
-    update_status_update_deferred,
+    update_status_counts, update_status_invalid, update_status_phase, update_status_progress,
+    update_status_reconcile_failure, update_status_update_deferred,
 };
 
 const BGD_FINALIZER: &str = "fluidbg.io/cleanup";
@@ -84,10 +84,50 @@ pub struct AuthConfig {
 
 #[derive(Debug, Error)]
 pub(super) enum ReconcileError {
-    #[error("store error: {0}")]
+    #[error("invalid spec: {0}")]
+    InvalidSpec(String),
+    #[error("controller error: {0}")]
     Store(String),
+    #[error("state store error: {0}")]
+    StateStore(String),
+    #[error("lease error: {0}")]
+    Lease(String),
+    #[error("plugin manager error: {0}")]
+    PluginManager(String),
+    #[error("plugin inceptor error: {0}")]
+    PluginInceptor(String),
+    #[error("plugin drain status error: {0}")]
+    PluginDrainStatus(String),
+    #[error("plugin traffic shift error: {0}")]
+    PluginTrafficShift(String),
+    #[error("auth configuration error: {0}")]
+    Auth(String),
+    #[error("resource error: {0}")]
+    Resource(String),
     #[error("k8s error: {0}")]
     K8s(#[from] kube::Error),
+}
+
+impl ReconcileError {
+    fn diagnostic_reason(&self) -> &'static str {
+        match self {
+            Self::InvalidSpec(_) => "InvalidSpec",
+            Self::Store(_) => "ControllerError",
+            Self::StateStore(_) => "StateStoreError",
+            Self::Lease(_) => "LeaseError",
+            Self::PluginManager(_) => "PluginManagerError",
+            Self::PluginInceptor(_) => "PluginInceptorError",
+            Self::PluginDrainStatus(_) => "PluginDrainStatusError",
+            Self::PluginTrafficShift(_) => "PluginTrafficShiftError",
+            Self::Auth(_) => "AuthError",
+            Self::Resource(_) => "ResourceError",
+            Self::K8s(_) => "KubernetesApiError",
+        }
+    }
+
+    fn is_terminal_for_generation(&self) -> bool {
+        matches!(self, Self::InvalidSpec(_))
+    }
 }
 
 pub async fn run_controller(client: kube::Client, auth: AuthConfig, store: Arc<dyn StateStore>) {
@@ -187,6 +227,9 @@ async fn reconcile(
     let client = ctx.client.clone();
     let name = bgd.metadata.name.clone();
     let lease = ctx.lease.clone();
+    let status_client = client.clone();
+    let status_namespace = namespace.clone();
+    let status_bgd = bgd.clone();
     let Some(_local_lock) = try_acquire_local_reconcile_lock(&bgd, &ctx) else {
         return Ok(Action::requeue(std::time::Duration::from_secs(1)));
     };
@@ -194,18 +237,25 @@ async fn reconcile(
         let Some(name) = name else {
             return Ok(Action::await_change());
         };
-        let api: Api<BlueGreenDeployment> = Api::namespaced(client, &reconcile_namespace);
+        let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), &reconcile_namespace);
         let latest = match api.get(&name).await {
             Ok(latest) => latest,
             Err(kube::Error::Api(error)) if error.code == 404 => {
                 return Ok(Action::await_change());
             }
-            Err(error) => return Err(ReconcileError::K8s(error)),
+            Err(error) => {
+                let error = ReconcileError::K8s(error);
+                publish_reconcile_error_status(&bgd, &client, &reconcile_namespace, &error).await;
+                return Err(error);
+            }
         };
-        cleanup_deleted_bgd(Arc::new(latest), ctx).await?;
+        if let Err(error) = cleanup_deleted_bgd(Arc::new(latest), ctx).await {
+            publish_reconcile_error_status(&bgd, &client, &reconcile_namespace, &error).await;
+            return Err(error);
+        }
         return Ok(Action::await_change());
     }
-    match run_with_bgd_lease(
+    let reconcile_result = run_with_bgd_lease(
         bgd.as_ref(),
         client.clone(),
         &namespace,
@@ -225,10 +275,37 @@ async fn reconcile(
             reconcile_locked(Arc::new(latest), ctx).await
         },
     )
-    .await?
-    {
-        Some(action) => Ok(action),
-        None => Ok(Action::requeue(std::time::Duration::from_secs(2))),
+    .await;
+
+    match reconcile_result {
+        Ok(Some(action)) => Ok(action),
+        Ok(None) => Ok(Action::requeue(std::time::Duration::from_secs(2))),
+        Err(error) => {
+            publish_reconcile_error_status(&status_bgd, &status_client, &status_namespace, &error)
+                .await;
+            Err(error)
+        }
+    }
+}
+
+async fn publish_reconcile_error_status(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    error: &ReconcileError,
+) {
+    let message = error.to_string();
+    if error.is_terminal_for_generation() {
+        update_status_invalid(bgd, client, namespace, error.diagnostic_reason(), &message).await;
+    } else {
+        update_status_reconcile_failure(
+            bgd,
+            client,
+            namespace,
+            error.diagnostic_reason(),
+            &message,
+        )
+        .await;
     }
 }
 
@@ -283,7 +360,7 @@ async fn reconcile_locked(
         .unwrap_or("unknown")
         .to_string();
     let namespace = bgd.namespace().ok_or_else(|| {
-        ReconcileError::Store(format!(
+        ReconcileError::Resource(format!(
             "BlueGreenDeployment '{}' is missing metadata.namespace",
             name
         ))
@@ -319,7 +396,7 @@ async fn reconcile_locked(
             .store
             .cleanup_blue_green(&state_key)
             .await
-            .map_err(|e| ReconcileError::Store(e.to_string()))?;
+            .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
         if removed > 0 {
             info!(
                 "cleaned {} store records for restarted BGD '{}'",
@@ -383,22 +460,22 @@ async fn reconcile_locked(
                 .store
                 .counts(&state_key)
                 .await
-                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+                .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
             let data_counts = ctx
                 .store
                 .counts_for_mode(&state_key, VerificationMode::Data)
                 .await
-                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+                .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
             let custom_counts = ctx
                 .store
                 .counts_for_mode(&state_key, VerificationMode::Custom)
                 .await
-                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+                .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
             let latest_failure_message = ctx
                 .store
                 .latest_failure_message(&state_key)
                 .await
-                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+                .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
 
             let total = counts.passed + counts.failed + counts.timed_out;
             let success_rate = if total > 0 {
@@ -479,7 +556,7 @@ async fn reconcile_locked(
                 .await?;
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
-        BGDPhase::Completed | BGDPhase::RolledBack => {
+        BGDPhase::Completed | BGDPhase::RolledBack | BGDPhase::Invalid => {
             info!("BGD '{}' in terminal state {:?}", name, phase);
             cleanup_inception_resources(&bgd, &client, &namespace).await?;
             cleanup_test_resources(&bgd, &client, &namespace).await?;
@@ -488,7 +565,7 @@ async fn reconcile_locked(
                 .store
                 .cleanup_blue_green(&state_key)
                 .await
-                .map_err(|e| ReconcileError::Store(e.to_string()))?;
+                .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
             if removed > 0 {
                 info!("cleaned {} store records for BGD '{}'", removed, name);
             }
@@ -508,7 +585,7 @@ async fn cleanup_deleted_bgd(
         .unwrap_or("unknown")
         .to_string();
     let namespace = bgd.namespace().ok_or_else(|| {
-        ReconcileError::Store(format!(
+        ReconcileError::Resource(format!(
             "BlueGreenDeployment '{}' is missing metadata.namespace",
             name
         ))
@@ -521,7 +598,7 @@ async fn cleanup_deleted_bgd(
         .store
         .cleanup_blue_green(&blue_green_state_key(&namespace, &name))
         .await
-        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
     if removed > 0 {
         info!(
             "cleaned {} store records for deleted BGD '{}'",
@@ -541,7 +618,7 @@ async fn cleanup_orphaned_blue_green_refs(
     let mut refs = store
         .list_blue_green_refs()
         .await
-        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
     refs.extend(resources::blue_green_refs_from_owned_resources_all(client).await?);
 
     let mut cleaned = 0;
@@ -578,7 +655,7 @@ async fn cleanup_single_orphaned_blue_green_ref(
     let removed = store
         .cleanup_blue_green(&blue_green_key)
         .await
-        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
     if removed > 0 {
         info!(
             "cleaned {} store records for orphaned BGD '{}'",
@@ -625,7 +702,7 @@ pub(crate) fn blue_green_state_key(namespace: &str, name: &str) -> String {
 
 fn split_blue_green_state_key(key: &str) -> std::result::Result<(String, String), ReconcileError> {
     let Some((namespace, name)) = key.split_once('/') else {
-        return Err(ReconcileError::Store(format!(
+        return Err(ReconcileError::Resource(format!(
             "state key '{key}' is not namespace-qualified"
         )));
     };
@@ -692,7 +769,10 @@ async fn remove_finalizer(
 }
 
 fn rollout_needs_restart(bgd: &BlueGreenDeployment, phase: &BGDPhase) -> bool {
-    if !matches!(*phase, BGDPhase::Completed | BGDPhase::RolledBack) {
+    if !matches!(
+        *phase,
+        BGDPhase::Completed | BGDPhase::RolledBack | BGDPhase::Invalid
+    ) {
         return false;
     }
     let generation = bgd.metadata.generation.unwrap_or_default();
@@ -765,7 +845,7 @@ async fn ensure_rollout_spec_snapshot(
     let snapshot_name = rollout_spec_snapshot_name(bgd, namespace);
     let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let spec = serde_yaml::to_string(&bgd.spec)
-        .map_err(|err| ReconcileError::Store(format!("failed to snapshot BGD spec: {err}")))?;
+        .map_err(|err| ReconcileError::Resource(format!("failed to snapshot BGD spec: {err}")))?;
     let rollout_generation = current_rollout_generation_from_bgd(bgd);
     let snapshot = ConfigMap {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
@@ -798,7 +878,7 @@ async fn load_rollout_spec_snapshot(
     let snapshot_name = rollout_spec_snapshot_name(bgd, namespace);
     let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let snapshot = api.get(&snapshot_name).await.map_err(|err| {
-        ReconcileError::Store(format!(
+        ReconcileError::Resource(format!(
             "BGD '{name}' was updated during an active rollout, but rollout spec snapshot '{snapshot_name}' could not be loaded: {err}"
         ))
     })?;
@@ -807,12 +887,12 @@ async fn load_rollout_spec_snapshot(
         .as_ref()
         .and_then(|data| data.get("spec.yaml"))
         .ok_or_else(|| {
-            ReconcileError::Store(format!(
+            ReconcileError::Resource(format!(
                 "BGD '{name}' rollout spec snapshot '{snapshot_name}' is missing spec.yaml"
             ))
         })?;
     let mut spec: BlueGreenDeploymentSpec = serde_yaml::from_str(spec_yaml).map_err(|err| {
-        ReconcileError::Store(format!(
+        ReconcileError::Resource(format!(
             "BGD '{name}' rollout spec snapshot '{snapshot_name}' could not be parsed: {err}"
         ))
     })?;

@@ -3,7 +3,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use fluidbg_plugin_sdk::{PluginInceptorRuntime, PluginRole};
+use fluidbg_plugin_sdk::{PluginInceptorRuntime, QueueWorkerRole, queue_worker_role};
 use tracing::info;
 
 mod assignments;
@@ -17,7 +17,7 @@ mod servicebus;
 mod writer;
 
 use combiner::run_combiner;
-use config::{AppState, ServiceBusRuntimeConfig, has_role, load_config};
+use config::{AppState, ServiceBusRuntimeConfig, load_config};
 use input::run_input_pipeline;
 use lifecycle::{
     activate_handler, cleanup_handler, drain_handler, drain_status_handler, health,
@@ -69,18 +69,12 @@ async fn main() -> Result<()> {
         }
     });
 
-    let worker = if has_role(&roles, PluginRole::Writer) {
-        tokio::spawn(async { Ok::<(), anyhow::Error>(()) })
-    } else if has_role(&roles, PluginRole::Combiner) {
-        tokio::spawn(async move { run_combiner(state).await })
-    } else if has_role(&roles, PluginRole::Duplicator)
-        || has_role(&roles, PluginRole::Splitter)
-        || has_role(&roles, PluginRole::Observer)
-        || has_role(&roles, PluginRole::Consumer)
-    {
-        tokio::spawn(async move { run_input_pipeline(state).await })
-    } else {
-        bail!("unsupported Azure Service Bus role set");
+    let worker = match queue_worker_role(&roles).map_err(anyhow::Error::msg)? {
+        Some(QueueWorkerRole::Combiner) => tokio::spawn(async move { run_combiner(state).await }),
+        Some(QueueWorkerRole::Input) => {
+            tokio::spawn(async move { run_input_pipeline(state).await })
+        }
+        None => tokio::spawn(async { Ok::<(), anyhow::Error>(()) }),
     };
 
     let (_, worker_result) = tokio::join!(server, worker);
@@ -103,10 +97,37 @@ async fn run_manager() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use fluidbg_plugin_sdk::TrafficRoute;
+    use fluidbg_plugin_sdk::{PluginRole, QueueWorkerRole, TrafficRoute, queue_worker_role};
 
     use crate::config::CombinerConfig;
     use crate::filtering::route_from_output_source;
+
+    #[test]
+    fn writer_and_observer_do_not_disable_service_bus_worker_roles() {
+        assert_eq!(
+            queue_worker_role(&[
+                PluginRole::Combiner,
+                PluginRole::Observer,
+                PluginRole::Writer
+            ])
+            .unwrap(),
+            Some(QueueWorkerRole::Combiner)
+        );
+        assert_eq!(
+            queue_worker_role(&[
+                PluginRole::Splitter,
+                PluginRole::Observer,
+                PluginRole::Writer
+            ])
+            .unwrap(),
+            Some(QueueWorkerRole::Input)
+        );
+    }
+
+    #[test]
+    fn service_bus_rejects_conflicting_movement_roles() {
+        assert!(queue_worker_role(&[PluginRole::Duplicator, PluginRole::Combiner]).is_err());
+    }
 
     #[test]
     fn duplicator_route_is_reported_as_both_and_registered() {

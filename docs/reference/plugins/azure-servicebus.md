@@ -17,11 +17,12 @@ title: Azure Service Bus Plugin
 
 The Azure Service Bus plugin mirrors the RabbitMQ queue-role model where Service
 Bus semantics map cleanly. The manager should run in the operator namespace and
-hold connection-string or workload-identity permissions for queue management.
-Per-inception inceptors run in application namespaces and should not receive
-queue management credentials. With connection-string manager auth, inceptors
-receive short-lived queue-scoped SAS tokens instead of the base connection
-string.
+hold connection-string or workload-identity permissions for queue management
+and temporary queue name derivation. Per-inception inceptors run in application
+namespaces and should not receive queue management credentials. With
+connection-string manager auth, inceptors receive short-lived queue-scoped SAS
+tokens instead of the base connection string. The operator treats Service Bus
+config as opaque plugin data.
 
 ```mermaid
 flowchart TD
@@ -118,6 +119,11 @@ Identity labels/annotations and Azure permissions.
 | `observer` | Applies filters, extracts `testId`, posts `observer.notifyPath`, then registers operator cases for `blue`, `both`, and `unknown` routes. | None. |
 | `writer` | Exposes `/write` and sends the supplied JSON payload plus custom properties to `writer.targetQueue`. | Test-container env injection can point callers to the writer service. |
 | `consumer` | Consumes from `consumer.inputQueue` for plugin-driven read flows. | None. |
+
+`duplicator`, `splitter`, `combiner`, and `consumer` are mutually exclusive
+movement roles for one Azure Service Bus inceptor. `observer` and `writer` are
+additive: for example `splitter, observer, writer` still runs the splitter
+worker and also exposes observer callbacks and `/write`.
 
 The plugin preserves body, custom application properties, and sendable
 `BrokerProperties` such as message id, correlation id, session id, content type,

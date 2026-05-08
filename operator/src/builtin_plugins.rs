@@ -139,14 +139,14 @@ spec:
 apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
-  name: rabbitmq
+  name: custom-events
   namespace: fluidbg-test
 spec:
-  description: rabbitmq
-  image: rabbitmq:dev
+  description: custom events
+  image: custom-events:dev
   supportedRoles: [consumer]
   topology: standalone
-  fieldNamespaces: [queue]
+  fieldNamespaces: [event]
   configSchema: {type: object}
   inceptor: {}
 "#,
@@ -157,7 +157,7 @@ spec:
 
         assert_eq!(plugins.len(), 2);
         assert_eq!(plugins[0].metadata.name.as_deref(), Some("http"));
-        assert_eq!(plugins[1].metadata.name.as_deref(), Some("rabbitmq"));
+        assert_eq!(plugins[1].metadata.name.as_deref(), Some("custom-events"));
         std::fs::remove_file(path).ok();
     }
 }

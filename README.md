@@ -78,6 +78,11 @@ KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 E2E_STATE_STORE=postgres OPERATOR_REPLIC
 
 ## Install
 
+Documentation is published from the repository markdown under `docs/`. Start
+with [Getting Started](docs/getting-started.md), the
+[Sequential Example](docs/examples/sequential-bgd.md), and
+[Troubleshooting](docs/operations/troubleshooting.md).
+
 Run local chart commands from the repository root. The `./` prefix matters:
 without it, Helm can interpret `charts/fluidbg-operator` as a repository chart
 reference instead of a local path.

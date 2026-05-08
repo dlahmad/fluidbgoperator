@@ -12,6 +12,7 @@ are promoted.
 - [Getting Started](getting-started.md)
 - [Sequential Example](examples/sequential-bgd.md)
 - [Helm Installation](operations/helm.md)
+- [Troubleshooting](operations/troubleshooting.md)
 
 ## Reference
 

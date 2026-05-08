@@ -1,8 +1,10 @@
+use anyhow::{Result, bail};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-
 use crate::harness::E2eHarness;
+use crate::status::{bgd_status, condition_message};
+
+use super::support::{assert_condition, assert_condition_reason, wait_for_terminal_phase};
 
 pub async fn progressive_support_is_enforced(harness: &E2eHarness) -> Result<()> {
     let cfg = harness.config.clone();
@@ -18,7 +20,13 @@ pub async fn progressive_support_is_enforced(harness: &E2eHarness) -> Result<()>
         .kube
         .wait_bgd_generated_name("order-processor-progressive-unsupported", &cfg.namespace)
         .await?;
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    wait_for_terminal_phase(
+        harness,
+        "order-processor-progressive-unsupported",
+        "Invalid",
+        30,
+    )
+    .await?;
     if harness
         .kube
         .exists("deployment", &deployment, &cfg.namespace)
@@ -26,17 +34,53 @@ pub async fn progressive_support_is_enforced(harness: &E2eHarness) -> Result<()>
     {
         bail!("unsupported progressive plugin created candidate deployment {deployment}");
     }
-    let phase = harness
+
+    let status_document = harness
         .kube
-        .bgd("order-processor-progressive-unsupported", &cfg.namespace)
-        .await
-        .ok()
-        .and_then(|bgd| bgd.status.and_then(|status| status.phase))
-        .map(|phase| format!("{phase:?}"))
-        .unwrap_or_default();
-    if phase == "Observing" || phase == "Completed" {
-        bail!("unsupported progressive plugin reached unexpected phase {phase}");
+        .bgd_json("order-processor-progressive-unsupported", &cfg.namespace)
+        .await?;
+    let status = bgd_status(&status_document);
+    if status.phase != "Invalid" {
+        bail!(
+            "unsupported progressive plugin reached unexpected phase {}",
+            status.phase
+        );
     }
+    assert_condition(
+        &status_document,
+        "order-processor-progressive-unsupported",
+        "Ready",
+        "False",
+    )?;
+    assert_condition(
+        &status_document,
+        "order-processor-progressive-unsupported",
+        "Progressing",
+        "False",
+    )?;
+    assert_condition(
+        &status_document,
+        "order-processor-progressive-unsupported",
+        "Degraded",
+        "True",
+    )?;
+    assert_condition(
+        &status_document,
+        "order-processor-progressive-unsupported",
+        "ReconcileFailed",
+        "True",
+    )?;
+    assert_condition_reason(
+        &status_document,
+        "order-processor-progressive-unsupported",
+        "ReconcileFailed",
+        "InvalidSpec",
+    )?;
+    let message = condition_message(&status_document, "ReconcileFailed").unwrap_or_default();
+    if !message.contains("supportsProgressiveShifting=true") {
+        bail!("expected InvalidSpec message to mention progressive support, got {message}");
+    }
+
     harness
         .kube
         .delete_named(

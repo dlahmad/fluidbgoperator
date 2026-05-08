@@ -16,7 +16,9 @@ use super::super::resources::{
 };
 use crate::crd::blue_green::{BlueGreenDeployment, InceptionPoint};
 use crate::crd::inception_plugin::InceptionPlugin;
-use crate::plugins::reconciler::{ReconcileInceptionContext, reconcile_inception_point};
+use crate::plugins::reconciler::{
+    ReconcileInceptionContext, reconcile_inception_point, validate_inception_point,
+};
 
 use super::rollout::ensure_declared_deployments;
 
@@ -52,7 +54,9 @@ pub(in crate::controller) async fn ensure_inception_resources(
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
+        validate_inception_point(&plugin, ip).map_err(ReconcileError::InvalidSpec)?;
         let mut manager_inceptor_env = Vec::new();
+        let mut manager_config = None;
         if let Some(mut lifecycle_response) = invoke_plugin_manager_lifecycle(
             client,
             bgd.metadata.name.as_deref().unwrap_or(""),
@@ -66,6 +70,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
         {
             reject_manager_test_assignments(&ip.name, &lifecycle_response.assignments)?;
             manager_inceptor_env = manager_inceptor_env_vars(lifecycle_response.inceptor_env);
+            manager_config = lifecycle_response.config.take();
             pre_activation_assignments.append(&mut lifecycle_response.assignments);
         }
         let auth_token = sign_inception_auth_token(
@@ -91,9 +96,10 @@ pub(in crate::controller) async fn ensure_inception_resources(
                 blue_green_uid,
                 auth_token: &auth_token,
                 manager_inceptor_env: &manager_inceptor_env,
+                manager_config: manager_config.as_ref(),
             },
         )
-        .map_err(ReconcileError::Store)?;
+        .map_err(ReconcileError::Resource)?;
         let mut plugin_deployments = Vec::new();
         let (plugin_test_assignments, other_assignments) =
             split_test_assignments(template_assignments(
@@ -105,17 +111,15 @@ pub(in crate::controller) async fn ensure_inception_resources(
         pre_activation_assignments.extend(other_assignments);
 
         for cm in resources.config_maps {
-            let name =
-                cm.metadata.name.clone().ok_or_else(|| {
-                    ReconcileError::Store("generated ConfigMap has no name".into())
-                })?;
+            let name = cm.metadata.name.clone().ok_or_else(|| {
+                ReconcileError::Resource("generated ConfigMap has no name".into())
+            })?;
             apply_resource(Api::namespaced(client.clone(), namespace), &name, &cm).await?;
         }
         for deployment in resources.deployments {
-            let name =
-                deployment.metadata.name.clone().ok_or_else(|| {
-                    ReconcileError::Store("generated Deployment has no name".into())
-                })?;
+            let name = deployment.metadata.name.clone().ok_or_else(|| {
+                ReconcileError::Resource("generated Deployment has no name".into())
+            })?;
             let deployment_namespace = deployment
                 .metadata
                 .namespace
@@ -133,11 +137,10 @@ pub(in crate::controller) async fn ensure_inception_resources(
             });
         }
         for service in resources.services {
-            let name = service
-                .metadata
-                .name
-                .clone()
-                .ok_or_else(|| ReconcileError::Store("generated Service has no name".into()))?;
+            let name =
+                service.metadata.name.clone().ok_or_else(|| {
+                    ReconcileError::Resource("generated Service has no name".into())
+                })?;
             apply_resource(Api::namespaced(client.clone(), namespace), &name, &service).await?;
         }
 
@@ -246,7 +249,7 @@ fn reject_manager_test_assignments(
         .iter()
         .any(|assignment| matches!(assignment.target, AssignmentTarget::Test))
     {
-        Err(ReconcileError::Store(format!(
+        Err(ReconcileError::PluginManager(format!(
             "inception point '{inception_point}' returned test deployment assignments from prepare; test assignments must be declared in InceptionPlugin injects so the operator can apply them before inceptor activation"
         )))
     } else {
@@ -261,7 +264,7 @@ fn reject_activation_assignments(
     if assignments.is_empty() {
         Ok(())
     } else {
-        Err(ReconcileError::Store(format!(
+        Err(ReconcileError::PluginInceptor(format!(
             "inception point '{inception_point}' returned deployment assignments from activate; app/test assignments must be provided before activation"
         )))
     }
@@ -274,7 +277,7 @@ fn reject_inceptor_env_response(
     if env.is_empty() {
         Ok(())
     } else {
-        Err(ReconcileError::Store(format!(
+        Err(ReconcileError::PluginInceptor(format!(
             "inception point '{inception_point}' returned inceptorEnv outside manager prepare; inceptor runtime env must be provided by the manager before pod creation"
         )))
     }

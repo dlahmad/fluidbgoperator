@@ -5,7 +5,7 @@ use axum::{
 };
 use fluidbg_plugin_sdk::{
     AUTHORIZATION_HEADER, ActiveInception, InceptorEnvVar, PluginAuthClaims,
-    PluginManagerLifecycleRequest, PluginManagerSyncRequest, PluginRole,
+    PluginManagerLifecycleRequest, PluginManagerSyncRequest, PluginRole, queue_worker_role,
     require_manager_request_matches_claims, verify_manager_bearer_token,
 };
 use serde_json::Value;
@@ -38,13 +38,15 @@ pub(crate) async fn prepare_handler(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let claims = authorize(&state, &headers)?;
     ensure_request_matches_claims(&req, &claims)?;
-    let config = secured_config_from_claims(&claims, &req);
-    reconcile_queues(&state.runtime_config, &req.roles, &config, true).await?;
     let roles = parse_roles(&req.roles);
+    queue_worker_role(&roles).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let (effective_config, config) = secured_config_from_claims(&claims, &req);
+    reconcile_queues(&state.runtime_config, &req.roles, &config, true).await?;
     Ok(Json(
         serde_json::to_value(fluidbg_plugin_sdk::PluginLifecycleResponse {
             assignments: build_prepare_assignments(&config, &roles),
             inceptor_env: inceptor_env(&state.runtime_config, &roles, &config),
+            config: Some(effective_config),
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     ))
@@ -57,7 +59,7 @@ pub(crate) async fn cleanup_handler(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let claims = authorize(&state, &headers)?;
     ensure_request_matches_claims(&req, &claims)?;
-    let config = secured_config_from_claims(&claims, &req);
+    let (_effective_config, config) = secured_config_from_claims(&claims, &req);
     reconcile_queues(&state.runtime_config, &req.roles, &config, false).await?;
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -182,7 +184,7 @@ fn push_optional_env(env: &mut Vec<InceptorEnvVar>, name: &str, value: Option<&s
 fn secured_config_from_claims(
     claims: &PluginAuthClaims,
     req: &PluginManagerLifecycleRequest,
-) -> Config {
+) -> (serde_json::Value, Config) {
     let mut value = req.config.clone();
     rewrite_queue_temp_names(
         &mut value,
@@ -191,7 +193,8 @@ fn secured_config_from_claims(
         claims.blue_green_uid.as_deref().unwrap_or(""),
         &claims.inception_point,
     );
-    serde_json::from_value::<Config>(value).unwrap_or_default()
+    let config = serde_json::from_value::<Config>(value.clone()).unwrap_or_default();
+    (value, config)
 }
 
 async fn reconcile_queues(

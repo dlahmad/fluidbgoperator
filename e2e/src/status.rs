@@ -30,6 +30,18 @@ pub fn bgd_status(document: &Value) -> BgdStatus {
 }
 
 pub fn condition_status(document: &Value, condition_type: &str) -> Option<String> {
+    condition_field(document, condition_type, "status")
+}
+
+pub fn condition_reason(document: &Value, condition_type: &str) -> Option<String> {
+    condition_field(document, condition_type, "reason")
+}
+
+pub fn condition_message(document: &Value, condition_type: &str) -> Option<String> {
+    condition_field(document, condition_type, "message")
+}
+
+fn condition_field(document: &Value, condition_type: &str, field: &str) -> Option<String> {
     document
         .pointer("/status/conditions")
         .and_then(Value::as_array)
@@ -37,7 +49,7 @@ pub fn condition_status(document: &Value, condition_type: &str) -> Option<String
             conditions.iter().find_map(|condition| {
                 if condition.get("type").and_then(Value::as_str) == Some(condition_type) {
                     condition
-                        .get("status")
+                        .get(field)
                         .and_then(Value::as_str)
                         .map(ToString::to_string)
                 } else {
@@ -137,6 +149,31 @@ mod tests {
             Some("True")
         );
         assert_eq!(condition_status(&document, "Progressing"), None);
+    }
+
+    #[test]
+    fn condition_reason_and_message_return_matching_fields() {
+        let document = json!({
+            "status": {
+                "conditions": [
+                    {
+                        "type": "ReconcileFailed",
+                        "status": "True",
+                        "reason": "InvalidSpec",
+                        "message": "unsupported role combination"
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(
+            condition_reason(&document, "ReconcileFailed").as_deref(),
+            Some("InvalidSpec")
+        );
+        assert_eq!(
+            condition_message(&document, "ReconcileFailed").as_deref(),
+            Some("unsupported role combination")
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use super::{
-    BGD_FINALIZER, BlueGreenDeployment, ManagedDeploymentSpec,
+    BGD_FINALIZER, BlueGreenDeployment, ManagedDeploymentSpec, ReconcileError,
     active_rollout_has_new_spec_generation, candidate_name_with_suffix,
     deterministic_candidate_suffixes, force_replace_active_rollout, generated_candidate_name_seed,
     has_finalizer, rollout_spec_snapshot_name, select_previous_green_for_promotion,
@@ -45,11 +45,12 @@ fn sample_bgd(generation: i64) -> BlueGreenDeployment {
 
 fn sample_plugin(supports_progressive_shifting: bool) -> InceptionPlugin {
     InceptionPlugin::new(
-        "rabbitmq",
+        "managed-transport",
         InceptionPluginSpec {
             description: "test plugin".to_string(),
-            image: "fluidbg/fbg-plugin-rabbitmq:dev".to_string(),
+            image: "fluidbg/managed-transport:dev".to_string(),
             supported_roles: Vec::new(),
+            role_constraints: None,
             topology: Topology::Standalone,
             field_namespaces: Vec::new(),
             config_schema: serde_json::json!({}),
@@ -117,7 +118,7 @@ fn candidate_name_respects_dns_length_limit() {
 fn progressive_splitter_requires_support_flag() {
     let plugin = sample_plugin(false);
     let err =
-        validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap_err();
+        validate_progressive_splitter_plugin("incoming-events", "managed", &plugin).unwrap_err();
     assert!(
         err.to_string()
             .contains("features.supportsProgressiveShifting=true")
@@ -127,7 +128,7 @@ fn progressive_splitter_requires_support_flag() {
 #[test]
 fn progressive_splitter_accepts_standalone_plugin_with_support_flag() {
     let plugin = sample_plugin(true);
-    validate_progressive_splitter_plugin("incoming-orders", "rabbitmq", &plugin).unwrap();
+    validate_progressive_splitter_plugin("incoming-events", "managed", &plugin).unwrap();
 }
 
 #[test]
@@ -251,5 +252,45 @@ fn promotion_resume_rejects_multiple_previous_green_deployments() {
     assert!(
         err.to_string()
             .contains("expected at most one previous green")
+    );
+}
+
+#[test]
+fn reconcile_errors_have_distinct_user_visible_reasons() {
+    assert_eq!(
+        ReconcileError::InvalidSpec("bad roles".to_string()).diagnostic_reason(),
+        "InvalidSpec"
+    );
+    assert_eq!(
+        ReconcileError::PluginManager("manager rejected request".to_string()).diagnostic_reason(),
+        "PluginManagerError"
+    );
+    assert_eq!(
+        ReconcileError::PluginInceptor("inceptor failed prepare".to_string()).diagnostic_reason(),
+        "PluginInceptorError"
+    );
+    assert_eq!(
+        ReconcileError::PluginDrainStatus("drain status failed".to_string()).diagnostic_reason(),
+        "PluginDrainStatusError"
+    );
+    assert_eq!(
+        ReconcileError::PluginTrafficShift("traffic failed".to_string()).diagnostic_reason(),
+        "PluginTrafficShiftError"
+    );
+    assert_eq!(
+        ReconcileError::Lease("lease lost".to_string()).diagnostic_reason(),
+        "LeaseError"
+    );
+    assert_eq!(
+        ReconcileError::Resource("deployment invalid".to_string()).diagnostic_reason(),
+        "ResourceError"
+    );
+    assert_eq!(
+        ReconcileError::StateStore("db unavailable".to_string()).diagnostic_reason(),
+        "StateStoreError"
+    );
+    assert_eq!(
+        ReconcileError::Store("unexpected internal invariant".to_string()).diagnostic_reason(),
+        "ControllerError"
     );
 }

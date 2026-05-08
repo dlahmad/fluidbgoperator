@@ -102,7 +102,7 @@ where
 
     let result = tokio::select! {
         result = future => result.map(Some),
-        _ = &mut lost_rx => Err(ReconcileError::Store(format!(
+        _ = &mut lost_rx => Err(ReconcileError::Lease(format!(
             "lost reconcile lease '{}'; aborting in-flight reconcile",
             lease_name
         ))),
@@ -190,7 +190,7 @@ async fn renew_lease(
         .and_then(|spec| spec.holder_identity.as_deref())
         != Some(config.holder_identity.as_str())
     {
-        return Err(ReconcileError::Store(format!(
+        return Err(ReconcileError::Lease(format!(
             "lease '{lease_name}' is no longer held by this operator"
         )));
     }

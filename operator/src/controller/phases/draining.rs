@@ -125,11 +125,11 @@ pub(in crate::controller) async fn reconcile_draining(
     let counts = store
         .counts(state_key)
         .await
-        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
     let latest_failure_message = store
         .latest_failure_message(state_key)
         .await
-        .map_err(|e| ReconcileError::Store(e.to_string()))?;
+        .map_err(|e| ReconcileError::StateStore(e.to_string()))?;
     let finalized = counts.passed + counts.failed + counts.timed_out;
     let success_rate = if finalized > 0 {
         counts.passed as f64 / finalized as f64

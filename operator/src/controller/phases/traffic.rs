@@ -35,7 +35,7 @@ pub(in crate::controller) async fn validate_progressive_shifting_support(
     }
 
     if !saw_splitter {
-        return Err(ReconcileError::Store(
+        return Err(ReconcileError::InvalidSpec(
             "progressive strategy requires at least one splitter inception point".to_string(),
         ));
     }
@@ -55,7 +55,7 @@ pub(in crate::controller) fn validate_progressive_splitter_plugin(
         .map(|features| features.supports_progressive_shifting)
         .unwrap_or(false);
     if !supports_progressive {
-        return Err(ReconcileError::Store(format!(
+        return Err(ReconcileError::InvalidSpec(format!(
             "progressive strategy requires inception point '{}' plugin '{}' to set features.supportsProgressiveShifting=true",
             inception_point_name, plugin_name
         )));

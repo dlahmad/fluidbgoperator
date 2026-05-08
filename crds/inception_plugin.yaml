@@ -291,6 +291,32 @@ spec:
                 required:
                 - serviceName
                 type: object
+              roleConstraints:
+                nullable: true
+                properties:
+                  mutuallyExclusive:
+                    items:
+                      properties:
+                        reason:
+                          nullable: true
+                          type: string
+                        roles:
+                          items:
+                            enum:
+                            - duplicator
+                            - splitter
+                            - combiner
+                            - observer
+                            - mock
+                            - writer
+                            - consumer
+                            type: string
+                          type: array
+                      required:
+                      - roles
+                      type: object
+                    type: array
+                type: object
               supportedRoles:
                 items:
                   enum:

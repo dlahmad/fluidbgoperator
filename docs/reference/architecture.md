@@ -349,7 +349,9 @@ the same lease mechanism before deleting resources or store rows.
 For one `BlueGreenDeployment`, reconciliation does the following:
 
 1. Validate tests, promotion settings, plugin references, supported roles,
-   supported field namespaces, plugin config schemas, and progressive capability.
+   plugin-declared role constraints, supported field namespaces, plugin config
+   schemas, and progressive capability. Invalid user input is surfaced as
+   `phase: Invalid` with `reason: InvalidSpec`.
 2. Record the rollout generation and store an internal spec snapshot.
 3. Resolve the current green Deployment and validate that progressive strategy,
    if configured, is supported by the selected splitter plugin.
@@ -427,14 +429,17 @@ until after `InceptorsActive`.
 The CR keeps `status.phase` and also publishes conventional conditions for
 GitOps health checks:
 
-| Condition | Active rollout | Successful rollout | Failed rollout |
+| Condition | Active rollout | Successful rollout | Failed/invalid rollout |
 | --- | --- | --- | --- |
 | `Ready` | `False` | `True` | `False` |
 | `Progressing` | `True` | `False` | `False` |
 | `Degraded` | `False` | `False` | `True` |
 
 `Pending`, `Observing`, `Promoting`, and `Draining` are progressing.
-`Completed` is ready. `RolledBack` is degraded. Each condition includes
+`Completed` is ready. `RolledBack` and `Invalid` are degraded. Transient
+reconcile failures add `ReconcileFailed=True` with a typed `reason` such as
+`PluginManagerError`, `KubernetesApiError`, or `StateStoreError`; see
+[Troubleshooting](../operations/troubleshooting.md). Each condition includes
 `reason`, `message`, `observedGeneration`, and `lastTransitionTime`.
 
 ## Plugin Inceptor Contract

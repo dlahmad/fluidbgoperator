@@ -76,7 +76,7 @@ pub(super) async fn invoke_inceptor_lifecycle(
         {
             Ok(response) => {
                 let response = response.error_for_status().map_err(|e| {
-                    ReconcileError::Store(format!(
+                    ReconcileError::PluginInceptor(format!(
                         "plugin inceptor lifecycle call failed for {url}: {e}"
                     ))
                 })?;
@@ -84,7 +84,7 @@ pub(super) async fn invoke_inceptor_lifecycle(
                     .json::<PluginLifecycleResponse>()
                     .await
                     .map_err(|e| {
-                        ReconcileError::Store(format!(
+                        ReconcileError::PluginInceptor(format!(
                             "plugin inceptor lifecycle response deserialization failed for {url}: {e}"
                         ))
                     })?;
@@ -98,7 +98,7 @@ pub(super) async fn invoke_inceptor_lifecycle(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
-                return Err(ReconcileError::Store(format!(
+                return Err(ReconcileError::PluginInceptor(format!(
                     "plugin inceptor lifecycle call failed for {url}: {err}"
                 )));
             }
@@ -140,7 +140,9 @@ pub(super) async fn invoke_plugin_manager_sync(
         {
             Ok(response) => {
                 response.error_for_status().map_err(|err| {
-                    ReconcileError::Store(format!("plugin manager sync failed for {url}: {err}"))
+                    ReconcileError::PluginManager(format!(
+                        "plugin manager sync failed for {url}: {err}"
+                    ))
                 })?;
                 return Ok(());
             }
@@ -152,7 +154,7 @@ pub(super) async fn invoke_plugin_manager_sync(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
-                return Err(ReconcileError::Store(format!(
+                return Err(ReconcileError::PluginManager(format!(
                     "plugin manager sync failed for {url}: {err}"
                 )));
             }
@@ -203,8 +205,10 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
     let bearer = bearer_value(&auth_token);
     let claims = validate_plugin_auth(client, auth, Some(&bearer))
         .await
-        .map_err(ReconcileError::Store)?
-        .ok_or_else(|| ReconcileError::Store("manager auth token did not produce claims".into()))?;
+        .map_err(ReconcileError::Auth)?
+        .ok_or_else(|| {
+            ReconcileError::PluginManager("manager auth token did not produce claims".into())
+        })?;
     let blue_green_uid = claims.blue_green_uid.clone().unwrap_or_default();
     let context = ReconcileInceptionContext {
         namespace,
@@ -216,6 +220,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
         blue_green_uid: &blue_green_uid,
         auth_token: &auth_token,
         manager_inceptor_env: &[],
+        manager_config: None,
     };
     let payload = PluginManagerLifecycleRequest {
         namespace: namespace.to_string(),
@@ -247,10 +252,12 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
         {
             Ok(response) => {
                 let response = response.error_for_status().map_err(|e| {
-                    ReconcileError::Store(format!("plugin manager call failed for {url}: {e}"))
+                    ReconcileError::PluginManager(format!(
+                        "plugin manager call failed for {url}: {e}"
+                    ))
                 })?;
                 let value = response.json::<serde_json::Value>().await.map_err(|e| {
-                    ReconcileError::Store(format!(
+                    ReconcileError::PluginManager(format!(
                         "plugin manager response deserialization failed for {url}: {e}"
                     ))
                 })?;
@@ -266,7 +273,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
-                return Err(ReconcileError::Store(format!(
+                return Err(ReconcileError::PluginManager(format!(
                     "plugin manager call failed for {url}: {err}"
                 )));
             }
@@ -360,13 +367,13 @@ pub(super) async fn invoke_inceptor_drain_status(
         .send()
         .await
         .map_err(|err| {
-            ReconcileError::Store(format!(
+            ReconcileError::PluginDrainStatus(format!(
                 "plugin inceptor drain status call failed for {url}: {err}"
             ))
         })?
         .error_for_status()
         .map_err(|err| {
-            ReconcileError::Store(format!(
+            ReconcileError::PluginDrainStatus(format!(
                 "plugin inceptor drain status call failed for {url}: {err}"
             ))
         })?;
@@ -374,7 +381,7 @@ pub(super) async fn invoke_inceptor_drain_status(
         .json::<PluginDrainStatusResponse>()
         .await
         .map_err(|err| {
-            ReconcileError::Store(format!(
+            ReconcileError::PluginDrainStatus(format!(
                 "plugin inceptor drain status response deserialization failed for {url}: {err}"
             ))
         })?;
@@ -425,7 +432,7 @@ pub(super) async fn invoke_inceptor_traffic_shift(
         {
             Ok(response) => {
                 response.error_for_status().map_err(|err| {
-                    ReconcileError::Store(format!(
+                    ReconcileError::PluginTrafficShift(format!(
                         "plugin inceptor traffic shift call failed for {url}: {err}"
                     ))
                 })?;
@@ -439,7 +446,7 @@ pub(super) async fn invoke_inceptor_traffic_shift(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(err) => {
-                return Err(ReconcileError::Store(format!(
+                return Err(ReconcileError::PluginTrafficShift(format!(
                     "plugin inceptor traffic shift call failed for {url}: {err}"
                 )));
             }

@@ -91,6 +91,21 @@ pub struct PluginFeatures {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct MutuallyExclusiveRoleGroup {
+    pub roles: Vec<PluginRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRoleConstraints {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutually_exclusive: Vec<MutuallyExclusiveRoleGroup>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginLifecycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepare_path: Option<String>,
@@ -136,6 +151,8 @@ pub struct InceptionPluginSpec {
     pub image: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_roles: Vec<PluginRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_constraints: Option<PluginRoleConstraints>,
     pub topology: Topology,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_namespaces: Vec<String>,

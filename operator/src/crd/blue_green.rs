@@ -241,6 +241,7 @@ pub enum BGDPhase {
     Draining,
     Completed,
     RolledBack,
+    Invalid,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -406,9 +407,7 @@ mod tests {
                                     "image": "fluidbg/green-app:dev",
                                     "imagePullPolicy": "Never",
                                     "env": [
-                                        { "name": "AMQP_URL", "value": "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/" },
-                                        { "name": "INPUT_QUEUE", "value": "orders" },
-                                        { "name": "OUTPUT_QUEUE", "value": "results" }
+                                        { "name": "UPSTREAM_URL", "value": "http://orders-api.default:8080" }
                                     ]
                                 }]
                             }
@@ -416,11 +415,13 @@ mod tests {
                     }
                 },
                 "inceptionPoints": [{
-                    "name": "incoming-orders",
-                    "pluginRef": { "name": "rabbitmq" },
-                    "roles": ["duplicator", "observer"],
+                    "name": "orders-http",
+                    "pluginRef": { "name": "http" },
+                    "roles": ["observer"],
                     "config": {
-                        "amqpUrl": "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f"
+                        "port": 9090,
+                        "realEndpoint": "http://orders-api.default:8080",
+                        "envVarName": "UPSTREAM_URL"
                     }
                 }],
                 "test": {

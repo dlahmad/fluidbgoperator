@@ -14,7 +14,7 @@ pub(super) async fn decide_promotion_action(
     current_step: Option<i32>,
 ) -> std::result::Result<PromotionAction, ReconcileError> {
     let promotion = bgd.spec.promotion.as_ref().ok_or_else(|| {
-        ReconcileError::Store("blue green deployment is missing promotion spec".into())
+        ReconcileError::InvalidSpec("blue green deployment is missing promotion spec".into())
     })?;
 
     let data_action = if let Some(data) = promotion.data.as_ref() {
@@ -51,7 +51,7 @@ pub(super) async fn decide_promotion_action(
         (Some(PromotionAction::Promote), Some(PromotionAction::Promote))
         | (Some(PromotionAction::Promote), None)
         | (None, Some(PromotionAction::Promote)) => Ok(PromotionAction::Promote),
-        (None, None) => Err(ReconcileError::Store(
+        (None, None) => Err(ReconcileError::InvalidSpec(
             "promotion must define at least one of data or custom".to_string(),
         )),
         _ => Ok(PromotionAction::ContinueObserving),
@@ -76,7 +76,7 @@ fn promotion_strategy_for(
     data_promotion: &DataPromotionSpec,
 ) -> std::result::Result<Box<dyn PromotionStrategy>, ReconcileError> {
     let promotion = bgd.spec.promotion.as_ref().ok_or_else(|| {
-        ReconcileError::Store("blue green deployment is missing promotion spec".into())
+        ReconcileError::InvalidSpec("blue green deployment is missing promotion spec".into())
     })?;
 
     match promotion.strategy.strategy_type {
@@ -85,7 +85,7 @@ fn promotion_strategy_for(
         }
         crate::crd::blue_green::StrategyType::Progressive => {
             let progressive = promotion.strategy.progressive.as_ref().ok_or_else(|| {
-                ReconcileError::Store("progressive strategy selected without steps".into())
+                ReconcileError::InvalidSpec("progressive strategy selected without steps".into())
             })?;
             Ok(Box::new(ProgressiveStrategy::from_steps(
                 progressive.steps.clone(),
@@ -102,38 +102,38 @@ pub(super) fn validate_test_configuration(
         if bgd.spec.test.is_none() {
             return Ok(());
         }
-        return Err(ReconcileError::Store(
+        return Err(ReconcileError::InvalidSpec(
             "test requires a promotion spec".to_string(),
         ));
     };
 
     if promotion.data.is_none() && promotion.custom.is_none() {
-        return Err(ReconcileError::Store(
+        return Err(ReconcileError::InvalidSpec(
             "promotion must define at least one of data or custom".to_string(),
         ));
     }
 
     if let Some(test) = bgd.spec.test.as_ref() {
         if test.service.ports.as_ref().is_none_or(Vec::is_empty) {
-            return Err(ReconcileError::Store(format!(
+            return Err(ReconcileError::InvalidSpec(format!(
                 "test '{}' service spec must define at least one port",
                 test.name
             )));
         }
         if test.data_verification.is_none() && test.custom_verification.is_none() {
-            return Err(ReconcileError::Store(format!(
+            return Err(ReconcileError::InvalidSpec(format!(
                 "test '{}' must define at least one of dataVerification or customVerification",
                 test.name
             )));
         }
         if test.data_verification.is_some() && promotion.data.is_none() {
-            return Err(ReconcileError::Store(format!(
+            return Err(ReconcileError::InvalidSpec(format!(
                 "test '{}' uses dataVerification but promotion.data is missing",
                 test.name
             )));
         }
         if test.custom_verification.is_some() && promotion.custom.is_none() {
-            return Err(ReconcileError::Store(format!(
+            return Err(ReconcileError::InvalidSpec(format!(
                 "test '{}' uses customVerification but promotion.custom is missing",
                 test.name
             )));

@@ -109,12 +109,15 @@ fn phase_rank(phase: &BGDPhase) -> u8 {
         BGDPhase::Observing => 1,
         BGDPhase::Promoting => 2,
         BGDPhase::Draining => 3,
-        BGDPhase::Completed | BGDPhase::RolledBack => 4,
+        BGDPhase::Completed | BGDPhase::RolledBack | BGDPhase::Invalid => 4,
     }
 }
 
 fn phase_is_terminal(phase: &BGDPhase) -> bool {
-    matches!(phase, BGDPhase::Completed | BGDPhase::RolledBack)
+    matches!(
+        phase,
+        BGDPhase::Completed | BGDPhase::RolledBack | BGDPhase::Invalid
+    )
 }
 
 pub(super) fn current_rollout_generation(bgd: &BlueGreenDeployment) -> i64 {
@@ -247,6 +250,130 @@ pub(super) async fn update_status_update_deferred(
     }
 }
 
+pub(super) async fn update_status_reconcile_failure(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    reason: &str,
+    message: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let mut latest = match api.get_status(&name).await {
+        Ok(latest) => latest,
+        Err(e) => {
+            warn!("failed to read latest status for '{}': {}", name, e);
+            return;
+        }
+    };
+    let observed_generation = current_rollout_generation(bgd);
+    let now = Utc::now().to_rfc3339();
+    let mut status = latest.status.clone().unwrap_or_default();
+    status
+        .conditions
+        .retain(|condition| condition.condition_type != "ReconcileFailed");
+    status.conditions.push(condition(
+        "ReconcileFailed",
+        ConditionStatus::True,
+        reason,
+        message,
+        observed_generation,
+        &now,
+    ));
+    status
+        .conditions
+        .retain(|condition| condition.condition_type != "Degraded");
+    status.conditions.push(condition(
+        "Degraded",
+        ConditionStatus::True,
+        reason,
+        message,
+        observed_generation,
+        &now,
+    ));
+    latest.status = Some(status);
+
+    match api
+        .replace_status(&name, &PostParams::default(), &latest)
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(error)) if error.code == 409 => {
+            info!(
+                "failure status update for '{}' conflicted with a newer write",
+                name
+            );
+        }
+        Err(e) => warn!("failed to update failure status for '{}': {}", name, e),
+    }
+}
+
+pub(super) async fn update_status_invalid(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    reason: &str,
+    message: &str,
+) {
+    let name = match &bgd.metadata.name {
+        Some(n) => n.clone(),
+        None => return,
+    };
+    let api: Api<BlueGreenDeployment> = Api::namespaced(client.clone(), namespace);
+    let observed_generation = current_rollout_generation(bgd);
+    let now = Utc::now().to_rfc3339();
+    let conditions = vec![
+        condition(
+            "Ready",
+            ConditionStatus::False,
+            reason,
+            message,
+            observed_generation,
+            &now,
+        ),
+        condition(
+            "Progressing",
+            ConditionStatus::False,
+            reason,
+            message,
+            observed_generation,
+            &now,
+        ),
+        condition(
+            "Degraded",
+            ConditionStatus::True,
+            reason,
+            message,
+            observed_generation,
+            &now,
+        ),
+        condition(
+            "ReconcileFailed",
+            ConditionStatus::True,
+            reason,
+            message,
+            observed_generation,
+            &now,
+        ),
+    ];
+    let patch = json!({
+        "status": {
+            "phase": "Invalid",
+            "observedGeneration": observed_generation,
+            "conditions": conditions
+        }
+    });
+    if let Err(e) = api
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        warn!("failed to update invalid status for '{}': {}", name, e);
+    }
+}
+
 pub(super) fn conditions_for_phase(
     phase: &BGDPhase,
     observed_generation: i64,
@@ -295,9 +422,16 @@ pub(super) fn conditions_for_phase(
             "RolledBack",
             "Rollout failed promotion criteria or timed out and was rolled back.",
         ),
+        BGDPhase::Invalid => (
+            ConditionStatus::False,
+            ConditionStatus::False,
+            ConditionStatus::True,
+            "InvalidSpec",
+            "Rollout specification is invalid.",
+        ),
     };
 
-    vec![
+    let mut conditions = vec![
         condition("Ready", ready, reason, message, observed_generation, &now),
         condition(
             "Progressing",
@@ -315,7 +449,18 @@ pub(super) fn conditions_for_phase(
             observed_generation,
             &now,
         ),
-    ]
+    ];
+    if matches!(phase, BGDPhase::Completed) {
+        conditions.push(condition(
+            "ReconcileFailed",
+            ConditionStatus::False,
+            reason,
+            message,
+            observed_generation,
+            &now,
+        ));
+    }
+    conditions
 }
 
 fn condition(
@@ -505,6 +650,23 @@ mod tests {
     #[test]
     fn rollback_conditions_are_gitops_degraded() {
         let conditions = conditions_for_phase(&BGDPhase::RolledBack, 8);
+        assert_eq!(
+            condition_status(&conditions, "Ready"),
+            ConditionStatus::False
+        );
+        assert_eq!(
+            condition_status(&conditions, "Progressing"),
+            ConditionStatus::False
+        );
+        assert_eq!(
+            condition_status(&conditions, "Degraded"),
+            ConditionStatus::True
+        );
+    }
+
+    #[test]
+    fn invalid_conditions_are_gitops_degraded_and_not_progressing() {
+        let conditions = conditions_for_phase(&BGDPhase::Invalid, 10);
         assert_eq!(
             condition_status(&conditions, "Ready"),
             ConditionStatus::False

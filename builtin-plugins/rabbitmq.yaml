@@ -4,8 +4,12 @@ metadata:
   name: rabbitmq
 spec:
   description: "RabbitMQ transport plugin"
-  image: ghcr.io/dlahmad/fbg-plugin-rabbitmq:0.1.0
+  image: ghcr.io/dlahmad/fbg-plugin-rabbitmq:latest
   supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
+  roleConstraints:
+    mutuallyExclusive:
+      - roles: [duplicator, splitter, combiner, consumer]
+        reason: "Only one transport movement role can own the RabbitMQ polling loop for an inceptor. Observer and writer are additive."
   topology: standalone
   lifecycle:
     preparePath: /prepare
@@ -22,11 +26,30 @@ spec:
     port: 9090
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
   fieldNamespaces: [queue]
   configSchema:
     type: object
+    additionalProperties: false
     properties:
-      amqpUrl: { type: string }
+      queueDeclaration:
+        type: object
+        properties:
+          durable: { type: boolean }
+          exclusive: { type: boolean }
+          autoDelete: { type: boolean }
+          arguments: { type: object }
+      shadowQueue:
+        type: object
+        properties:
+          suffix: { type: string }
+          queueDeclaration:
+            type: object
+            properties:
+              durable: { type: boolean }
+              exclusive: { type: boolean }
+              autoDelete: { type: boolean }
+              arguments: { type: object }
       duplicator:
         type: object
         properties:
@@ -35,6 +58,7 @@ spec:
           blueInputQueue: { type: string }
           greenInputQueueEnvVar: { type: string }
           blueInputQueueEnvVar: { type: string }
+          temporaryQueueIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
       splitter:
         type: object
         properties:
@@ -43,6 +67,7 @@ spec:
           blueInputQueue: { type: string }
           greenInputQueueEnvVar: { type: string }
           blueInputQueueEnvVar: { type: string }
+          temporaryQueueIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
       combiner:
         type: object
         properties:
@@ -51,6 +76,7 @@ spec:
           blueOutputQueue: { type: string }
           greenOutputQueueEnvVar: { type: string }
           blueOutputQueueEnvVar: { type: string }
+          temporaryQueueIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
       writer:
         type: object
         properties:

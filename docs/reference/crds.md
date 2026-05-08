@@ -18,11 +18,18 @@ Resources:
 - `BlueGreenDeployment`
 - `InceptionPlugin`
 
+`BlueGreenDeployment.status.phase` is one of `Pending`, `Observing`,
+`Promoting`, `Draining`, `Completed`, `RolledBack`, or `Invalid`. User-visible
+failure diagnostics are exposed through `status.conditions`; see
+[Troubleshooting](../operations/troubleshooting.md).
+
 The state store is operator-global runtime configuration, not a CRD selected
 per `BlueGreenDeployment`.
 `InceptionPlugin.spec.inceptor` describes the per-inception traffic component.
 `InceptionPlugin.spec.manager` optionally references a privileged manager
 Service in the operator namespace for resource create/delete operations.
+`InceptionPlugin.spec.roleConstraints` declares plugin-specific role
+compatibility rules that the operator validates before side effects.
 `BlueGreenDeployment.spec.test` defines one verifier using native Kubernetes
 `deployment` and `service` specs. Put env vars, readiness probes,
 resources, security contexts, commands, and ports in those Kubernetes specs.

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::command;
 use crate::harness::E2eHarness;
-use crate::status::{bgd_status, condition_status, testcase_flags};
+use crate::status::{bgd_status, condition_reason, condition_status, testcase_flags};
 
 pub async fn wait_for_tracked_cases(
     harness: &E2eHarness,
@@ -158,6 +158,22 @@ pub fn assert_condition(
         Ok(())
     } else {
         bail!("expected bluegreendeployment/{bgd} condition {condition}={expected}, got {actual}")
+    }
+}
+
+pub fn assert_condition_reason(
+    document: &Value,
+    bgd: &str,
+    condition: &str,
+    expected: &str,
+) -> Result<()> {
+    let actual = condition_reason(document, condition).unwrap_or_default();
+    if actual == expected {
+        Ok(())
+    } else {
+        bail!(
+            "expected bluegreendeployment/{bgd} condition {condition} reason {expected}, got {actual}"
+        )
     }
 }
 
