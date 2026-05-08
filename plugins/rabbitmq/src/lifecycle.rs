@@ -100,7 +100,7 @@ async fn queue_pair_drain_status(
     blue_queue: &str,
     label: &str,
 ) -> Result<PluginDrainStatusResponse> {
-    if let Some(management) = ManagementClient::from_config(&state.config) {
+    if let Some(management) = ManagementClient::from_config(&state.config)? {
         let green = management_queue_depth_with_shadow(&management, state, green_queue).await?;
         let blue = management_queue_depth_with_shadow(&management, state, blue_queue).await?;
         return Ok(management_drain_status(label, &green, &blue));

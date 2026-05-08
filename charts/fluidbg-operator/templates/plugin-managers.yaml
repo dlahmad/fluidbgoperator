@@ -91,6 +91,10 @@ spec:
                   key: {{ .Values.builtinPlugins.rabbitmq.manager.managementVhostSecretKey | quote }}
                   optional: true
             {{- end }}
+            {{- if .Values.builtinPlugins.rabbitmq.manager.managementAllowInsecure }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE
+              value: "true"
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health

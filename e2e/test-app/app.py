@@ -84,8 +84,9 @@ def trigger():
     msg = {"orderId": test_id, "type": "order", "action": "process"}
     try:
         publish_json(INPUT_QUEUE, msg)
-    except Exception as e:
-        return jsonify({"testId": test_id, "status": "triggered", "publish_error": str(e)})
+    except Exception:
+        app.logger.exception("failed to publish trigger message")
+        return jsonify({"testId": test_id, "status": "triggered", "publish_error": "publish failed"}), 502
     return jsonify({"testId": test_id, "status": "triggered"})
 
 

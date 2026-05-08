@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -7,7 +8,7 @@ use crate::config::Config;
 #[derive(Clone)]
 pub(crate) struct ManagementClient {
     http: reqwest::Client,
-    base_url: String,
+    base_url: Url,
     username: String,
     password: String,
     vhost: String,
@@ -41,30 +42,46 @@ struct UserResponse {
 }
 
 impl ManagementClient {
-    pub(crate) fn new(base_url: String, username: String, password: String, vhost: String) -> Self {
-        Self {
+    pub(crate) fn new(
+        base_url: String,
+        username: String,
+        password: String,
+        vhost: String,
+        allow_insecure: bool,
+    ) -> Result<Self> {
+        Ok(Self {
             http: reqwest::Client::new(),
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: validate_management_base_url(&base_url, allow_insecure)?,
             username,
             password,
             vhost,
-        }
+        })
     }
 
-    pub(crate) fn from_config(_config: &Config) -> Option<Self> {
-        let url = std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_URL").ok()?;
-        Some(Self::new(
+    pub(crate) fn from_config(_config: &Config) -> Result<Option<Self>> {
+        let Some(url) = std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_URL").ok() else {
+            return Ok(None);
+        };
+        let username = match std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_USERNAME") {
+            Ok(value) if !value.is_empty() => value,
+            _ => return Ok(None),
+        };
+        let password = match std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_PASSWORD") {
+            Ok(value) if !value.is_empty() => value,
+            _ => return Ok(None),
+        };
+        let allow_insecure = env_flag("FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE");
+        Ok(Some(Self::new(
             url,
-            std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_USERNAME")
-                .unwrap_or_else(|_| "guest".to_string()),
-            std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_PASSWORD")
-                .unwrap_or_else(|_| "guest".to_string()),
+            username,
+            password,
             std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_VHOST").unwrap_or_else(|_| "/".to_string()),
-        ))
+            allow_insecure,
+        )?))
     }
 
     pub(crate) fn base_url(&self) -> &str {
-        &self.base_url
+        self.base_url.as_str().trim_end_matches('/')
     }
 
     pub(crate) fn vhost(&self) -> &str {
@@ -78,7 +95,7 @@ impl ManagementClient {
         queue_names: &[String],
     ) -> Result<()> {
         let user_url = format!(
-            "{}/api/users/{}",
+            "{}api/users/{}",
             self.base_url,
             encode_path_segment(username)
         );
@@ -96,7 +113,7 @@ impl ManagementClient {
 
         let queue_regex = queue_permission_regex(queue_names);
         let permissions_url = format!(
-            "{}/api/permissions/{}/{}",
+            "{}api/permissions/{}/{}",
             self.base_url,
             encode_path_segment(&self.vhost),
             encode_path_segment(username)
@@ -118,7 +135,7 @@ impl ManagementClient {
 
     pub(crate) async fn delete_user(&self, username: &str) -> Result<()> {
         let url = format!(
-            "{}/api/users/{}",
+            "{}api/users/{}",
             self.base_url,
             encode_path_segment(username)
         );
@@ -137,7 +154,7 @@ impl ManagementClient {
     }
 
     pub(crate) async fn list_users(&self) -> Result<Vec<String>> {
-        let url = format!("{}/api/users", self.base_url);
+        let url = format!("{}api/users", self.base_url);
         let users = self
             .http
             .get(&url)
@@ -154,7 +171,7 @@ impl ManagementClient {
 
     pub(crate) async fn queue_depth(&self, queue: &str) -> Result<QueueDepth> {
         let url = format!(
-            "{}/api/queues/{}/{}",
+            "{}api/queues/{}/{}",
             self.base_url,
             encode_path_segment(&self.vhost),
             encode_path_segment(queue)
@@ -184,7 +201,7 @@ impl ManagementClient {
 
     pub(crate) async fn list_queues(&self) -> Result<Vec<String>> {
         let url = format!(
-            "{}/api/queues/{}",
+            "{}api/queues/{}",
             self.base_url,
             encode_path_segment(&self.vhost)
         );
@@ -222,6 +239,38 @@ fn default_exchange_permission_regex() -> &'static str {
     "^(amq\\.default|)$"
 }
 
+fn validate_management_base_url(value: &str, allow_insecure: bool) -> Result<Url> {
+    let mut url = Url::parse(value.trim()).context("invalid RabbitMQ management URL")?;
+    if url.host_str().is_none() {
+        bail!("RabbitMQ management URL must include a host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("RabbitMQ management URL must not contain credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("RabbitMQ management URL must not contain query or fragment components");
+    }
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_insecure => {}
+        "http" => bail!(
+            "RabbitMQ management URL uses http; set FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE=true only for trusted in-cluster development endpoints"
+        ),
+        scheme => bail!("RabbitMQ management URL must use http or https, got '{scheme}'"),
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path().trim_end_matches('/'));
+        url.set_path(&path);
+    }
+    Ok(url)
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
 fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.as_bytes() {
@@ -256,5 +305,21 @@ mod tests {
     #[test]
     fn default_exchange_permission_allows_publish_via_blank_exchange() {
         assert_eq!(default_exchange_permission_regex(), "^(amq\\.default|)$");
+    }
+
+    #[test]
+    fn management_url_requires_https_without_explicit_insecure_opt_in() {
+        assert!(validate_management_base_url("http://rabbitmq:15672", false).is_err());
+        assert!(validate_management_base_url("http://rabbitmq:15672", true).is_ok());
+        assert!(validate_management_base_url("https://rabbitmq.example.com", false).is_ok());
+    }
+
+    #[test]
+    fn management_url_rejects_credentials_and_query() {
+        assert!(
+            validate_management_base_url("https://admin:secret@rabbitmq.example.com", false)
+                .is_err()
+        );
+        assert!(validate_management_base_url("https://rabbitmq.example.com?x=1", false).is_err());
     }
 }

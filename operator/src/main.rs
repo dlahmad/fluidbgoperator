@@ -147,10 +147,11 @@ async fn build_state_store() -> Arc<dyn StateStore> {
                     &container,
                     azure_identity::workload_identity_from_env("FLUIDBG_COSMOS"),
                 )
+                .expect("invalid cosmos endpoint")
             } else if let Ok(connection_string) = std::env::var("FLUIDBG_COSMOS_CONNECTION_STRING")
             {
                 CosmosStore::from_connection_string(&connection_string, &database, &container)
-                    .expect("failed to parse cosmos connection string")
+                    .expect("failed to parse cosmos connection string or endpoint")
             } else {
                 CosmosStore::new_master_key(
                     &required_env("FLUIDBG_COSMOS_ENDPOINT"),
@@ -158,6 +159,7 @@ async fn build_state_store() -> Arc<dyn StateStore> {
                     &container,
                     &required_env("FLUIDBG_COSMOS_ACCOUNT_KEY"),
                 )
+                .expect("invalid cosmos endpoint")
             };
             store
                 .validate_container()

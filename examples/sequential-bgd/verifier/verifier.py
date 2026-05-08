@@ -59,13 +59,14 @@ def result(test_id):
         )
         sink_response.raise_for_status()
         sink_case = sink_response.json()
-    except Exception as exc:
+    except Exception:
+        app.logger.exception("failed to query sink case")
         return jsonify(
             {
                 "passed": None,
                 "testId": test_id,
                 "status": "sink-unavailable",
-                "errorMessage": str(exc),
+                "errorMessage": "sink unavailable",
             }
         )
 

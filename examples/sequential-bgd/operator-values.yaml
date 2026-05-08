@@ -12,6 +12,7 @@ builtinPlugins:
       enabled: true
       amqpUrl: amqp://fluidbg:fluidbg@rabbitmq.fluidbg-demo:5672/%2f
       managementUrl: http://rabbitmq.fluidbg-demo:15672
+      managementAllowInsecure: true
       managementUsername: fluidbg
       managementPassword: fluidbg
       managementVhost: /

@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Duration, Utc};
+use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, LOCATION};
 use serde::Deserialize;
 use serde_json::Value;
@@ -89,21 +90,7 @@ impl ServiceBusClient {
                     .map(|conn| conn.fully_qualified_namespace.clone())
             })
             .context("missing fullyQualifiedNamespace or connectionString Endpoint")?;
-        let endpoint = format!(
-            "https://{}",
-            namespace
-                .trim_start_matches("sb://")
-                .trim_start_matches("https://")
-                .trim_end_matches('/')
-        );
-        let namespace_name = namespace
-            .trim_start_matches("sb://")
-            .trim_start_matches("https://")
-            .trim_end_matches('/')
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_string();
+        let (endpoint, namespace_name) = service_bus_endpoint_from_namespace(&namespace)?;
 
         let auth = if !config.static_sas_tokens.is_empty() {
             AuthProvider::StaticSasTokens {
@@ -141,10 +128,13 @@ impl ServiceBusClient {
                         .context(
                             "workloadIdentity auth requires federatedTokenFile or AZURE_FEDERATED_TOKEN_FILE",
                         )?,
-                    authority_host: auth
-                        .and_then(|auth| auth.authority_host.clone())
-                        .or_else(|| std::env::var("AZURE_AUTHORITY_HOST").ok())
-                        .unwrap_or_else(|| "https://login.microsoftonline.com".to_string()),
+                    authority_host: validate_https_base_url(
+                        &auth
+                            .and_then(|auth| auth.authority_host.clone())
+                            .or_else(|| std::env::var("AZURE_AUTHORITY_HOST").ok())
+                            .unwrap_or_else(|| "https://login.microsoftonline.com".to_string()),
+                        "Azure authority host",
+                    )?,
                     service_bus_token: Arc::new(Mutex::new(None)),
                     arm_token: Arc::new(Mutex::new(None)),
                 }
@@ -774,14 +764,66 @@ pub(crate) fn sas_token(resource: &str, key_name: &str, key: &str, ttl_seconds: 
 }
 
 pub(crate) fn service_bus_resource_url(namespace: &str, queue: &str) -> String {
-    let endpoint = format!(
-        "https://{}",
-        namespace
-            .trim_start_matches("sb://")
-            .trim_start_matches("https://")
-            .trim_end_matches('/')
-    );
+    let (endpoint, _) = service_bus_endpoint_from_namespace(namespace)
+        .expect("invalid Service Bus namespace for resource URL");
     format!("{}/{}", endpoint, percent_encode_path(queue))
+}
+
+fn service_bus_endpoint_from_namespace(namespace: &str) -> Result<(String, String)> {
+    let host = namespace
+        .trim()
+        .trim_start_matches("sb://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    if host.is_empty()
+        || host.contains('/')
+        || host.contains('@')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains(':')
+    {
+        bail!(
+            "Service Bus namespace must be a host name without path, credentials, query, or port"
+        );
+    }
+    if !is_allowed_service_bus_host(host) {
+        bail!("Service Bus namespace host '{host}' is not an Azure Service Bus endpoint");
+    }
+    let namespace_name = host.split('.').next().unwrap_or_default().to_string();
+    Ok((format!("https://{host}"), namespace_name))
+}
+
+fn is_allowed_service_bus_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    [
+        ".servicebus.windows.net",
+        ".servicebus.usgovcloudapi.net",
+        ".servicebus.chinacloudapi.cn",
+    ]
+    .iter()
+    .any(|suffix| host.ends_with(suffix) && host.len() > suffix.len())
+}
+
+fn validate_https_base_url(value: &str, label: &str) -> Result<String> {
+    let mut url = Url::parse(value.trim()).with_context(|| format!("invalid {label}"))?;
+    if url.scheme() != "https" {
+        bail!("{label} must use https");
+    }
+    if url.host_str().is_none() {
+        bail!("{label} must include a host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("{label} must not contain credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("{label} must not contain query or fragment components");
+    }
+    if url.path() != "/" && !url.path().is_empty() {
+        bail!("{label} must not contain a path");
+    }
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 #[derive(Deserialize)]
@@ -1273,6 +1315,29 @@ mod tests {
         assert_eq!(
             percent_encode_path("orders/blue queue"),
             "orders/blue%20queue"
+        );
+    }
+
+    #[test]
+    fn service_bus_namespace_is_limited_to_azure_service_bus_hosts() {
+        let (endpoint, namespace) =
+            service_bus_endpoint_from_namespace("sb://example.servicebus.windows.net/").unwrap();
+        assert_eq!(endpoint, "https://example.servicebus.windows.net");
+        assert_eq!(namespace, "example");
+        assert!(
+            service_bus_endpoint_from_namespace("https://169.254.169.254/latest/meta-data")
+                .is_err()
+        );
+        assert!(service_bus_endpoint_from_namespace("https://evil.example.com").is_err());
+    }
+
+    #[test]
+    fn azure_authority_url_requires_https_host_without_path() {
+        assert!(validate_https_base_url("https://login.microsoftonline.com", "authority").is_ok());
+        assert!(validate_https_base_url("http://login.microsoftonline.com", "authority").is_err());
+        assert!(
+            validate_https_base_url("https://login.microsoftonline.com/tenant", "authority")
+                .is_err()
         );
     }
 

@@ -338,6 +338,11 @@ existing Secret or from local Helm values stored into a Secret. During the
 authenticated manager prepare call, the manager returns the per-inception
 environment variables that the operator injects into the inceptor pod.
 
+RabbitMQ management URLs must use HTTPS by default. For trusted local or
+in-cluster development RabbitMQ instances that expose only plain HTTP, set
+`builtinPlugins.rabbitmq.manager.managementAllowInsecure=true`; production
+installations should instead expose the RabbitMQ management API over HTTPS.
+
 For Azure Service Bus workload identity, create a manager ServiceAccount in the
 operator namespace and annotate it for Microsoft Entra Workload ID. Privileged
 Azure/RabbitMQ infrastructure credentials should be mounted only into manager

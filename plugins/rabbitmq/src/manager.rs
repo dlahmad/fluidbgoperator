@@ -24,6 +24,7 @@ pub(crate) struct ManagerState {
     pub(crate) management_username: Option<String>,
     pub(crate) management_password: Option<String>,
     pub(crate) management_vhost: Option<String>,
+    pub(crate) management_allow_insecure: bool,
 }
 
 pub(crate) fn manager_state_from_env() -> anyhow::Result<ManagerState> {
@@ -38,6 +39,7 @@ pub(crate) fn manager_state_from_env() -> anyhow::Result<ManagerState> {
         management_username: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_USERNAME").ok(),
         management_password: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_PASSWORD").ok(),
         management_vhost: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_VHOST").ok(),
+        management_allow_insecure: env_flag("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE"),
     })
 }
 
@@ -224,7 +226,7 @@ fn management_client(state: &ManagerState) -> Result<ManagementClient, StatusCod
         .clone()
         .filter(|value| !value.is_empty())
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(ManagementClient::new(
+    ManagementClient::new(
         url,
         username,
         password,
@@ -233,7 +235,9 @@ fn management_client(state: &ManagerState) -> Result<ManagementClient, StatusCod
             .clone()
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "/".to_string()),
-    ))
+        state.management_allow_insecure,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 fn inceptor_env(
@@ -267,6 +271,13 @@ fn inceptor_env(
         "FLUIDBG_RABBITMQ_MANAGEMENT_VHOST",
         Some(management_vhost),
     );
+    if state.management_allow_insecure {
+        push_optional_env(
+            &mut env,
+            "FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE",
+            Some("true"),
+        );
+    }
     env
 }
 
@@ -347,6 +358,12 @@ fn push_optional_env(env: &mut Vec<InceptorEnvVar>, name: &str, value: Option<&s
             value: value.to_string(),
         });
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn secured_config_from_claims(

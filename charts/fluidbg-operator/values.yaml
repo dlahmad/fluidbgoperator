@@ -135,6 +135,10 @@ builtinPlugins:
       managementPasswordSecretKey: management-password
       managementVhost: "/"
       managementVhostSecretKey: management-vhost
+      # Production deployments should use HTTPS for RabbitMQ management API.
+      # Set true only for trusted in-cluster/dev RabbitMQ endpoints that expose
+      # management over plain HTTP.
+      managementAllowInsecure: false
       podAnnotations: {}
       podLabels: {}
       resources: {}

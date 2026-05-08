@@ -197,3 +197,9 @@ permission is limited to RabbitMQ's default exchange used for queue-routed
 publishing. It returns
 `FLUIDBG_RABBITMQ_AMQP_URL` and optional `FLUIDBG_RABBITMQ_MANAGEMENT_*` values
 for that scoped user as `inceptorEnv`.
+
+`FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_URL` and
+`FLUIDBG_RABBITMQ_MANAGEMENT_URL` require HTTPS unless the corresponding
+`FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE=true` /
+`FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE=true` flag is set. Use that opt-in
+only for trusted local or in-cluster development endpoints.

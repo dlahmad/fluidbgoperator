@@ -88,6 +88,7 @@ helm_args=(
     --set "builtinPlugins.azureServiceBus.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus"
     --set "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.$NAMESPACE:5672/%2f"
     --set "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.$NAMESPACE:15672"
+    --set "builtinPlugins.rabbitmq.manager.managementAllowInsecure=true"
     --set "builtinPlugins.namespaces[0]=$NAMESPACE"
 )
 

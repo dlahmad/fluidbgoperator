@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Duration, Utc};
+use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, IF_MATCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -68,14 +69,19 @@ struct FailureRow {
 }
 
 impl CosmosStore {
-    pub fn new_master_key(endpoint: &str, database: &str, container: &str, key: &str) -> Self {
-        Self {
+    pub fn new_master_key(
+        endpoint: &str,
+        database: &str,
+        container: &str,
+        key: &str,
+    ) -> Result<Self> {
+        Ok(Self {
             http: reqwest::Client::new(),
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            endpoint: validate_cosmos_endpoint(endpoint)?,
             database: database.to_string(),
             container: container.to_string(),
             auth: CosmosAuth::MasterKey(key.to_string()),
-        }
+        })
     }
 
     pub fn new_workload_identity(
@@ -83,24 +89,19 @@ impl CosmosStore {
         database: &str,
         container: &str,
         identity: WorkloadIdentityConfig,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             http: reqwest::Client::new(),
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            endpoint: validate_cosmos_endpoint(endpoint)?,
             database: database.to_string(),
             container: container.to_string(),
             auth: CosmosAuth::WorkloadIdentity(TokenProvider::new(identity)),
-        }
+        })
     }
 
     pub fn from_connection_string(value: &str, database: &str, container: &str) -> Result<Self> {
         let parsed = parse_connection_string(value)?;
-        Ok(Self::new_master_key(
-            &parsed.endpoint,
-            database,
-            container,
-            &parsed.account_key,
-        ))
+        Self::new_master_key(&parsed.endpoint, database, container, &parsed.account_key)
     }
 
     pub async fn validate_container(&self) -> Result<()> {
@@ -584,6 +585,45 @@ fn parse_connection_string(value: &str) -> Result<ParsedConnectionString> {
     })
 }
 
+fn validate_cosmos_endpoint(value: &str) -> Result<String> {
+    let mut url = Url::parse(value.trim())
+        .map_err(|err| StoreError::Other(format!("invalid cosmos endpoint: {err}")))?;
+    if url.scheme() != "https" {
+        return Err(StoreError::Other(
+            "cosmos endpoint must use https".to_string(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| StoreError::Other("cosmos endpoint must include a host".to_string()))?;
+    if !host.ends_with(".documents.azure.com")
+        && !host.ends_with(".documents.azure.us")
+        && !host.ends_with(".documents.azure.cn")
+    {
+        return Err(StoreError::Other(format!(
+            "cosmos endpoint host '{host}' is not a Cosmos DB endpoint"
+        )));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(StoreError::Other(
+            "cosmos endpoint must not contain credentials".to_string(),
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(StoreError::Other(
+            "cosmos endpoint must not contain query or fragment components".to_string(),
+        ));
+    }
+    if url.path() != "/" && !url.path().is_empty() {
+        return Err(StoreError::Other(
+            "cosmos endpoint must not contain a path".to_string(),
+        ));
+    }
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
 fn cosmos_master_auth(
     verb: &str,
     resource_type: &str,
@@ -659,6 +699,14 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.endpoint, "https://acct.documents.azure.com:443/");
         assert_eq!(parsed.account_key, "abc==");
+    }
+
+    #[test]
+    fn cosmos_endpoint_must_be_https_cosmos_host() {
+        assert!(validate_cosmos_endpoint("https://acct.documents.azure.com:443/").is_ok());
+        assert!(validate_cosmos_endpoint("http://acct.documents.azure.com").is_err());
+        assert!(validate_cosmos_endpoint("https://169.254.169.254").is_err());
+        assert!(validate_cosmos_endpoint("https://acct.documents.azure.com/path").is_err());
     }
 
     #[test]

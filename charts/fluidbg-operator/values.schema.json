@@ -156,6 +156,7 @@
             "managementPasswordSecretKey": { "type": "string" },
             "managementVhost": { "type": "string" },
             "managementVhostSecretKey": { "type": "string" },
+            "managementAllowInsecure": { "type": "boolean" },
             "connectionStringSecretName": { "type": "string" },
             "connectionStringSecretKey": { "type": "string" },
             "fullyQualifiedNamespace": { "type": "string" },
