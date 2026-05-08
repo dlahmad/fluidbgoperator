@@ -30,7 +30,10 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 cleanup_generated() {
-    find "$ROOT_DIR" -path "$ROOT_DIR/target" -prune -o -name '*_bin_*-unknown-linux-musl.cdx.json' -type f -delete
+    local dir
+    for dir in "$ROOT_DIR/operator" "$ROOT_DIR/plugins/http" "$ROOT_DIR/plugins/rabbitmq" "$ROOT_DIR/plugins/azure_servicebus"; do
+        find "$dir" -maxdepth 1 -type f -name '*_bin_*-unknown-linux-musl.cdx.json' -delete
+    done
 }
 trap cleanup_generated EXIT
 cleanup_generated
