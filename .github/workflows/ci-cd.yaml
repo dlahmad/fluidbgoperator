@@ -22,6 +22,7 @@ permissions:
   packages: write
   pages: write
   id-token: write
+  attestations: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -104,6 +105,34 @@ jobs:
           bash -n scripts/build-linux-binaries.sh
           bash -n scripts/build-images.sh
           bash -n scripts/build-example-images.sh
+          bash -n scripts/generate-rust-sboms.sh
+
+  rust-sbom:
+    name: Generate Rust SBOMs
+    runs-on: ubuntu-latest
+    needs: [resolve, checks]
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-sbom
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.7 --locked
+      - name: Generate binary SBOMs
+        run: ./scripts/generate-rust-sboms.sh --version "${{ needs.resolve.outputs.version }}" --output dist/sbom
+      - name: Build SBOM checksum manifest
+        run: |
+          set -euo pipefail
+          find dist/sbom -type f -name '*.cyclonedx.json' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > dist/sbom/SHA256SUMS.sbom
+      - name: Upload Rust SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluidbg-rust-sboms
+          path: dist/sbom/*
 
   manifests:
     name: CRDs and Helm templates
@@ -351,6 +380,57 @@ jobs:
               "${base}:latest-arm64"
           done
 
+  attest-rust-sboms:
+    name: Attest Rust SBOMs (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: [resolve, publish-manifests, rust-sbom]
+    if: needs.resolve.outputs.is_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: fbg-operator
+          - image: fbg-plugin-http
+          - image: fbg-plugin-rabbitmq
+          - image: fbg-plugin-azure-servicebus
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Download Rust SBOMs
+        uses: actions/download-artifact@v4
+        with:
+          name: fluidbg-rust-sboms
+          path: dist/sbom
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${{ needs.resolve.outputs.image_namespace }}/${{ matrix.image }}:${{ needs.resolve.outputs.version }}"
+          digest="$(docker buildx imagetools inspect "$image" --format '{{ .Manifest.Digest }}')"
+          echo "image=${image%:*}" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest amd64 Rust SBOM
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ steps.digest.outputs.image }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          sbom-path: dist/sbom/${{ matrix.image }}-${{ needs.resolve.outputs.version }}-linux-amd64.cyclonedx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest arm64 Rust SBOM
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ steps.digest.outputs.image }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          sbom-path: dist/sbom/${{ matrix.image }}-${{ needs.resolve.outputs.version }}-linux-arm64.cyclonedx.json
+          push-to-registry: true
+          create-storage-record: false
+
   package-helm:
     name: Package and publish Helm chart
     runs-on: ubuntu-latest
@@ -383,7 +463,7 @@ jobs:
   github-release:
     name: Publish GitHub release assets
     runs-on: ubuntu-latest
-    needs: [resolve, build-binaries, publish-manifests, package-helm]
+    needs: [resolve, build-binaries, publish-manifests, package-helm, attest-rust-sboms]
     if: needs.resolve.outputs.is_release == 'true'
     steps:
       - name: Download release artifacts
@@ -397,10 +477,15 @@ jobs:
         with:
           name: fluidbg-operator-chart
           path: dist/release
+      - name: Download Rust SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fluidbg-rust-sboms
+          path: dist/release
       - name: Build checksum manifest
         run: |
           set -euo pipefail
-          find dist/release -type f \( -name '*.tar.gz' -o -name '*.tgz' \) -print0 \
+          find dist/release -type f \( -name '*.tar.gz' -o -name '*.tgz' -o -name '*.cyclonedx.json' \) -print0 \
             | sort -z \
             | xargs -0 sha256sum > dist/release/SHA256SUMS
       - name: Publish release assets
@@ -412,8 +497,8 @@ jobs:
           notes="$(cat <<NOTES
           FluidBG Operator $tag release.
 
-          Container images are published to GHCR with OCI SBOM/provenance attestations and are not attached as release files.
-          Attached release files contain executable archives, checksums, and the Helm chart package.
+          Container images are published to GHCR with BuildKit filesystem SBOM/provenance attestations and Cargo-aware Rust SBOM attestations.
+          Attached release files contain executable archives, Rust dependency SBOMs, checksums, and the Helm chart package.
           NOTES
           )"
           repo="${GITHUB_REPOSITORY}"
@@ -421,6 +506,7 @@ jobs:
             gh release upload "$tag" \
               dist/release/*.tar.gz \
               dist/release/*.tgz \
+              dist/release/*.cyclonedx.json \
               dist/release/*.sha256 \
               dist/release/SHA256SUMS \
               --repo "$repo" \
@@ -429,6 +515,7 @@ jobs:
             gh release create "$tag" \
               dist/release/*.tar.gz \
               dist/release/*.tgz \
+              dist/release/*.cyclonedx.json \
               dist/release/*.sha256 \
               dist/release/SHA256SUMS \
               --repo "$repo" \

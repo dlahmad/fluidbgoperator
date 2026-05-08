@@ -81,7 +81,7 @@ Typical pinned install:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.2
+  --set global.imageTag=0.2.3
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -91,7 +91,7 @@ version:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.2 \
+  --set global.imageTag=0.2.3 \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 
@@ -130,16 +130,50 @@ helm upgrade --install fluidbg charts/fluidbg-operator \
   --set-string operator.rustLog='fluidbg_operator=debug\,warn'
 ```
 
-## Image SBOMs
+## Image And Rust SBOMs
 
-Release images are pushed with BuildKit SBOM and provenance attestations:
+Release images are published with two complementary SBOM layers:
 
 - `--sbom=true` attaches a standardized SPDX SBOM attestation to the pushed OCI
-  image.
+  image. This describes what BuildKit/Syft can see from the final image
+  filesystem and build context.
 - `--provenance=mode=max` attaches SLSA-style build provenance.
-- `BUILDKIT_SBOM_SCAN_CONTEXT=true` includes the build context, so static Rust
-  binaries are accompanied by dependency metadata from `Cargo.lock` instead of
-  relying only on runtime filesystem scanning.
+- `scripts/generate-rust-sboms.sh` creates Cargo-aware CycloneDX SBOMs for the
+  released operator and plugin binaries. These are attached to the GitHub
+  Release and attested against the GHCR image manifests with GitHub artifact
+  attestations.
+
+This split is intentional. A scanner such as `syft ghcr.io/...` scans the image
+filesystem and may not recover Rust crate dependencies from stripped static
+binaries. Use the Cargo-generated CycloneDX SBOMs when you need the Rust crate
+dependency list.
+
+Inspect the BuildKit-attached image SBOM:
+
+```sh
+docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.2.3 \
+  --format '{{ range (index .SBOM "linux/amd64").SPDX.packages }}{{ .name }} {{ .versionInfo }}{{ println }}{{ end }}'
+```
+
+Download the release SBOMs and list Rust crate dependencies:
+
+```sh
+gh release download v0.2.3 \
+  --repo dlahmad/fluidbgoperator \
+  --pattern 'fbg-operator-0.2.3-linux-amd64.cyclonedx.json'
+
+jq -r '.components[] | select(.type == "library") | [.name, .version] | @tsv' \
+  fbg-operator-0.2.3-linux-amd64.cyclonedx.json
+```
+
+Verify and inspect the image SBOM attestation with GitHub CLI:
+
+```sh
+gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.2.3 \
+  --repo dlahmad/fluidbgoperator
+
+jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicateType' sha256:*.jsonl
+```
 
 Local `--load` builds do not preserve OCI attestations in the Docker image
 store. To create attestations manually, push the image and set
@@ -151,6 +185,13 @@ DOCKER_BUILD_ATTEST=true ./scripts/build-images.sh \
   --tag test-sbom \
   --platform linux/amd64 \
   --push
+```
+
+Generate local Cargo-aware Rust SBOMs:
+
+```sh
+cargo install cargo-cyclonedx --version 0.5.7 --locked
+./scripts/generate-rust-sboms.sh --version local --output dist/sbom
 ```
 
 ## State Store And HA

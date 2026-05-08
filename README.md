@@ -11,6 +11,8 @@ The repository is structured as a production-ready Rust workspace:
 - CRDs are generated from Rust models and mirrored into the Helm chart
 - CI covers formatting, clippy, unit tests, shell/Python checks, Docker builds, and Helm rendering
 - scheduled/manual e2e runs execute the kind-based full rollout suite
+- releases publish BuildKit image SBOMs, SLSA provenance, and Cargo-aware
+  CycloneDX Rust dependency SBOMs
 
 ## Workspace
 
@@ -134,6 +136,8 @@ Observed release image sizes, measured as compressed registry transfer size:
 - [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, and Azure Service Bus.
 - [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
+- [docs/operations/helm.md](docs/operations/helm.md) includes CLI commands for
+  inspecting image SBOMs and Rust dependency SBOMs.
 - [docs/reference/sdk.md](docs/reference/sdk.md) documents the SDK layout and language-neutral spec.
 - [docs/reference/crds.md](docs/reference/crds.md) documents CRD generation and chart mirroring.
 - [docs/development/implementation-plan.md](docs/development/implementation-plan.md) tracks the current implementation state and near-term work.

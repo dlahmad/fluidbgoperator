@@ -11,3 +11,4 @@ riderModule.iml
 .docker-cargo-home/
 .docker-target/
 dist/
+*_bin_*-unknown-linux-musl.cdx.json

@@ -4,6 +4,15 @@ title: Changelog
 
 # Changelog
 
+## 0.2.3 - 2026-05-08
+
+- Added Cargo-aware CycloneDX SBOM generation for every released Rust binary
+  and architecture.
+- Attached the Rust dependency SBOMs to GitHub Releases and attested them
+  against the published GHCR image manifests.
+- Documented how to inspect BuildKit filesystem SBOMs, Rust dependency SBOMs,
+  and GitHub image attestations from the CLI.
+
 ## 0.2.2 - 2026-05-08
 
 - Added BuildKit SPDX SBOM and SLSA provenance attestations for pushed release
