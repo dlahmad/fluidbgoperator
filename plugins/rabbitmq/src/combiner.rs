@@ -4,7 +4,7 @@ use anyhow::Result;
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
 use lapin::options::{BasicAckOptions, BasicGetOptions, BasicNackOptions};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::amqp::{connect_with_retry, declare_queue, move_queue_messages, publish_confirmed};
 use crate::config::{
@@ -90,7 +90,7 @@ async fn run_combine_loop_once(
                 {
                     warn!("failed to register test case {}: {}", test_id, err);
                 } else if route.should_register_case() {
-                    info!(
+                    debug!(
                         "registered testCase '{}' for blueGreenRef '{}'",
                         test_id,
                         state.runtime.blue_green_ref()
@@ -114,7 +114,7 @@ async fn run_combine_loop(
         }
         if matches!(state.runtime_mode(), RuntimeMode::Draining) {
             if let Err(err) = drain_output_queue(&state, &source_queue, &result_queue).await {
-                warn!(
+                debug!(
                     "rabbitmq combiner drain from '{}' failed, reconnecting: {}",
                     source_queue, err
                 );
@@ -125,7 +125,7 @@ async fn run_combine_loop(
         match run_combine_loop_once(source_queue.clone(), result_queue.clone(), state.clone()).await
         {
             Ok(()) => {
-                warn!(
+                debug!(
                     "rabbitmq combine loop for '{}' ended, reconnecting",
                     source_queue
                 );

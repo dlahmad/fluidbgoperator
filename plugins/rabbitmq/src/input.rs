@@ -4,7 +4,7 @@ use anyhow::Result;
 use lapin::Channel;
 use lapin::options::{BasicAckOptions, BasicGetOptions};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::amqp::{connect_with_retry, declare_queue, move_queue_messages, publish_confirmed};
 use crate::config::{
@@ -79,7 +79,7 @@ async fn process_input_delivery(
             {
                 warn!("failed to register test case {}: {}", test_id, err);
             } else if route.should_register_case() {
-                info!(
+                debug!(
                     "registered testCase '{}' for blueGreenRef '{}'",
                     test_id,
                     state.runtime.blue_green_ref()
@@ -209,7 +209,7 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
         if !inceptor_infra_disabled() {
             declare_queue(&channel, &input_queue, &state.config.queue_declaration).await?;
         }
-        info!("rabbitmq input pipeline polling {}", input_queue);
+        debug!("rabbitmq input pipeline polling {}", input_queue);
 
         loop {
             match state.runtime_mode() {
@@ -219,7 +219,7 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
                 }
                 RuntimeMode::Draining => {
                     if let Err(err) = drain_input_queues(&state, &channel).await {
-                        warn!("rabbitmq input drain failed, reconnecting: {}", err);
+                        debug!("rabbitmq input drain failed, reconnecting: {}", err);
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(300)).await;

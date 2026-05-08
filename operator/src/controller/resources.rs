@@ -11,7 +11,7 @@ use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::core::NamespaceResourceScope;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::debug;
 
 use crate::crd::blue_green::{
     BlueGreenDeployment, InceptionPoint, ManagedDeploymentSpec, TestSpec,
@@ -175,12 +175,12 @@ async fn wait_for_service_ready_endpoint(
                 return Ok(());
             }
             Ok(_) => {
-                info!(
+                debug!(
                     "waiting for service '{namespace}/{service_name}' to publish a ready endpoint ({attempt}/60)"
                 );
             }
             Err(err) => {
-                info!(
+                debug!(
                     "waiting for service '{namespace}/{service_name}' endpoint lookup ({attempt}/60): {err}"
                 );
             }
@@ -637,7 +637,7 @@ pub(super) async fn apply_deployment_manifest(
         }
         Err(err) => return Err(ReconcileError::K8s(err)),
     }
-    info!(
+    debug!(
         "applied declared deployment '{}/{}'",
         deploy_namespace, name
     );
@@ -921,7 +921,7 @@ async fn wait_for_inception_resources_deleted(
         {
             return Ok(());
         }
-        info!(
+        debug!(
             "waiting for inception resources for BGD '{}' to disappear: deployments={} services={} configmaps={} secrets={} pods={} ({}/60)",
             blue_green_ref,
             deployment_count,
@@ -966,7 +966,7 @@ async fn wait_for_blue_green_resources_deleted(
         {
             return Ok(());
         }
-        info!(
+        debug!(
             "waiting for orphaned resources for BGD '{}' to disappear: deployments={} services={} configmaps={} secrets={} pods={} ({}/60)",
             blue_green_ref,
             deployment_count,
@@ -1000,7 +1000,7 @@ async fn wait_for_test_resources_deleted(
             if !deployment_exists && !service_exists {
                 break;
             }
-            info!(
+            debug!(
                 "waiting for test resources for BGD '{}' logical test '{}' to disappear: deployment={} service={} ({}/60)",
                 bgd.metadata.name.as_deref().unwrap_or(""),
                 test.name,
@@ -1042,7 +1042,7 @@ where
 {
     match api.delete(name, &DeleteParams::default()).await {
         Ok(_) => {
-            info!("deleted test {} '{}/{}'", kind, namespace, name);
+            debug!("deleted test {} '{}/{}'", kind, namespace, name);
             Ok(())
         }
         Err(kube::Error::Api(e)) if e.code == 404 => Ok(()),

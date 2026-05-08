@@ -4,7 +4,7 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::EnvVar;
 use kube::api::{Api, DeleteParams, ListParams};
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 use super::ReconcileError;
 use super::plugin_lifecycle::{AssignmentKind, AssignmentTarget, PropertyAssignment};
@@ -188,7 +188,7 @@ async fn wait_for_deployment_ready(
             return Ok(());
         }
 
-        warn!(
+        debug!(
             "waiting for deployment '{}/{}' rollout (attempt {}/60)",
             deployment.namespace, deployment.name, attempt
         );
@@ -318,7 +318,7 @@ pub(super) async fn delete_current_green(
     let green_namespace = deployment_namespace(current_green_ref, namespace);
 
     if candidate_ref.name == current_green_ref.name && candidate_namespace == green_namespace {
-        info!(
+        debug!(
             "candidate and current green both reference '{}/{}'; skipping green deletion",
             candidate_namespace, candidate_ref.name
         );

@@ -52,8 +52,10 @@ spec:
               containerPort: {{ .Values.operator.api.port }}
               protocol: TCP
           env:
+            {{- with .Values.operator.rustLog }}
             - name: RUST_LOG
-              value: {{ .Values.operator.rustLog | quote }}
+              value: {{ . | quote }}
+            {{- end }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAME
               value: {{ .Values.operator.auth.signingSecretName | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_KEY

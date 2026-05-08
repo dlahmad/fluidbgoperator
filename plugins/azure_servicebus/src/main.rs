@@ -26,12 +26,14 @@ use lifecycle::{
 use servicebus::ServiceBusClient;
 use writer::write_handler;
 
+const DEFAULT_LOG_FILTER: &str = "warn,fluidbg_azure_servicebus=info";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
         )
         .init();
 

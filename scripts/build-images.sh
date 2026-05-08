@@ -6,6 +6,7 @@ REGISTRY="fluidbg"
 TAGS=()
 PUSH=false
 PLATFORM="${PLATFORM:-}"
+ATTEST="${DOCKER_BUILD_ATTEST:-false}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -55,7 +56,19 @@ build_image() {
         cache_args+=("--cache-to" "$DOCKER_BUILD_CACHE_TO-$name")
     fi
 
-    local build_args=(--load)
+    local build_args=()
+    if [ "$PUSH" = true ]; then
+        build_args+=(--push)
+        if [ "$ATTEST" = true ]; then
+            build_args+=(
+                --sbom=true
+                --provenance=mode=max
+                --build-arg BUILDKIT_SBOM_SCAN_CONTEXT=true
+            )
+        fi
+    else
+        build_args+=(--load)
+    fi
     if [ -n "$PLATFORM" ]; then
         build_args+=(--platform "$PLATFORM")
     fi
@@ -64,12 +77,6 @@ build_image() {
     fi
     build_args+=("${tag_args[@]}" -f "$dockerfile" "$ROOT_DIR")
     docker buildx build "${build_args[@]}"
-
-    if [ "$PUSH" = true ]; then
-        for tag in "${TAGS[@]}"; do
-            docker push "$REGISTRY/$name:$tag"
-        done
-    fi
 }
 
 for binary in fluidbg-operator fluidbg-http fluidbg-rabbitmq fluidbg-azure-servicebus; do

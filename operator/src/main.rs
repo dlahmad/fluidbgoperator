@@ -9,12 +9,14 @@ use fluidbg_operator::inception::InceptionTracker;
 use fluidbg_operator::state_store::{StateStore, memory::MemoryStore, postgres::PostgresStore};
 use fluidbg_operator::state_store::{azure_identity, cosmos::CosmosStore};
 
+const DEFAULT_LOG_FILTER: &str = "warn,fluidbg_operator=info";
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
         )
         .init();
 
@@ -24,7 +26,7 @@ async fn main() {
         return;
     }
 
-    info!("fluidbg operator v0.1 starting");
+    info!("fluidbg operator v{} starting", env!("CARGO_PKG_VERSION"));
 
     let store = build_state_store().await;
 

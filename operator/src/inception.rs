@@ -64,7 +64,7 @@ impl InceptionTracker {
                             {
                                 warn!("failed to set verdict for {}: {}", run.test_id, e);
                             } else {
-                                info!(
+                                debug!(
                                     "test {} verdict: {}",
                                     run.test_id,
                                     if passed { "Passed" } else { "Failed" }

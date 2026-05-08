@@ -1,5 +1,5 @@
 use kube::api::Api;
-use tracing::warn;
+use tracing::debug;
 
 use crate::crd::blue_green::BlueGreenDeployment;
 use crate::crd::inception_plugin::InceptionPlugin;
@@ -91,7 +91,7 @@ pub(super) async fn invoke_inceptor_lifecycle(
                 return Ok(Some(payload));
             }
             Err(err) if attempt < 10 => {
-                warn!(
+                debug!(
                     "plugin inceptor lifecycle endpoint {} not ready yet (attempt {}/10): {}",
                     url, attempt, err
                 );
@@ -147,7 +147,7 @@ pub(super) async fn invoke_plugin_manager_sync(
                 return Ok(());
             }
             Err(err) if attempt < 3 => {
-                warn!(
+                debug!(
                     "plugin manager sync endpoint {} not ready yet (attempt {}/3): {}",
                     url, attempt, err
                 );
@@ -266,7 +266,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
                 return Ok(Some(payload));
             }
             Err(err) if attempt < 10 => {
-                warn!(
+                debug!(
                     "plugin manager endpoint {} not ready yet (attempt {}/10): {}",
                     url, attempt, err
                 );
@@ -439,7 +439,7 @@ pub(super) async fn invoke_inceptor_traffic_shift(
                 return Ok(());
             }
             Err(err) if attempt < 10 => {
-                warn!(
+                debug!(
                     "plugin inceptor traffic shift endpoint {} not ready yet (attempt {}/10): {}",
                     url, attempt, err
                 );

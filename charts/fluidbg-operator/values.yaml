@@ -22,7 +22,9 @@ operator:
       memory: 64Mi
     limits:
       memory: 256Mi
-  rustLog: info
+  # Optional RUST_LOG override. Empty uses the operator binary default:
+  # warn,fluidbg_operator=info. Examples: debug, fluidbg_operator=debug,warn.
+  rustLog: ""
   auth:
     createSigningSecret: false
     signingSecretNamespace: ""
@@ -106,11 +108,17 @@ builtinPlugins:
   namespaces: []
   http:
     enabled: true
+    # Optional RUST_LOG for generated HTTP inceptor pods. Empty uses the binary
+    # default: warn,fluidbg_http=info.
+    rustLog: ""
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: ""
   rabbitmq:
     enabled: true
+    # Optional RUST_LOG for RabbitMQ manager and generated inceptor pods. Empty
+    # uses the binary default: warn,fluidbg_rabbitmq=info.
+    rustLog: ""
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: ""
@@ -132,6 +140,9 @@ builtinPlugins:
       resources: {}
   azureServiceBus:
     enabled: true
+    # Optional RUST_LOG for Azure Service Bus manager and generated inceptor
+    # pods. Empty uses the binary default: warn,fluidbg_azure_servicebus=info.
+    rustLog: ""
     inceptorWorkloadIdentity:
       enabled: false
       serviceAccountName: ""

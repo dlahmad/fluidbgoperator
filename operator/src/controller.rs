@@ -11,7 +11,7 @@ use kube::runtime::{Controller, watcher};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::crd::blue_green::{
     ActiveRolloutUpdatePolicy, BGDPhase, BlueGreenDeployment, BlueGreenDeploymentSpec,
@@ -146,7 +146,7 @@ pub async fn run_controller(client: kube::Client, auth: AuthConfig, store: Arc<d
         .for_each(|res| async move {
             match res {
                 Ok((obj, action)) => {
-                    info!("reconciled {:?} -> {:?}", obj, action);
+                    debug!("reconciled {:?} -> {:?}", obj, action);
                 }
                 Err(e) => {
                     error!("controller error: {:?}", e);
@@ -427,7 +427,7 @@ async fn reconcile_locked(
         bgd
     };
 
-    info!(
+    debug!(
         "reconciling BlueGreenDeployment '{}' phase={:?}",
         name, phase
     );
@@ -441,7 +441,7 @@ async fn reconcile_locked(
             else {
                 return Ok(Action::requeue(std::time::Duration::from_secs(1)));
             };
-            info!("using generated deployment name '{}'", generated_name);
+            debug!("using generated deployment name '{}'", generated_name);
             if bootstrap_initial_green_if_empty(&bgd, &client, &namespace).await? {
                 update_status_phase(&bgd, &client, &namespace, BGDPhase::Completed).await;
                 return Ok(Action::requeue(std::time::Duration::from_secs(300)));
@@ -504,7 +504,7 @@ async fn reconcile_locked(
 
             match action {
                 PromotionAction::ContinueObserving => {
-                    info!(
+                    debug!(
                         "BGD '{}' observing: total={}, rate={:.4}",
                         name, total, success_rate
                     );
@@ -557,7 +557,7 @@ async fn reconcile_locked(
             Ok(Action::requeue(std::time::Duration::from_secs(5)))
         }
         BGDPhase::Completed | BGDPhase::RolledBack | BGDPhase::Invalid => {
-            info!("BGD '{}' in terminal state {:?}", name, phase);
+            debug!("BGD '{}' in terminal state {:?}", name, phase);
             cleanup_inception_resources(&bgd, &client, &namespace).await?;
             cleanup_test_resources(&bgd, &client, &namespace).await?;
             delete_rollout_spec_snapshot(&bgd, &client, &namespace).await?;

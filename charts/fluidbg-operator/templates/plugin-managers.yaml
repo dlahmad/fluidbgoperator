@@ -43,6 +43,10 @@ spec:
           env:
             - name: FLUIDBG_PLUGIN_MANAGER
               value: "true"
+            {{- with .Values.builtinPlugins.rabbitmq.rustLog }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
             - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
@@ -176,6 +180,10 @@ spec:
           env:
             - name: FLUIDBG_PLUGIN_MANAGER
               value: "true"
+            {{- with .Values.builtinPlugins.azureServiceBus.rustLog }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
             - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
               valueFrom:
                 secretKeyRef:

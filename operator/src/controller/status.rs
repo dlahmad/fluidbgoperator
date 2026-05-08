@@ -1,7 +1,7 @@
 use chrono::Utc;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::crd::blue_green::{
     BGDPhase, BlueGreenDeployment, BlueGreenDeploymentCondition, ConditionStatus,
@@ -23,7 +23,7 @@ pub(super) async fn update_status_phase(
     let observed_generation = current_rollout_generation(bgd);
     let mut latest = match api.get_status(&name).await {
         Ok(latest) if !phase_update_is_current(&latest, &phase, observed_generation) => {
-            info!(
+            debug!(
                 "skipping stale phase update for '{}': requested {:?} generation {}",
                 name, phase, observed_generation
             );
@@ -49,7 +49,7 @@ pub(super) async fn update_status_phase(
     {
         Ok(_) => {}
         Err(kube::Error::Api(error)) if error.code == 409 => {
-            info!("status update for '{}' conflicted with a newer write", name);
+            debug!("status update for '{}' conflicted with a newer write", name);
         }
         Err(e) => warn!("failed to update status for '{}': {}", name, e),
     }
@@ -238,7 +238,7 @@ pub(super) async fn update_status_update_deferred(
     {
         Ok(_) => {}
         Err(kube::Error::Api(error)) if error.code == 409 => {
-            info!(
+            debug!(
                 "deferred-update status for '{}' conflicted with a newer write",
                 name
             );
@@ -302,7 +302,7 @@ pub(super) async fn update_status_reconcile_failure(
     {
         Ok(_) => {}
         Err(kube::Error::Api(error)) if error.code == 409 => {
-            info!(
+            debug!(
                 "failure status update for '{}' conflicted with a newer write",
                 name
             );

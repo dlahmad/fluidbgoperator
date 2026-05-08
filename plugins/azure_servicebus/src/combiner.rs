@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use fluidbg_plugin_sdk::PluginRole;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{
     AppState, RuntimeMode, combiner_config, has_role, inceptor_infra_disabled, observer_config,
@@ -28,7 +28,7 @@ async fn run_combine_loop(
             }
             RuntimeMode::Draining => {
                 if let Err(err) = drain_output_queue(&state, &source_queue, &result_queue).await {
-                    warn!(
+                    debug!(
                         "azure service bus combiner drain from '{}' failed: {}",
                         source_queue, err
                     );
@@ -86,7 +86,7 @@ async fn run_combine_loop(
                     {
                         warn!("failed to register test case {}: {}", test_id, err);
                     } else if route.should_register_case() {
-                        info!(
+                        debug!(
                             "registered testCase '{}' for blueGreenRef '{}'",
                             test_id,
                             state.runtime.blue_green_ref()

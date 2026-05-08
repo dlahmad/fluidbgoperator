@@ -81,7 +81,7 @@ Typical pinned install:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.1
+  --set global.imageTag=0.2.2
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -91,8 +91,66 @@ version:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.1 \
+  --set global.imageTag=0.2.2 \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
+```
+
+## Logging
+
+The binaries use `RUST_LOG`/`tracing` filters. Without an override, default logs
+show FluidBG lifecycle events and warnings while suppressing per-message and
+per-reconcile debug chatter:
+
+- Operator default: `warn,fluidbg_operator=info`
+- HTTP plugin default: `warn,fluidbg_http=info`
+- RabbitMQ plugin default: `warn,fluidbg_rabbitmq=info`
+- Azure Service Bus plugin default: `warn,fluidbg_azure_servicebus=info`
+
+Set chart values only when you need more detail:
+
+```yaml
+operator:
+  rustLog: fluidbg_operator=debug,warn
+
+builtinPlugins:
+  rabbitmq:
+    rustLog: fluidbg_rabbitmq=debug,warn
+  http:
+    rustLog: fluidbg_http=debug,warn
+  azureServiceBus:
+    rustLog: fluidbg_azure_servicebus=debug,warn
+```
+
+If you pass these filters through Helm CLI `--set`/`--set-string`, escape
+commas because Helm treats commas as value separators:
+
+```sh
+helm upgrade --install fluidbg charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --set-string operator.rustLog='fluidbg_operator=debug\,warn'
+```
+
+## Image SBOMs
+
+Release images are pushed with BuildKit SBOM and provenance attestations:
+
+- `--sbom=true` attaches a standardized SPDX SBOM attestation to the pushed OCI
+  image.
+- `--provenance=mode=max` attaches SLSA-style build provenance.
+- `BUILDKIT_SBOM_SCAN_CONTEXT=true` includes the build context, so static Rust
+  binaries are accompanied by dependency metadata from `Cargo.lock` instead of
+  relying only on runtime filesystem scanning.
+
+Local `--load` builds do not preserve OCI attestations in the Docker image
+store. To create attestations manually, push the image and set
+`DOCKER_BUILD_ATTEST=true`:
+
+```sh
+DOCKER_BUILD_ATTEST=true ./scripts/build-images.sh \
+  --registry ghcr.io/<owner> \
+  --tag test-sbom \
+  --platform linux/amd64 \
+  --push
 ```
 
 ## State Store And HA

@@ -9,7 +9,7 @@ use chrono::{Duration, Utc};
 use fluidbg_plugin_sdk::{AUTHORIZATION_HEADER, RegisterTestCaseRequest};
 use kube::api::Api;
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::controller::{AuthConfig, validate_plugin_auth};
 use crate::crd::blue_green::{BGDPhase, BlueGreenDeployment};
@@ -67,7 +67,7 @@ pub async fn register_test_case(
     headers: HeaderMap,
     Json(req): Json<RegisterTestCaseRequest>,
 ) -> impl IntoResponse {
-    info!(
+    debug!(
         "registering testCase id={} bgd={} inceptionPoint={} verifyUrl={}",
         req.test_id,
         req.blue_green_ref,
@@ -179,7 +179,7 @@ pub async fn set_verdict(
     State(state): State<ApiState>,
     Json(req): Json<VerdictRequest>,
 ) -> impl IntoResponse {
-    info!(
+    debug!(
         "setting verdict for testCase id={} passed={}",
         req.test_id, req.passed
     );

@@ -8,7 +8,7 @@ use kube::api::{Api, PostParams};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use super::ReconcileError;
 use crate::crd::blue_green::BlueGreenDeployment;
@@ -83,7 +83,7 @@ where
 {
     let api: Api<Lease> = Api::namespaced(client, namespace);
     if !try_acquire_lease(&api, &lease_name, owner, config).await? {
-        info!(
+        debug!(
             "lease '{}' is held by another operator; reconciliation is deferred",
             lease_name
         );

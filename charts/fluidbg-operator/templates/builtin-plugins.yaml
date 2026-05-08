@@ -103,6 +103,11 @@ spec:
           match: { type: array }
           notifyPath: { type: string }
   inceptor:
+    {{- with $root.Values.builtinPlugins.rabbitmq.rustLog }}
+    env:
+      - name: RUST_LOG
+        value: {{ . | quote }}
+    {{- end }}
     ports:
       - name: health
         containerPort: 9090
@@ -151,6 +156,11 @@ spec:
       ingress: { type: object }
       egress: { type: object }
   inceptor:
+    {{- with $root.Values.builtinPlugins.http.rustLog }}
+    env:
+      - name: RUST_LOG
+        value: {{ . | quote }}
+    {{- end }}
     ports:
       - name: http
         containerPort: 9090
@@ -294,6 +304,11 @@ spec:
           match: { type: array }
           notifyPath: { type: string }
   inceptor:
+    {{- with $root.Values.builtinPlugins.azureServiceBus.rustLog }}
+    env:
+      - name: RUST_LOG
+        value: {{ . | quote }}
+    {{- end }}
     {{- if $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.enabled }}
     podLabels:
       azure.workload.identity/use: "true"

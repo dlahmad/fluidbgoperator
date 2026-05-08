@@ -4,6 +4,18 @@ title: Changelog
 
 # Changelog
 
+## 0.2.2 - 2026-05-08
+
+- Added BuildKit SPDX SBOM and SLSA provenance attestations for pushed release
+  images.
+- Updated Rust dependencies to the latest compatible lockfile versions.
+- Made default logging filters component-scoped so dependency logs stay quiet at
+  the default level.
+- Moved per-reconcile, per-test-case, and cleanup-wait chatter from `info` to
+  `debug`; lifecycle transitions, rollbacks, drain movement summaries, and
+  failures remain visible by default.
+- Added Helm values for operator and built-in plugin `RUST_LOG` overrides.
+
 ## 0.2.1 - 2026-05-08
 
 - Refactored the Rust e2e harness to remove Python assumptions and use kube-rs

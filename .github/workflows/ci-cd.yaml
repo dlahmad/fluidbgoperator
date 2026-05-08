@@ -315,6 +315,7 @@ jobs:
         env:
           DOCKER_BUILD_CACHE_FROM: ${{ format('type=gha,scope=fluidbg-images-{0}', matrix.arch) }}
           DOCKER_BUILD_CACHE_TO: ${{ format('type=gha,mode=max,scope=fluidbg-images-{0}', matrix.arch) }}
+          DOCKER_BUILD_ATTEST: "true"
         run: |
           ./scripts/build-images.sh \
             --registry "${REGISTRY}/${{ steps.image_namespace.outputs.value }}" \
@@ -411,7 +412,7 @@ jobs:
           notes="$(cat <<NOTES
           FluidBG Operator $tag release.
 
-          Container images are published to GHCR and are not attached as release files.
+          Container images are published to GHCR with OCI SBOM/provenance attestations and are not attached as release files.
           Attached release files contain executable archives, checksums, and the Helm chart package.
           NOTES
           )"

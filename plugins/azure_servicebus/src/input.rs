@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{
     AppState, RuntimeMode, consumer_config, duplicator_config, has_role, inceptor_infra_disabled,
@@ -67,7 +67,7 @@ async fn process_input_message(state: &AppState, message: &LockedMessage) -> Res
             {
                 warn!("failed to register test case {}: {}", test_id, err);
             } else if route.should_register_case() {
-                info!(
+                debug!(
                     "registered testCase '{}' for blueGreenRef '{}'",
                     test_id,
                     state.runtime.blue_green_ref()
@@ -195,7 +195,7 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
             }
             RuntimeMode::Draining => {
                 if let Err(err) = drain_input_queues(&state).await {
-                    warn!("azure service bus input drain failed: {}", err);
+                    debug!("azure service bus input drain failed: {}", err);
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
