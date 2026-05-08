@@ -20,33 +20,34 @@ pub struct RegisterTestCaseArgs<'a> {
     pub auth_token: Option<&'a str>,
 }
 
+pub struct NotifyObserverArgs<'a> {
+    pub test_container_url: &'a str,
+    pub notify_path: &'a str,
+    pub test_id: &'a str,
+    pub inception_point: &'a str,
+    pub payload: &'a Value,
+    pub route: TrafficRoute,
+    pub auth_token: Option<&'a str>,
+}
+
 pub fn render_path(template: &str, test_id: &str, inception_point: &str) -> String {
     template
         .replace("{testId}", test_id)
         .replace("{inceptionPoint}", inception_point)
 }
 
-pub async fn notify_observer(
-    client: &reqwest::Client,
-    test_container_url: &str,
-    notify_path: &str,
-    test_id: &str,
-    inception_point: &str,
-    payload: &Value,
-    route: TrafficRoute,
-    auth_token: Option<&str>,
-) -> Result<()> {
-    let path = render_path(notify_path, test_id, inception_point);
+pub async fn notify_observer(client: &reqwest::Client, args: NotifyObserverArgs<'_>) -> Result<()> {
+    let path = render_path(args.notify_path, args.test_id, args.inception_point);
     let notification = ObservationNotification {
-        test_id,
-        inception_point,
-        route: route.as_str(),
-        payload,
+        test_id: args.test_id,
+        inception_point: args.inception_point,
+        route: args.route.as_str(),
+        payload: args.payload,
     };
-    let url = format!("{}{}", test_container_url.trim_end_matches('/'), path);
+    let url = format!("{}{}", args.test_container_url.trim_end_matches('/'), path);
     retry_status_request(|| {
         let mut builder = client.post(&url).json(&notification);
-        if let Some(auth_token) = auth_token {
+        if let Some(auth_token) = args.auth_token {
             builder = builder.header(AUTHORIZATION_HEADER, bearer_value(auth_token));
         }
         builder

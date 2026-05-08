@@ -239,7 +239,7 @@ async fn verify_http_plugin_proxy_and_mock(
         );
     }
     let upstream: serde_json::Value =
-        serde_json::from_slice(&response.body).unwrap_or_else(|_| serde_json::Value::Null);
+        serde_json::from_slice(&response.body).unwrap_or(serde_json::Value::Null);
     if upstream
         .pointer("/headers/X-Fluidbg-E2E")
         .and_then(|v| v.as_str())

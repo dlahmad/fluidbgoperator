@@ -4,7 +4,9 @@ use serde_json::Value;
 use crate::auth::auth_token_from_env;
 use crate::config::{active_roles, has_role};
 use crate::models::{PluginRole, TrafficRoute};
-use crate::notify::{RegisterTestCaseArgs, notify_observer, register_test_case};
+use crate::notify::{
+    NotifyObserverArgs, RegisterTestCaseArgs, notify_observer, register_test_case,
+};
 
 #[derive(Clone)]
 pub struct PluginInceptorRuntime {
@@ -90,13 +92,15 @@ impl PluginInceptorRuntime {
     ) -> Result<()> {
         notify_observer(
             &self.client,
-            &self.test_container_url,
-            notify_path,
-            test_id,
-            &self.inception_point,
-            payload,
-            route,
-            self.auth_token.as_deref(),
+            NotifyObserverArgs {
+                test_container_url: &self.test_container_url,
+                notify_path,
+                test_id,
+                inception_point: &self.inception_point,
+                payload,
+                route,
+                auth_token: self.auth_token.as_deref(),
+            },
         )
         .await
     }

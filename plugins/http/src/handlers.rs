@@ -581,6 +581,108 @@ fn conditions_use_body(conditions: &[fluidbg_plugin_sdk::FilterCondition]) -> bo
         .any(|condition| condition.field == "http.body")
 }
 
+pub(crate) async fn health() -> &'static str {
+    "ok"
+}
+
+pub(crate) async fn prepare_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Idle);
+    Ok(axum::Json(PluginLifecycleResponse::default()))
+}
+
+pub(crate) async fn activate_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Active);
+    Ok(axum::Json(PluginLifecycleResponse::default()))
+}
+
+pub(crate) async fn drain_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Draining);
+    Ok(axum::Json(PluginLifecycleResponse::default()))
+}
+
+pub(crate) async fn cleanup_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    state.set_runtime_mode(RuntimeMode::Draining);
+    Ok(axum::Json(PluginLifecycleResponse::default()))
+}
+
+pub(crate) async fn drain_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<PluginDrainStatusResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    let active = state.active_requests.load(Ordering::SeqCst);
+    let mode = state.runtime_mode();
+    let drained = mode == RuntimeMode::Draining && active == 0;
+    let message = if drained {
+        "http plugin is draining and has no admitted proxy/write requests".to_string()
+    } else if mode == RuntimeMode::Idle {
+        "http plugin is idle and has not been activated".to_string()
+    } else if mode == RuntimeMode::Active {
+        "http plugin is active and has not entered drain mode".to_string()
+    } else {
+        format!("http plugin still has {active} active proxy/write request(s)")
+    };
+    Ok(axum::Json(PluginDrainStatusResponse {
+        drained,
+        message: Some(message),
+    }))
+}
+
+pub(crate) async fn traffic_shift_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(req): axum::Json<TrafficShiftRequest>,
+) -> Result<axum::Json<TrafficShiftResponse>, StatusCode> {
+    authorize_operator(&state, &headers)?;
+    if !state.runtime.has_role(PluginRole::Splitter) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    state
+        .traffic_percent
+        .store(req.traffic_percent.min(100) as usize, Ordering::SeqCst);
+    Ok(axum::Json(TrafficShiftResponse {
+        traffic_percent: state.traffic_percent.load(Ordering::SeqCst) as u8,
+    }))
+}
+
+fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    if bearer_matches(header, state.runtime.auth_token()) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+fn authorize_operator_response(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+    let header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    require_bearer_token(header, state.runtime.auth_token())
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "unauthorized".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderName};
@@ -695,106 +797,4 @@ mod tests {
             "connection"
         )));
     }
-}
-
-pub(crate) async fn health() -> &'static str {
-    "ok"
-}
-
-pub(crate) async fn prepare_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    state.set_runtime_mode(RuntimeMode::Idle);
-    Ok(axum::Json(PluginLifecycleResponse::default()))
-}
-
-pub(crate) async fn activate_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    state.set_runtime_mode(RuntimeMode::Active);
-    Ok(axum::Json(PluginLifecycleResponse::default()))
-}
-
-pub(crate) async fn drain_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    state.set_runtime_mode(RuntimeMode::Draining);
-    Ok(axum::Json(PluginLifecycleResponse::default()))
-}
-
-pub(crate) async fn cleanup_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<axum::Json<PluginLifecycleResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    state.set_runtime_mode(RuntimeMode::Draining);
-    Ok(axum::Json(PluginLifecycleResponse::default()))
-}
-
-pub(crate) async fn drain_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<axum::Json<PluginDrainStatusResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    let active = state.active_requests.load(Ordering::SeqCst);
-    let mode = state.runtime_mode();
-    let drained = mode == RuntimeMode::Draining && active == 0;
-    let message = if drained {
-        "http plugin is draining and has no admitted proxy/write requests".to_string()
-    } else if mode == RuntimeMode::Idle {
-        "http plugin is idle and has not been activated".to_string()
-    } else if mode == RuntimeMode::Active {
-        "http plugin is active and has not entered drain mode".to_string()
-    } else {
-        format!("http plugin still has {active} active proxy/write request(s)")
-    };
-    Ok(axum::Json(PluginDrainStatusResponse {
-        drained,
-        message: Some(message),
-    }))
-}
-
-pub(crate) async fn traffic_shift_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    axum::Json(req): axum::Json<TrafficShiftRequest>,
-) -> Result<axum::Json<TrafficShiftResponse>, StatusCode> {
-    authorize_operator(&state, &headers)?;
-    if !state.runtime.has_role(PluginRole::Splitter) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    state
-        .traffic_percent
-        .store(req.traffic_percent.min(100) as usize, Ordering::SeqCst);
-    Ok(axum::Json(TrafficShiftResponse {
-        traffic_percent: state.traffic_percent.load(Ordering::SeqCst) as u8,
-    }))
-}
-
-fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let header = headers
-        .get(AUTHORIZATION_HEADER)
-        .and_then(|value| value.to_str().ok());
-    if bearer_matches(header, state.runtime.auth_token()) {
-        Ok(())
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
-}
-
-fn authorize_operator_response(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<(), (StatusCode, String)> {
-    let header = headers
-        .get(AUTHORIZATION_HEADER)
-        .and_then(|value| value.to_str().ok());
-    require_bearer_token(header, state.runtime.auth_token())
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "unauthorized".to_string()))
 }
