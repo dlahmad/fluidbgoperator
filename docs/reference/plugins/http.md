@@ -156,6 +156,8 @@ TLS is optional and independent for each side:
 | Application or verifier to plugin | Keep HTTP by default, or set `tls.inbound.enabled: true` and inject `https://...` with `proxyProtocol: https` and/or `writeProtocol: https`. |
 | Plugin to real upstream | Use `https://...` in `realEndpoint`, `greenEndpoint`, `blueEndpoint`, or `targetUrl`. |
 | Plugin to verifier/mock endpoint | Use `https://...` in `verifierEndpoint` or rely on an HTTPS operator-provided test service URL if configured externally. |
+| Operator to HTTP inceptor lifecycle | Set `InceptionPlugin.spec.inceptor.controlPlaneTls.enabled=true` and point it at the HTTPS control listener port. With the built-in chart this is `builtinPlugins.http.controlPlaneTls`, which starts a separate HTTPS lifecycle listener so proxy traffic can remain HTTP or use its own inbound TLS settings. |
+| HTTP inceptor to operator `/testcases` | Enable operator API TLS with Helm `operator.api.tls.enabled=true`; mount a private CA into the inceptor and set `operator.api.tls.caCertPath` when the certificate is not publicly trusted. |
 
 For private/internal CAs, mount the server certificate/key Secret and CA bundle
 into the generated inceptor pod through the `InceptionPlugin` `inceptor.volumes`

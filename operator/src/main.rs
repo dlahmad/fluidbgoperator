@@ -83,13 +83,27 @@ async fn main() {
         tracker.run().await;
     });
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8090")
-        .await
-        .expect("failed to bind to port 8090");
-    info!("operator API listening on 0.0.0.0:8090");
-    axum::serve(listener, app)
+    serve_operator_api(app)
         .await
         .expect("operator API server error");
+}
+
+async fn serve_operator_api(app: axum::Router) -> anyhow::Result<()> {
+    let addr: std::net::SocketAddr = "0.0.0.0:8090".parse()?;
+    if env_flag("FLUIDBG_OPERATOR_API_TLS_ENABLED") {
+        let cert = required_env("FLUIDBG_OPERATOR_API_TLS_CERT_PATH");
+        let key = required_env("FLUIDBG_OPERATOR_API_TLS_KEY_PATH");
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await?;
+        info!("operator HTTPS API listening on {addr}");
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service())
+            .await?;
+        return Ok(());
+    }
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!("operator HTTP API listening on {addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 async fn run_builtin_plugins_hook(args: &[String]) {
@@ -173,4 +187,10 @@ async fn build_state_store() -> Arc<dyn StateStore> {
 
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }

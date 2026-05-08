@@ -77,6 +77,39 @@ impl Kube {
         apply_typed(&api, namespace, &value).await
     }
 
+    pub async fn apply_secret_string_data(
+        &self,
+        namespace: &str,
+        name: &str,
+        data: serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        let api: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
+        let value = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": { "name": name, "namespace": namespace },
+            "type": "Opaque",
+            "stringData": data,
+        });
+        apply_typed(&api, name, &value).await
+    }
+
+    pub async fn apply_configmap_data(
+        &self,
+        namespace: &str,
+        name: &str,
+        data: serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), namespace);
+        let value = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": name, "namespace": namespace },
+            "data": data,
+        });
+        apply_typed(&api, name, &value).await
+    }
+
     pub async fn apply_file(&self, path: &str) -> Result<()> {
         let contents = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
         for document in yaml_documents(&contents) {
@@ -1275,7 +1308,10 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "operator.auth.createSigningSecret=true".to_string(),
         "--set".to_string(),
-        format!("operator.auth.signingSecretNamespace={}", config.system_namespace),
+        format!(
+            "operator.auth.signingSecretNamespace={}",
+            config.system_namespace
+        ),
         "--set".to_string(),
         "operator.auth.signingSecretName=fluidbg-e2e-auth".to_string(),
         "--set".to_string(),
@@ -1293,11 +1329,14 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.enabled=true".to_string(),
         "--set".to_string(),
-        "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string(),
+        rabbitmq_manager_amqp_url(config),
         "--set".to_string(),
-        "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.fluidbg-system:15672".to_string(),
+        rabbitmq_manager_management_url(config),
         "--set".to_string(),
-        "builtinPlugins.rabbitmq.manager.managementAllowInsecure=true".to_string(),
+        format!(
+            "builtinPlugins.rabbitmq.manager.managementAllowInsecure={}",
+            !config.full_tls
+        ),
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.managementUsername=fluidbg".to_string(),
         "--set".to_string(),
@@ -1307,6 +1346,13 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "builtinPlugins.azureServiceBus.enabled=false".to_string(),
     ];
+    let tls_values_file = if config.full_tls {
+        let path = write_tls_values_file()?;
+        args.extend(["-f".to_string(), path.to_string_lossy().to_string()]);
+        Some(path)
+    } else {
+        None
+    };
     if config.state_store == crate::config::StateStore::Postgres {
         args.extend([
             "--set".to_string(),
@@ -1321,7 +1367,100 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
             "stateStore.postgres.tableName=fluidbg_cases".to_string(),
         ]);
     }
-    command::run("helm", args)
+    let result = command::run("helm", args);
+    if let Some(path) = tls_values_file {
+        let _ = std::fs::remove_file(path);
+    }
+    result
+}
+
+fn rabbitmq_manager_amqp_url(config: &E2eConfig) -> String {
+    if config.full_tls {
+        "builtinPlugins.rabbitmq.manager.amqpUrl=amqps://fluidbg:fluidbg@rabbitmq.fluidbg-system:5671/%2f".to_string()
+    } else {
+        "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/%2f".to_string()
+    }
+}
+
+fn rabbitmq_manager_management_url(config: &E2eConfig) -> String {
+    if config.full_tls {
+        "builtinPlugins.rabbitmq.manager.managementUrl=https://rabbitmq.fluidbg-system:15671"
+            .to_string()
+    } else {
+        "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.fluidbg-system:15672"
+            .to_string()
+    }
+}
+
+fn write_tls_values_file() -> Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!("fluidbg-e2e-tls-{}.yaml", std::process::id()));
+    let values = r#"
+operator:
+  api:
+    tls:
+      enabled: true
+      certPath: /tls/tls.crt
+      keyPath: /tls/tls.key
+      caCertPath: /tls/ca.crt
+  extraVolumes:
+    - name: fluidbg-e2e-tls
+      secret:
+        secretName: fluidbg-e2e-tls
+  extraVolumeMounts:
+    - name: fluidbg-e2e-tls
+      mountPath: /tls
+      readOnly: true
+builtinPlugins:
+  http:
+    controlPlaneTls:
+      enabled: true
+      certPath: /tls/tls.crt
+      keyPath: /tls/tls.key
+      caCertPath: /tls/ca.crt
+      port: 9443
+    inceptorVolumes:
+      - name: fluidbg-e2e-tls
+        secret:
+          secretName: fluidbg-e2e-tls
+    inceptorVolumeMounts:
+      - name: fluidbg-e2e-tls
+        mountPath: /tls
+        readOnly: true
+  rabbitmq:
+    controlPlaneTls:
+      enabled: true
+      certPath: /tls/tls.crt
+      keyPath: /tls/tls.key
+      caCertPath: /tls/ca.crt
+      port: 9090
+    inceptorVolumes:
+      - name: fluidbg-e2e-tls
+        secret:
+          secretName: fluidbg-e2e-tls
+    inceptorVolumeMounts:
+      - name: fluidbg-e2e-tls
+        mountPath: /tls
+        readOnly: true
+    manager:
+      amqpCaCertPath: /tls/ca.crt
+      managementCaCertPath: /tls/ca.crt
+      controlPlaneTls:
+        enabled: true
+        certPath: /tls/tls.crt
+        keyPath: /tls/tls.key
+        caCertPath: /tls/ca.crt
+        port: 9090
+      volumes:
+        - name: fluidbg-e2e-tls
+          secret:
+            secretName: fluidbg-e2e-tls
+      volumeMounts:
+        - name: fluidbg-e2e-tls
+          mountPath: /tls
+          readOnly: true
+"#;
+    std::fs::write(&path, values).with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use fluidbg_plugin_sdk::{PluginInceptorRuntime, QueueWorkerRole, queue_worker_role};
+use fluidbg_plugin_sdk::{
+    ControlPlaneServerTls, PluginInceptorRuntime, QueueWorkerRole, queue_worker_role,
+    serve_control_plane,
+};
 use tracing::info;
 
 mod assignments;
@@ -64,9 +67,10 @@ async fn main() -> Result<()> {
         .route("/write", post(write_handler))
         .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
     let server = tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, app).await {
+        if let Err(err) =
+            serve_control_plane(app, "0.0.0.0:9090", ControlPlaneServerTls::from_env()).await
+        {
             tracing::error!("server error: {}", err);
         }
     });
@@ -92,8 +96,7 @@ async fn run_manager() -> Result<()> {
         .route("/manager/cleanup", post(manager::cleanup_handler))
         .route("/manager/sync", post(manager::sync_handler))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
-    axum::serve(listener, app).await?;
+    serve_control_plane(app, "0.0.0.0:9090", ControlPlaneServerTls::from_env()).await?;
     Ok(())
 }
 

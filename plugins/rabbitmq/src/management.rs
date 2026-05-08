@@ -48,9 +48,11 @@ impl ManagementClient {
         password: String,
         vhost: String,
         allow_insecure: bool,
+        ca_cert_path: Option<String>,
+        insecure_skip_verify: bool,
     ) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: management_http_client(ca_cert_path.as_deref(), insecure_skip_verify)?,
             base_url: validate_management_base_url(&base_url, allow_insecure)?,
             username,
             password,
@@ -71,12 +73,16 @@ impl ManagementClient {
             _ => return Ok(None),
         };
         let allow_insecure = env_flag("FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE");
+        let ca_cert_path = optional_env("FLUIDBG_RABBITMQ_MANAGEMENT_CA_CERT_PATH");
+        let insecure_skip_verify = env_flag("FLUIDBG_RABBITMQ_MANAGEMENT_INSECURE_SKIP_VERIFY");
         Ok(Some(Self::new(
             url,
             username,
             password,
             std::env::var("FLUIDBG_RABBITMQ_MANAGEMENT_VHOST").unwrap_or_else(|_| "/".to_string()),
             allow_insecure,
+            ca_cert_path,
+            insecure_skip_verify,
         )?))
     }
 
@@ -265,10 +271,33 @@ fn validate_management_base_url(value: &str, allow_insecure: bool) -> Result<Url
     Ok(url)
 }
 
+fn management_http_client(
+    ca_cert_path: Option<&str>,
+    insecure_skip_verify: bool,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if insecure_skip_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    if let Some(path) = ca_cert_path {
+        let pem = std::fs::read(path)
+            .with_context(|| format!("failed to read RabbitMQ management CA certificate {path}"))?;
+        let cert = reqwest::Certificate::from_pem(&pem).with_context(|| {
+            format!("failed to parse RabbitMQ management CA certificate {path}")
+        })?;
+        builder = builder.add_root_certificate(cert);
+    }
+    Ok(builder.build()?)
+}
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 fn encode_path_segment(value: &str) -> String {

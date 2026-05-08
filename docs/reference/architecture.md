@@ -129,6 +129,20 @@ The token is the shared credential for that inception point:
   if the UID no longer exists, no longer matches, or the BGD is deleting or
   terminal.
 
+TLS is opt-in per channel and does not replace JWT authorization:
+
+| Channel | Default | TLS mode |
+|---|---|---|
+| Operator API used by inceptors | HTTP | Helm `operator.api.tls.enabled=true` serves HTTPS and changes `FLUIDBG_OPERATOR_URL` to `https://...`. |
+| Operator to plugin manager | HTTP | `InceptionPlugin.spec.manager.controlPlaneTls.enabled=true` makes lifecycle/sync calls use HTTPS. |
+| Operator to plugin inceptor | HTTP | `InceptionPlugin.spec.inceptor.controlPlaneTls.enabled=true` makes lifecycle/drain/traffic calls use HTTPS. |
+| Plugin data plane | Plugin-specific | HTTP plugin supports optional inbound/outbound HTTPS; RabbitMQ supports `amqps://` and HTTPS management; Azure Service Bus uses HTTPS Azure endpoints. |
+
+If certificates chain to a public CA, no additional CA path is needed. For
+private CAs, mount the CA bundle into the caller pod and set the matching
+`caCertPath`. Local-only `insecureSkipVerify` flags are available for tests but
+should not be used in production.
+
 The signing Secret is not rollout-owned and is not cleaned up by the operator.
 Rollout cleanup removes temporary inception resources and waits for Deployments,
 Services, ConfigMaps, Secrets, and Pods carrying inception labels to disappear.

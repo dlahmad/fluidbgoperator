@@ -23,7 +23,13 @@ pub struct PluginInceptorRuntime {
 impl PluginInceptorRuntime {
     pub fn from_env() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: runtime_http_client().unwrap_or_else(|err| {
+                tracing::warn!(
+                    "failed to build configured plugin runtime HTTP client, using defaults: {}",
+                    err
+                );
+                reqwest::Client::new()
+            }),
             roles: active_roles(),
             testcase_registration_url: std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
                 .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string()),
@@ -107,3 +113,20 @@ impl PluginInceptorRuntime {
 }
 
 pub type PluginRuntime = PluginInceptorRuntime;
+
+fn runtime_http_client() -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if crate::config::env_flag("FLUIDBG_OPERATOR_INSECURE_SKIP_VERIFY") {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    if let Some(path) = crate::config::optional_env("FLUIDBG_OPERATOR_CA_CERT_PATH") {
+        let pem = std::fs::read(&path).map_err(|err| {
+            anyhow::anyhow!("failed to read operator CA certificate {path}: {err}")
+        })?;
+        let cert = reqwest::Certificate::from_pem(&pem).map_err(|err| {
+            anyhow::anyhow!("failed to parse operator CA certificate {path}: {err}")
+        })?;
+        builder = builder.add_root_certificate(cert);
+    }
+    Ok(builder.build()?)
+}

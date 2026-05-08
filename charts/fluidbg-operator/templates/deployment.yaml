@@ -63,7 +63,15 @@ spec:
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
               value: {{ .Values.operator.auth.signingSecretNamespace | default .Release.Namespace | quote }}
             - name: FLUIDBG_OPERATOR_URL
-              value: {{ printf "http://fluidbg-operator.%s:%v" .Release.Namespace .Values.service.port | quote }}
+              value: {{ printf "%s://fluidbg-operator.%s:%v" (ternary "https" "http" .Values.operator.api.tls.enabled) .Release.Namespace .Values.service.port | quote }}
+            {{- if .Values.operator.api.tls.enabled }}
+            - name: FLUIDBG_OPERATOR_API_TLS_ENABLED
+              value: "true"
+            - name: FLUIDBG_OPERATOR_API_TLS_CERT_PATH
+              value: {{ required "operator.api.tls.certPath is required when operator API TLS is enabled" .Values.operator.api.tls.certPath | quote }}
+            - name: FLUIDBG_OPERATOR_API_TLS_KEY_PATH
+              value: {{ required "operator.api.tls.keyPath is required when operator API TLS is enabled" .Values.operator.api.tls.keyPath | quote }}
+            {{- end }}
             - name: FLUIDBG_STATE_STORE_TYPE
               value: {{ .Values.stateStore.type | quote }}
             - name: FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS
@@ -164,16 +172,30 @@ spec:
             httpGet:
               path: /health
               port: api
+              {{- if .Values.operator.api.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health
               port: api
+              {{- if .Values.operator.api.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 5
+          {{- with .Values.operator.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
+      {{- with .Values.operator.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.operator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

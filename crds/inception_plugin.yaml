@@ -43,6 +43,23 @@ spec:
                 type: string
               inceptor:
                 properties:
+                  controlPlaneTls:
+                    nullable: true
+                    properties:
+                      caCertPath:
+                        nullable: true
+                        type: string
+                      enabled:
+                        default: false
+                        type: boolean
+                      insecureSkipVerify:
+                        default: false
+                        type: boolean
+                      port:
+                        format: int32
+                        nullable: true
+                        type: integer
+                    type: object
                   env:
                     items:
                       description: EnvVar represents an environment variable present in a Container.
@@ -1503,6 +1520,23 @@ spec:
                   cleanupPath:
                     nullable: true
                     type: string
+                  controlPlaneTls:
+                    nullable: true
+                    properties:
+                      caCertPath:
+                        nullable: true
+                        type: string
+                      enabled:
+                        default: false
+                        type: boolean
+                      insecureSkipVerify:
+                        default: false
+                        type: boolean
+                      port:
+                        format: int32
+                        nullable: true
+                        type: integer
+                    type: object
                   namespace:
                     nullable: true
                     type: string

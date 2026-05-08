@@ -25,6 +25,9 @@ pub(crate) struct ManagerState {
     pub(crate) management_password: Option<String>,
     pub(crate) management_vhost: Option<String>,
     pub(crate) management_allow_insecure: bool,
+    pub(crate) amqp_ca_cert_path: Option<String>,
+    pub(crate) management_ca_cert_path: Option<String>,
+    pub(crate) management_insecure_skip_verify: bool,
 }
 
 pub(crate) fn manager_state_from_env() -> anyhow::Result<ManagerState> {
@@ -40,6 +43,12 @@ pub(crate) fn manager_state_from_env() -> anyhow::Result<ManagerState> {
         management_password: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_PASSWORD").ok(),
         management_vhost: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_VHOST").ok(),
         management_allow_insecure: env_flag("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE"),
+        amqp_ca_cert_path: std::env::var("FLUIDBG_RABBITMQ_MANAGER_AMQP_CA_CERT_PATH").ok(),
+        management_ca_cert_path: std::env::var("FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_CA_CERT_PATH")
+            .ok(),
+        management_insecure_skip_verify: env_flag(
+            "FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_INSECURE_SKIP_VERIFY",
+        ),
     })
 }
 
@@ -236,6 +245,11 @@ fn management_client(state: &ManagerState) -> Result<ManagementClient, StatusCod
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "/".to_string()),
         state.management_allow_insecure,
+        state
+            .management_ca_cert_path
+            .clone()
+            .filter(|value| !value.is_empty()),
+        state.management_insecure_skip_verify,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -275,6 +289,23 @@ fn inceptor_env(
         push_optional_env(
             &mut env,
             "FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE",
+            Some("true"),
+        );
+    }
+    push_optional_env(
+        &mut env,
+        "FLUIDBG_RABBITMQ_AMQP_CA_CERT_PATH",
+        state.amqp_ca_cert_path.as_deref(),
+    );
+    push_optional_env(
+        &mut env,
+        "FLUIDBG_RABBITMQ_MANAGEMENT_CA_CERT_PATH",
+        state.management_ca_cert_path.as_deref(),
+    );
+    if state.management_insecure_skip_verify {
+        push_optional_env(
+            &mut env,
+            "FLUIDBG_RABBITMQ_MANAGEMENT_INSECURE_SKIP_VERIFY",
             Some("true"),
         );
     }

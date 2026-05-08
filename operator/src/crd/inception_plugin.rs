@@ -41,6 +41,19 @@ pub struct VolumeMount {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ControlPlaneTls {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginInceptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvVar>,
@@ -56,6 +69,8 @@ pub struct PluginInceptor {
     pub pod_annotations: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane_tls: Option<ControlPlaneTls>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -137,6 +152,8 @@ pub struct PluginManager {
     pub cleanup_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane_tls: Option<ControlPlaneTls>,
 }
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]

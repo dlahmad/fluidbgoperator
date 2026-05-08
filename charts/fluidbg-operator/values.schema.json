@@ -34,12 +34,36 @@
             "intervalSeconds": { "type": "integer", "minimum": 1 }
           }
         },
+        "api": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "certPath": { "type": "string" },
+                "keyPath": { "type": "string" },
+                "caCertPath": { "type": "string" },
+                "insecureSkipVerify": { "type": "boolean" }
+              }
+            }
+          }
+        },
         "reconcileLease": {
           "type": "object",
           "properties": {
             "durationSeconds": { "type": "integer", "minimum": 1 },
             "renewIntervalSeconds": { "type": "integer", "minimum": 1 }
           }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": { "type": "object" }
         }
       }
     },
@@ -118,6 +142,17 @@
         "authorityHost": { "type": "string" }
       }
     },
+    "controlPlaneTls": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer" },
+        "caCertPath": { "type": "string" },
+        "certPath": { "type": "string" },
+        "keyPath": { "type": "string" },
+        "insecureSkipVerify": { "type": "boolean" }
+      }
+    },
     "builtinPlugin": {
       "type": "object",
       "properties": {
@@ -130,6 +165,7 @@
           "type": "array",
           "items": { "type": "object" }
         },
+        "controlPlaneTls": { "$ref": "#/$defs/controlPlaneTls" },
         "inceptorWorkloadIdentity": {
           "type": "object",
           "properties": {
@@ -161,6 +197,18 @@
             "managementVhost": { "type": "string" },
             "managementVhostSecretKey": { "type": "string" },
             "managementAllowInsecure": { "type": "boolean" },
+            "amqpCaCertPath": { "type": "string" },
+            "managementCaCertPath": { "type": "string" },
+            "managementInsecureSkipVerify": { "type": "boolean" },
+            "controlPlaneTls": { "$ref": "#/$defs/controlPlaneTls" },
+            "volumes": {
+              "type": "array",
+              "items": { "type": "object" }
+            },
+            "volumeMounts": {
+              "type": "array",
+              "items": { "type": "object" }
+            },
             "connectionStringSecretName": { "type": "string" },
             "connectionStringSecretKey": { "type": "string" },
             "fullyQualifiedNamespace": { "type": "string" },

@@ -206,3 +206,32 @@ for that scoped user as `inceptorEnv`.
 `FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE=true` /
 `FLUIDBG_RABBITMQ_MANAGEMENT_ALLOW_INSECURE=true` flag is set. Use that opt-in
 only for trusted local or in-cluster development endpoints.
+
+AMQP transport TLS is supported by using `amqps://` in the manager AMQP URL.
+Publicly trusted broker certificates work through Lapin/Rustls defaults. For a
+private broker CA, mount the PEM bundle into both the manager and generated
+inceptor pods and set `FLUIDBG_RABBITMQ_MANAGER_AMQP_CA_CERT_PATH` on the
+manager. The manager returns the same path as
+`FLUIDBG_RABBITMQ_AMQP_CA_CERT_PATH` for scoped inceptors.
+
+RabbitMQ management HTTPS supports private CAs through
+`FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_CA_CERT_PATH` /
+`FLUIDBG_RABBITMQ_MANAGEMENT_CA_CERT_PATH`. The unsafe
+`FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_INSECURE_SKIP_VERIFY=true` /
+`FLUIDBG_RABBITMQ_MANAGEMENT_INSECURE_SKIP_VERIFY=true` flags disable
+certificate validation and are only for disposable local test brokers.
+
+The built-in Helm chart exposes these as
+`builtinPlugins.rabbitmq.manager.amqpCaCertPath`,
+`builtinPlugins.rabbitmq.manager.managementCaCertPath`,
+`builtinPlugins.rabbitmq.manager.managementInsecureSkipVerify`,
+`builtinPlugins.rabbitmq.manager.volumes`,
+`builtinPlugins.rabbitmq.manager.volumeMounts`,
+`builtinPlugins.rabbitmq.inceptorVolumes`, and
+`builtinPlugins.rabbitmq.inceptorVolumeMounts`.
+
+RabbitMQ plugin control-plane TLS is independent from broker TLS. Set
+`builtinPlugins.rabbitmq.manager.controlPlaneTls.enabled=true` for
+operator-to-manager HTTPS and `builtinPlugins.rabbitmq.controlPlaneTls.enabled=true`
+for operator-to-inceptor HTTPS. Publicly trusted plugin serving certificates need
+no `caCertPath`; private cluster CAs do.

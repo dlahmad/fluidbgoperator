@@ -2,7 +2,7 @@ use kube::api::Api;
 use tracing::debug;
 
 use crate::crd::blue_green::BlueGreenDeployment;
-use crate::crd::inception_plugin::InceptionPlugin;
+use crate::crd::inception_plugin::{ControlPlaneTls, InceptionPlugin};
 use crate::plugins::reconciler::{
     ReconcileInceptionContext, inception_service_name, plugin_template_context,
     render_container_env_injections, secured_inception_config,
@@ -51,12 +51,26 @@ pub(super) async fn invoke_inceptor_lifecycle(
     let port = plugin
         .spec
         .inceptor
-        .ports
-        .first()
-        .map(|port| port.container_port)
+        .control_plane_tls
+        .as_ref()
+        .and_then(|tls| tls.port)
+        .or_else(|| {
+            plugin
+                .spec
+                .inceptor
+                .ports
+                .first()
+                .map(|port| port.container_port)
+        })
         .unwrap_or(9090);
-    let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
-    let http = reqwest::Client::new();
+    let url = control_plane_url(
+        &service_name,
+        namespace,
+        port,
+        path,
+        plugin.spec.inceptor.control_plane_tls.as_ref(),
+    );
+    let http = control_plane_client(plugin.spec.inceptor.control_plane_tls.as_ref())?;
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
@@ -118,10 +132,18 @@ pub(super) async fn invoke_plugin_manager_sync(
     };
     let path = manager.sync_path.as_deref().unwrap_or("/manager/sync");
     let manager_namespace = manager.namespace.as_deref().unwrap_or("fluidbg-system");
-    let port = manager.port.unwrap_or(9090);
-    let url = format!(
-        "http://{}.{}:{port}{path}",
-        manager.service_name, manager_namespace
+    let port = manager
+        .control_plane_tls
+        .as_ref()
+        .and_then(|tls| tls.port)
+        .or(manager.port)
+        .unwrap_or(9090);
+    let url = control_plane_url(
+        &manager.service_name,
+        manager_namespace,
+        port,
+        path,
+        manager.control_plane_tls.as_ref(),
     );
     let plugin_name = plugin.metadata.name.clone().unwrap_or_default();
     let payload = PluginManagerSyncRequest {
@@ -129,7 +151,7 @@ pub(super) async fn invoke_plugin_manager_sync(
         active_inceptions: active_inceptions_for_plugin(client, &plugin_name).await?,
     };
     let auth_token = sign_manager_sync_auth_token(client, auth, plugin).await?;
-    let http = reqwest::Client::new();
+    let http = control_plane_client(manager.control_plane_tls.as_ref())?;
     for attempt in 1..=3 {
         match http
             .post(&url)
@@ -188,10 +210,18 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
         PluginLifecycleStage::Drain => return Ok(None),
     };
     let manager_namespace = manager.namespace.as_deref().unwrap_or("fluidbg-system");
-    let port = manager.port.unwrap_or(9090);
-    let url = format!(
-        "http://{}.{}:{port}{path}",
-        manager.service_name, manager_namespace
+    let port = manager
+        .control_plane_tls
+        .as_ref()
+        .and_then(|tls| tls.port)
+        .or(manager.port)
+        .unwrap_or(9090);
+    let url = control_plane_url(
+        &manager.service_name,
+        manager_namespace,
+        port,
+        path,
+        manager.control_plane_tls.as_ref(),
     );
     let auth_token = sign_inception_auth_token(
         client,
@@ -241,7 +271,7 @@ pub(super) async fn invoke_plugin_manager_lifecycle(
         )
         .await?,
     };
-    let http = reqwest::Client::new();
+    let http = control_plane_client(manager.control_plane_tls.as_ref())?;
     for attempt in 1..=10 {
         match http
             .post(&url)
@@ -347,11 +377,25 @@ pub(super) async fn invoke_inceptor_drain_status(
     let port = plugin
         .spec
         .inceptor
-        .ports
-        .first()
-        .map(|port| port.container_port)
+        .control_plane_tls
+        .as_ref()
+        .and_then(|tls| tls.port)
+        .or_else(|| {
+            plugin
+                .spec
+                .inceptor
+                .ports
+                .first()
+                .map(|port| port.container_port)
+        })
         .unwrap_or(9090);
-    let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
+    let url = control_plane_url(
+        &service_name,
+        namespace,
+        port,
+        path,
+        plugin.spec.inceptor.control_plane_tls.as_ref(),
+    );
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
@@ -361,7 +405,7 @@ pub(super) async fn invoke_inceptor_drain_status(
         plugin,
     )
     .await?;
-    let response = reqwest::Client::new()
+    let response = control_plane_client(plugin.spec.inceptor.control_plane_tls.as_ref())?
         .get(&url)
         .header(AUTHORIZATION_HEADER, bearer_value(&auth_token))
         .send()
@@ -407,12 +451,26 @@ pub(super) async fn invoke_inceptor_traffic_shift(
     let port = plugin
         .spec
         .inceptor
-        .ports
-        .first()
-        .map(|port| port.container_port)
+        .control_plane_tls
+        .as_ref()
+        .and_then(|tls| tls.port)
+        .or_else(|| {
+            plugin
+                .spec
+                .inceptor
+                .ports
+                .first()
+                .map(|port| port.container_port)
+        })
         .unwrap_or(9090);
-    let url = format!("http://{}.{}:{port}{path}", service_name, namespace);
-    let http = reqwest::Client::new();
+    let url = control_plane_url(
+        &service_name,
+        namespace,
+        port,
+        path,
+        plugin.spec.inceptor.control_plane_tls.as_ref(),
+    );
+    let http = control_plane_client(plugin.spec.inceptor.control_plane_tls.as_ref())?;
     let auth_token = sign_inception_auth_token(
         client,
         namespace,
@@ -453,6 +511,52 @@ pub(super) async fn invoke_inceptor_traffic_shift(
         }
     }
     Ok(())
+}
+
+fn control_plane_url(
+    service_name: &str,
+    namespace: &str,
+    port: i32,
+    path: &str,
+    tls: Option<&ControlPlaneTls>,
+) -> String {
+    let scheme = if tls.is_some_and(|tls| tls.enabled) {
+        "https"
+    } else {
+        "http"
+    };
+    format!("{scheme}://{service_name}.{namespace}.svc:{port}{path}")
+}
+
+fn control_plane_client(tls: Option<&ControlPlaneTls>) -> Result<reqwest::Client, ReconcileError> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(tls) = tls {
+        if tls.insecure_skip_verify {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(path) = tls
+            .ca_cert_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let pem = std::fs::read(path).map_err(|err| {
+                ReconcileError::PluginInceptor(format!(
+                    "failed to read plugin control-plane CA certificate {path}: {err}"
+                ))
+            })?;
+            let cert = reqwest::Certificate::from_pem(&pem).map_err(|err| {
+                ReconcileError::PluginInceptor(format!(
+                    "failed to parse plugin control-plane CA certificate {path}: {err}"
+                ))
+            })?;
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder.build().map_err(|err| {
+        ReconcileError::PluginInceptor(format!(
+            "failed to build plugin control-plane client: {err}"
+        ))
+    })
 }
 
 pub(super) async fn start_plugin_draining(
@@ -538,4 +642,33 @@ fn filter_assignments(
         .filter(|assignment| targets.contains(&assignment.target))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::crd::inception_plugin::ControlPlaneTls;
+
+    use super::control_plane_url;
+
+    #[test]
+    fn control_plane_url_defaults_to_http() {
+        assert_eq!(
+            control_plane_url("plugin", "apps", 9090, "/prepare", None),
+            "http://plugin.apps.svc:9090/prepare"
+        );
+    }
+
+    #[test]
+    fn control_plane_url_uses_https_when_enabled() {
+        let tls = ControlPlaneTls {
+            enabled: true,
+            port: Some(9443),
+            ca_cert_path: None,
+            insecure_skip_verify: false,
+        };
+        assert_eq!(
+            control_plane_url("plugin", "apps", 9443, "/prepare", Some(&tls)),
+            "https://plugin.apps.svc:9443/prepare"
+        );
+    }
 }

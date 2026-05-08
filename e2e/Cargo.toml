@@ -15,3 +15,4 @@ kube.workspace = true
 k8s-openapi.workspace = true
 tokio.workspace = true
 fluidbg-operator = { path = "../operator" }
+rcgen = "0.14"

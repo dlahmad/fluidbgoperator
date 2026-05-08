@@ -4,7 +4,10 @@ use std::sync::{
 };
 
 use anyhow::{Context, Result};
-use fluidbg_plugin_sdk::{PluginInceptorRuntime, traffic_percent_from_env};
+use fluidbg_plugin_sdk::{
+    ControlPlaneServerTls, PluginInceptorRuntime, env_port, serve_control_plane,
+    traffic_percent_from_env,
+};
 use tracing::info;
 
 mod config;
@@ -57,44 +60,72 @@ async fn main() -> Result<()> {
 
     let app = router(state.clone());
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let control_plane_tls = ControlPlaneServerTls::from_env();
+    let control_plane_tls_port = env_port("FLUIDBG_CONTROL_PLANE_TLS_PORT", 9443);
 
     if state.config.tls.inbound.enabled {
         let https_port = state.config.inbound_https_port();
-        let https_addr = std::net::SocketAddr::from(([0, 0, 0, 0], https_port));
-        let cert = state
-            .config
-            .tls
-            .inbound
-            .cert_path
-            .as_deref()
-            .context("tls.inbound.certPath missing")?;
-        let key = state
-            .config
-            .tls
-            .inbound
-            .key_path
-            .as_deref()
-            .context("tls.inbound.keyPath missing")?;
-        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
-            .await
-            .with_context(|| {
-                format!("failed to load inbound TLS certificate {cert} and key {key}")
-            })?;
-        let https_app = router(state.clone());
-        tokio::spawn(async move {
-            info!("http plugin HTTPS traffic listener on {}", https_addr);
-            if let Err(err) = axum_server::bind_rustls(https_addr, tls_config)
-                .serve(https_app.into_make_service())
+        if !(control_plane_tls.enabled && https_port == control_plane_tls_port) {
+            let https_addr = std::net::SocketAddr::from(([0, 0, 0, 0], https_port));
+            let cert = state
+                .config
+                .tls
+                .inbound
+                .cert_path
+                .as_deref()
+                .context("tls.inbound.certPath missing")?;
+            let key = state
+                .config
+                .tls
+                .inbound
+                .key_path
+                .as_deref()
+                .context("tls.inbound.keyPath missing")?;
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
                 .await
+                .with_context(|| {
+                    format!("failed to load inbound TLS certificate {cert} and key {key}")
+                })?;
+            let https_app = router(state.clone());
+            tokio::spawn(async move {
+                info!("http plugin HTTPS traffic listener on {}", https_addr);
+                if let Err(err) = axum_server::bind_rustls(https_addr, tls_config)
+                    .serve(https_app.into_make_service())
+                    .await
+                {
+                    tracing::error!("http plugin HTTPS listener failed: {}", err);
+                }
+            });
+        }
+    }
+
+    if control_plane_tls.enabled {
+        let control_addr = std::net::SocketAddr::from(([0, 0, 0, 0], control_plane_tls_port));
+        let control_app = router(state.clone());
+        tokio::spawn(async move {
+            info!(
+                "http plugin HTTPS control-plane listener on {}",
+                control_addr
+            );
+            if let Err(err) =
+                serve_control_plane(control_app, &control_addr.to_string(), control_plane_tls).await
             {
-                tracing::error!("http plugin HTTPS listener failed: {}", err);
+                tracing::error!("http plugin HTTPS control-plane listener failed: {}", err);
             }
         });
     }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("http plugin HTTP control/traffic listener on {}", addr);
-    axum::serve(listener, app).await?;
+    serve_control_plane(
+        app,
+        &addr.to_string(),
+        ControlPlaneServerTls {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+        },
+    )
+    .await?;
 
     Ok(())
 }

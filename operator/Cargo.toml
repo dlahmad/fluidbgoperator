@@ -30,6 +30,7 @@ chrono = { workspace = true }
 sqlx = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+axum-server = { workspace = true }
 reqwest = { workspace = true }
 jsonschema = { workspace = true }
 regex = { workspace = true }

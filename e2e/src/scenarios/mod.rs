@@ -26,17 +26,27 @@ const E2E_BGDS: &[&str] = &[
 ];
 
 pub async fn run_full_suite(harness: &mut E2eHarness) -> Result<()> {
+    eprintln!("e2e scenario: bootstrap initial green");
     let bootstrap = bootstrap::bootstrap_initial_green(harness).await?;
+    eprintln!("e2e scenario: successful RabbitMQ promotion");
     let promoted = rabbitmq_promotion::successful_rabbitmq_promotion(harness, &bootstrap).await?;
+    eprintln!("e2e scenario: rollback shadow recovery");
     rollback_shadow_recovery::rollback_recovers_temporary_and_shadow_queues(harness, &promoted)
         .await?;
+    eprintln!("e2e scenario: progressive unsupported validation");
     progressive_unsupported::progressive_support_is_enforced(harness).await?;
+    eprintln!("e2e scenario: progressive splitter promotion");
     let progressive =
         progressive_splitter::progressive_splitter_promotion(harness, &promoted).await?;
+    eprintln!("e2e scenario: HTTP proxy observer promotion");
     let http = http_proxy::http_proxy_observer_promotion(harness, &progressive).await?;
+    eprintln!("e2e scenario: forced replacement with drain");
     let force_replaced =
         force_replace::force_replace_drains_before_new_generation(harness, &http).await?;
+    eprintln!("e2e scenario: force-deleted BGD orphan cleanup");
     force_delete::force_deleted_bgd_is_cleaned_as_orphan(harness, &force_replaced).await?;
+    eprintln!("e2e scenario: namespace deletion finalizer safety");
     namespace_deletion::namespace_deletion_does_not_deadlock_bgd_finalizers(harness).await?;
+    eprintln!("e2e scenario: Helm cleanup");
     helm_cleanup::helm_uninstall_cleans_operator_resources(harness, E2E_BGDS).await
 }

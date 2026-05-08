@@ -29,17 +29,36 @@ spec:
           image: rabbitmq:4-management-alpine
           ports:
             - containerPort: 5672
+            - containerPort: 5671
             - containerPort: 15672
+            - containerPort: 15671
           env:
             - name: RABBITMQ_DEFAULT_USER
               value: fluidbg
             - name: RABBITMQ_DEFAULT_PASS
               value: fluidbg
+            - name: RABBITMQ_CONFIG_FILE
+              value: /etc/rabbitmq/rabbitmq.conf
+          volumeMounts:
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+              readOnly: true
+            - name: rabbitmq-tls
+              mountPath: /tls
+              readOnly: true
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]
             initialDelaySeconds: 10
             periodSeconds: 5
+      volumes:
+        - name: rabbitmq-config
+          configMap:
+            name: rabbitmq-tls-config
+        - name: rabbitmq-tls
+          secret:
+            secretName: fluidbg-e2e-tls
 ---
 apiVersion: v1
 kind: Service
@@ -53,6 +72,12 @@ spec:
     - name: amqp
       port: 5672
       targetPort: 5672
+    - name: amqps
+      port: 5671
+      targetPort: 5671
     - name: management
       port: 15672
       targetPort: 15672
+    - name: management-https
+      port: 15671
+      targetPort: 15671

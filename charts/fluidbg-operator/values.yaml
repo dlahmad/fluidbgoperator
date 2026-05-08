@@ -16,6 +16,8 @@ operator:
   imagePullSecrets: []
   podAnnotations: {}
   podLabels: {}
+  extraVolumes: []
+  extraVolumeMounts: []
   resources:
     requests:
       cpu: 50m
@@ -33,6 +35,14 @@ operator:
     signingSecretValue: ""
   api:
     port: 8090
+    tls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      # Inceptor-local CA bundle path. Mount it with each plugin's
+      # inceptorVolumes/inceptorVolumeMounts.
+      caCertPath: ""
+      insecureSkipVerify: false
   orphanCleanup:
     intervalSeconds: 60
   reconcileLease:
@@ -113,6 +123,15 @@ builtinPlugins:
     # Use these to mount TLS cert/key Secrets and private CA ConfigMaps/Secrets.
     inceptorVolumes: []
     inceptorVolumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      # Operator-local CA bundle path. Mount it with operator.extraVolumes.
+      caCertPath: ""
+      insecureSkipVerify: false
+      # Separate HTTPS listener used by the operator for lifecycle calls.
+      port: 9443
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: ""
@@ -121,6 +140,18 @@ builtinPlugins:
     # Optional RUST_LOG for RabbitMQ manager and generated inceptor pods. Empty
     # uses the binary default: warn,fluidbg_rabbitmq=info.
     rustLog: ""
+    # Optional volumes and mounts added to every generated RabbitMQ inceptor
+    # pod. Use these to mount private AMQP/management CA bundles.
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      # Operator-local CA bundle path. Mount it with operator.extraVolumes.
+      caCertPath: ""
+      insecureSkipVerify: false
+      certPath: ""
+      keyPath: ""
+      port: 9090
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       tag: ""
@@ -141,9 +172,25 @@ builtinPlugins:
       # Set true only for trusted in-cluster/dev RabbitMQ endpoints that expose
       # management over plain HTTP.
       managementAllowInsecure: false
+      # Optional CA bundle paths for amqps:// and HTTPS management endpoints.
+      # Mount the files with manager.volumes/volumeMounts.
+      amqpCaCertPath: ""
+      managementCaCertPath: ""
+      # Unsafe HTTPS-only dev escape hatch for self-signed management endpoints.
+      managementInsecureSkipVerify: false
+      volumes: []
+      volumeMounts: []
       podAnnotations: {}
       podLabels: {}
       resources: {}
+      controlPlaneTls:
+        enabled: false
+        # Operator-local CA bundle path. Mount it with operator.extraVolumes.
+        caCertPath: ""
+        insecureSkipVerify: false
+        certPath: ""
+        keyPath: ""
+        port: 9090
   azureServiceBus:
     enabled: true
     # Optional RUST_LOG for Azure Service Bus manager and generated inceptor
@@ -154,6 +201,15 @@ builtinPlugins:
       serviceAccountName: ""
       podAnnotations: {}
       podLabels: {}
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      caCertPath: ""
+      insecureSkipVerify: false
+      certPath: ""
+      keyPath: ""
+      port: 9090
     manager:
       enabled: false
       connectionStringSecretName: ""
@@ -163,11 +219,20 @@ builtinPlugins:
       subscriptionId: ""
       resourceGroup: ""
       namespaceName: ""
+      controlPlaneTls:
+        enabled: false
+        caCertPath: ""
+        insecureSkipVerify: false
+        certPath: ""
+        keyPath: ""
+        port: 9090
       workloadIdentity:
         enabled: false
         serviceAccountName: ""
         podAnnotations: {}
         podLabels: {}
+      volumes: []
+      volumeMounts: []
       podAnnotations: {}
       podLabels: {}
       resources: {}

@@ -34,6 +34,15 @@ spec:
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
     syncPath: /manager/sync
+    {{- if $root.Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
   {{- end }}
   fieldNamespaces: [queue]
   configSchema:
@@ -100,14 +109,54 @@ spec:
           match: { type: array }
           notifyPath: { type: string }
   inceptor:
-    {{- with $root.Values.builtinPlugins.rabbitmq.rustLog }}
+    {{- if or $root.Values.builtinPlugins.rabbitmq.rustLog $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.enabled $root.Values.operator.api.tls.enabled }}
     env:
+      {{- with $root.Values.builtinPlugins.rabbitmq.rustLog }}
       - name: RUST_LOG
         value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.enabled }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+        value: "true"
+      - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+        value: {{ required "builtinPlugins.rabbitmq.controlPlaneTls.certPath is required when inceptor control-plane TLS is enabled" $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.certPath | quote }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+        value: {{ required "builtinPlugins.rabbitmq.controlPlaneTls.keyPath is required when inceptor control-plane TLS is enabled" $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.keyPath | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.enabled }}
+      {{- with $root.Values.operator.api.tls.caCertPath }}
+      - name: FLUIDBG_OPERATOR_CA_CERT_PATH
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.insecureSkipVerify }}
+      - name: FLUIDBG_OPERATOR_INSECURE_SKIP_VERIFY
+        value: "true"
+      {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.rabbitmq.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
+    {{- with $root.Values.builtinPlugins.rabbitmq.inceptorVolumes }}
+    volumes:
+{{ toYaml . | nindent 6 }}
     {{- end }}
     ports:
       - name: health
         containerPort: 9090
+    {{- with $root.Values.builtinPlugins.rabbitmq.inceptorVolumeMounts }}
+    volumeMounts:
+      - name: plugin-config
+        mountPath: /etc/fluidbg
+        readOnly: true
+{{ toYaml . | nindent 6 }}
+    {{- end }}
 {{- end }}
 {{- if $root.Values.builtinPlugins.http.enabled }}
 ---
@@ -168,10 +217,41 @@ spec:
           caCertPath: { type: string }
           insecureSkipVerify: { type: boolean }
   inceptor:
-    {{- with $root.Values.builtinPlugins.http.rustLog }}
+    {{- if or $root.Values.builtinPlugins.http.rustLog $root.Values.operator.api.tls.enabled $root.Values.builtinPlugins.http.controlPlaneTls.enabled }}
     env:
+      {{- with $root.Values.builtinPlugins.http.rustLog }}
       - name: RUST_LOG
         value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.builtinPlugins.http.controlPlaneTls.enabled }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+        value: "true"
+      - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+        value: {{ required "builtinPlugins.http.controlPlaneTls.certPath is required when HTTP control-plane TLS is enabled" $root.Values.builtinPlugins.http.controlPlaneTls.certPath | quote }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+        value: {{ required "builtinPlugins.http.controlPlaneTls.keyPath is required when HTTP control-plane TLS is enabled" $root.Values.builtinPlugins.http.controlPlaneTls.keyPath | quote }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_PORT
+        value: {{ $root.Values.builtinPlugins.http.controlPlaneTls.port | default 9443 | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.enabled }}
+      {{- with $root.Values.operator.api.tls.caCertPath }}
+      - name: FLUIDBG_OPERATOR_CA_CERT_PATH
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.insecureSkipVerify }}
+      - name: FLUIDBG_OPERATOR_INSECURE_SKIP_VERIFY
+        value: "true"
+      {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $root.Values.builtinPlugins.http.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.http.controlPlaneTls.port | default 9443 }}
+      {{- with $root.Values.builtinPlugins.http.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.http.controlPlaneTls.insecureSkipVerify | default false }}
     {{- end }}
     {{- with $root.Values.builtinPlugins.http.inceptorVolumes }}
     volumes:
@@ -234,6 +314,15 @@ spec:
     preparePath: /manager/prepare
     cleanupPath: /manager/cleanup
     syncPath: /manager/sync
+    {{- if $root.Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
   {{- end }}
   fieldNamespaces: [queue, servicebus]
   configSchema:
@@ -324,10 +413,43 @@ spec:
           match: { type: array }
           notifyPath: { type: string }
   inceptor:
-    {{- with $root.Values.builtinPlugins.azureServiceBus.rustLog }}
+    {{- if or $root.Values.builtinPlugins.azureServiceBus.rustLog $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.enabled $root.Values.operator.api.tls.enabled }}
     env:
+      {{- with $root.Values.builtinPlugins.azureServiceBus.rustLog }}
       - name: RUST_LOG
         value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.enabled }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+        value: "true"
+      - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+        value: {{ required "builtinPlugins.azureServiceBus.controlPlaneTls.certPath is required when inceptor control-plane TLS is enabled" $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.certPath | quote }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+        value: {{ required "builtinPlugins.azureServiceBus.controlPlaneTls.keyPath is required when inceptor control-plane TLS is enabled" $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.keyPath | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.enabled }}
+      {{- with $root.Values.operator.api.tls.caCertPath }}
+      - name: FLUIDBG_OPERATOR_CA_CERT_PATH
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.insecureSkipVerify }}
+      - name: FLUIDBG_OPERATOR_INSECURE_SKIP_VERIFY
+        value: "true"
+      {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.azureServiceBus.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
+    {{- with $root.Values.builtinPlugins.azureServiceBus.inceptorVolumes }}
+    volumes:
+{{ toYaml . | nindent 6 }}
     {{- end }}
     {{- if $root.Values.builtinPlugins.azureServiceBus.inceptorWorkloadIdentity.enabled }}
     podLabels:
@@ -346,6 +468,13 @@ spec:
     ports:
       - name: health
         containerPort: 9090
+    {{- with $root.Values.builtinPlugins.azureServiceBus.inceptorVolumeMounts }}
+    volumeMounts:
+      - name: plugin-config
+        mountPath: /etc/fluidbg
+        readOnly: true
+{{ toYaml . | nindent 6 }}
+    {{- end }}
 {{- end }}
 {{- end -}}
 

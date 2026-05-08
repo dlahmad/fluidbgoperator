@@ -1015,6 +1015,7 @@ mod tests {
             prepare_path: Some("/manager/prepare".to_string()),
             cleanup_path: Some("/manager/cleanup".to_string()),
             sync_path: Some("/manager/sync".to_string()),
+            control_plane_tls: None,
         });
         let ip = make_inception_point(
             "incoming-events",

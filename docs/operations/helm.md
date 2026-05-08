@@ -48,6 +48,14 @@ operator:
     signingSecretNamespace: fluidbg-system
     signingSecretName: fluidbg-operator-auth
     signingSecretKey: signing-key
+  api:
+    tls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      caCertPath: ""
+  extraVolumes: []
+  extraVolumeMounts: []
 
 builtinPlugins:
   http:
@@ -59,11 +67,36 @@ builtinPlugins:
     # tls.crt/tls.key or a ConfigMap with a private CA bundle.
     inceptorVolumes: []
     inceptorVolumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      caCertPath: ""
+      port: 9443
   rabbitmq:
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-rabbitmq
       # Optional plugin-specific override.
       tag: ""
+    # Optional mounts for RabbitMQ AMQPS or management HTTPS CA bundles.
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
+    manager:
+      amqpCaCertPath: ""
+      managementCaCertPath: ""
+      managementInsecureSkipVerify: false
+      controlPlaneTls:
+        enabled: false
+        certPath: ""
+        keyPath: ""
+        caCertPath: ""
+      volumes: []
+      volumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      caCertPath: ""
   azureServiceBus:
     inceptorWorkloadIdentity:
       enabled: false
@@ -85,6 +118,38 @@ the mounted certificate/key/CA files are supplied through the cluster-scoped
 `builtinPlugins.http.inceptorVolumes` and
 `builtinPlugins.http.inceptorVolumeMounts` to mount existing Secrets or
 ConfigMaps into every HTTP inceptor pod.
+
+RabbitMQ AMQPS and management HTTPS are configured at plugin installation time,
+not in BGD config. Use `amqps://` in the RabbitMQ manager AMQP URL, mount private
+CA bundles with `builtinPlugins.rabbitmq.manager.volumes` /
+`builtinPlugins.rabbitmq.manager.volumeMounts` and
+`builtinPlugins.rabbitmq.inceptorVolumes` /
+`builtinPlugins.rabbitmq.inceptorVolumeMounts`, then set
+`builtinPlugins.rabbitmq.manager.amqpCaCertPath` and/or
+`builtinPlugins.rabbitmq.manager.managementCaCertPath`. Plain HTTP management
+requires the explicit local/dev opt-in
+`builtinPlugins.rabbitmq.manager.managementAllowInsecure=true`.
+
+Control-plane TLS is configured separately from data-plane TLS:
+
+- `operator.api.tls.enabled=true` serves the operator API over HTTPS and changes
+  injected `FLUIDBG_OPERATOR_URL` values to `https://...`.
+- `builtinPlugins.<plugin>.controlPlaneTls.enabled=true` makes the operator call
+  generated inceptors over HTTPS.
+- `builtinPlugins.<plugin>.manager.controlPlaneTls.enabled=true` makes the
+  operator call that plugin manager over HTTPS.
+- `certPath` and `keyPath` are mounted inside the serving pod and are required
+  when that manager or inceptor serves HTTPS.
+- `caCertPath` is only needed for private/internal CAs. Publicly trusted
+  certificates use the default Rust TLS trust path.
+- `insecureSkipVerify` is a local-test escape hatch and should not be used in
+  production.
+- The operator calls plugin Services as `service.namespace.svc`; certificates
+  must contain that DNS name or a matching wildcard such as `*.namespace.svc`.
+
+The chart does not generate certificates. Mount certificate and CA material via
+`operator.extraVolumes`, `operator.extraVolumeMounts`, plugin manager
+`volumes`/`volumeMounts`, and plugin `inceptorVolumes`/`inceptorVolumeMounts`.
 
 Typical pinned install:
 

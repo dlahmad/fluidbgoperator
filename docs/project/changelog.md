@@ -13,6 +13,12 @@ title: Changelog
 - Added independent HTTP plugin TLS controls for inbound app/verifier traffic
   and outbound upstream/verifier trust, including chart-supported Secret and
   ConfigMap mounts for TLS material.
+- Added optional HTTPS for operator API, operator-to-manager, and
+  operator-to-inceptor control-plane traffic. Built-in RabbitMQ, HTTP, and Azure
+  Service Bus plugins now share the SDK TLS server/client plumbing, and the e2e
+  suite includes a full TLS run with private CA trust.
+- Added RabbitMQ AMQPS and management HTTPS trust configuration, including
+  private CA support for manager and inceptor pods.
 - Added per-inception verifier boundary auth. Verifiers receive only a token
   map, while inceptor-to-verifier callbacks, mock calls, operator verify polling,
   and verifier-to-inceptor API calls can all use bearer-token authorization.

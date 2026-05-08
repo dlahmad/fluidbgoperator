@@ -46,6 +46,9 @@ flowchart TD
   to the original caller.
 - Verifier boundary auth for observer callbacks, HTTP mock calls, and operator
   `verifyPath` polling with per-inception bearer tokens.
+- Full TLS mode for the built-in RabbitMQ path: operator API HTTPS,
+  operator-to-manager HTTPS, operator-to-inceptor HTTPS, RabbitMQ management
+  HTTPS, and RabbitMQ AMQPS with a generated private CA.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.
 - Test verifier readiness and app rollout readiness before plugin activation,
   so inceptors cannot send observations to a test Service without ready
@@ -102,6 +105,17 @@ ready. The chart intentionally rejects `OPERATOR_REPLICAS=2` with
 `stateStore.type=memory`. The same run exercises per-BGD Kubernetes lease
 coordination, so only one operator replica can perform side-effecting work for a
 specific BGD at a time.
+
+To run the full TLS variant:
+
+```sh
+KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 cargo test -p fluidbg-e2e-tests --test e2e full_tls_kind_e2e_suite -- --ignored --nocapture
+```
+
+The Rust harness generates the test certificate material itself, installs it as
+Kubernetes Secrets/ConfigMaps, configures RabbitMQ for AMQPS and HTTPS
+management, and installs the Helm chart with control-plane TLS enabled. No
+Python or OpenSSL CLI is required.
 
 ## Runtime Topology
 

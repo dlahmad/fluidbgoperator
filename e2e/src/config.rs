@@ -40,12 +40,21 @@ pub struct E2eConfig {
     pub image_tag: String,
     pub state_store: StateStore,
     pub operator_replicas: u32,
+    pub full_tls: bool,
     pub root_dir: PathBuf,
     pub deploy_dir: PathBuf,
 }
 
 impl E2eConfig {
     pub fn from_env() -> Result<Self> {
+        Self::from_env_with_full_tls(None)
+    }
+
+    pub fn from_env_full_tls() -> Result<Self> {
+        Self::from_env_with_full_tls(Some(true))
+    }
+
+    fn from_env_with_full_tls(full_tls_override: Option<bool>) -> Result<Self> {
         let root_dir = command::repo_root()?;
         let build_images = env::var("BUILD_IMAGES").unwrap_or_else(|_| "1".to_string()) == "1";
         let image_tag = env::var("E2E_IMAGE_TAG")
@@ -72,6 +81,8 @@ impl E2eConfig {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1),
+            full_tls: full_tls_override
+                .unwrap_or_else(|| env::var("E2E_FULL_TLS").unwrap_or_default() == "1"),
             deploy_dir: root_dir.join("e2e/deploy"),
             root_dir,
         })

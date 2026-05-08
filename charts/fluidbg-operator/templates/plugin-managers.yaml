@@ -95,16 +95,52 @@ spec:
             - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_ALLOW_INSECURE
               value: "true"
             {{- end }}
+            {{- with .Values.builtinPlugins.rabbitmq.manager.amqpCaCertPath }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_AMQP_CA_CERT_PATH
+              value: {{ . | quote }}
+            - name: FLUIDBG_RABBITMQ_AMQP_CA_CERT_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.builtinPlugins.rabbitmq.manager.managementCaCertPath }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_CA_CERT_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.builtinPlugins.rabbitmq.manager.managementInsecureSkipVerify }}
+            - name: FLUIDBG_RABBITMQ_MANAGER_MANAGEMENT_INSECURE_SKIP_VERIFY
+              value: "true"
+            {{- end }}
+            {{- if .Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.enabled }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+              value: "true"
+            - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+              value: {{ required "builtinPlugins.rabbitmq.manager.controlPlaneTls.certPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.certPath | quote }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+              value: {{ required "builtinPlugins.rabbitmq.manager.controlPlaneTls.keyPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.keyPath | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health
               port: http
+              {{- if .Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
           livenessProbe:
             httpGet:
               path: /health
               port: http
+              {{- if .Values.builtinPlugins.rabbitmq.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+          {{- with .Values.builtinPlugins.rabbitmq.manager.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.builtinPlugins.rabbitmq.manager.resources | nindent 12 }}
+      {{- with .Values.builtinPlugins.rabbitmq.manager.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -188,6 +224,14 @@ spec:
             - name: RUST_LOG
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.enabled }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+              value: "true"
+            - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+              value: {{ required "builtinPlugins.azureServiceBus.manager.controlPlaneTls.certPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.certPath | quote }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+              value: {{ required "builtinPlugins.azureServiceBus.manager.controlPlaneTls.keyPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.keyPath | quote }}
+            {{- end }}
             - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
@@ -224,12 +268,26 @@ spec:
             httpGet:
               path: /health
               port: http
+              {{- if .Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
           livenessProbe:
             httpGet:
               path: /health
               port: http
+              {{- if .Values.builtinPlugins.azureServiceBus.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+          {{- with .Values.builtinPlugins.azureServiceBus.manager.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.builtinPlugins.azureServiceBus.manager.resources | nindent 12 }}
+      {{- with .Values.builtinPlugins.azureServiceBus.manager.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

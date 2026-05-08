@@ -5,7 +5,10 @@ use lapin::options::{
     BasicAckOptions, BasicGetOptions, BasicPublishOptions, QueueDeclareOptions, QueueDeleteOptions,
 };
 use lapin::types::{AMQPValue, FieldTable, LongString, ShortString};
-use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
+use lapin::{
+    BasicProperties, Channel, Connection, ConnectionProperties, DefaultConnectionBuilder,
+    tcp::OwnedTLSConfig,
+};
 use serde_json::Value;
 use tracing::warn;
 
@@ -157,7 +160,7 @@ pub(crate) async fn move_queue_messages(
 
 pub(crate) async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
     for attempt in 1..=30 {
-        match Connection::connect(amqp_url, ConnectionProperties::default()).await {
+        match connect_once(amqp_url).await {
             Ok(conn) => return Ok(conn),
             Err(err) if attempt < 30 => {
                 warn!(
@@ -166,10 +169,40 @@ pub(crate) async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
                 );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(err),
         }
     }
     bail!("unable to connect to RabbitMQ");
+}
+
+async fn connect_once(amqp_url: &str) -> Result<Connection> {
+    if let Some(tls_config) = amqp_tls_config_from_env()? {
+        return Ok(DefaultConnectionBuilder::new()?
+            .with_uri_str(amqp_url.to_string())
+            .with_properties(ConnectionProperties::default())
+            .with_tls_config(tls_config)
+            .connect()
+            .await?);
+    }
+    Ok(Connection::connect(amqp_url, ConnectionProperties::default()).await?)
+}
+
+fn amqp_tls_config_from_env() -> Result<Option<OwnedTLSConfig>> {
+    let Some(path) = optional_env("FLUIDBG_RABBITMQ_AMQP_CA_CERT_PATH")
+        .or_else(|| optional_env("FLUIDBG_RABBITMQ_MANAGER_AMQP_CA_CERT_PATH"))
+    else {
+        return Ok(None);
+    };
+    let cert_chain = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read RabbitMQ AMQP CA certificate {path}"))?;
+    Ok(Some(OwnedTLSConfig {
+        cert_chain: Some(cert_chain),
+        identity: None,
+    }))
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]

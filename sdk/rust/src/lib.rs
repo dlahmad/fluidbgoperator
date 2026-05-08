@@ -8,6 +8,7 @@ mod resources;
 mod roles;
 mod routing;
 mod runtime;
+mod server;
 mod version;
 
 pub use auth::{
@@ -16,7 +17,10 @@ pub use auth::{
     manager_request_matches_claims, require_bearer_token, require_manager_request_matches_claims,
     sign_plugin_auth_token, verify_manager_bearer_token, verify_plugin_auth_token,
 };
-pub use config::{active_roles, has_role, load_yaml_config, traffic_percent_from_env};
+pub use config::{
+    ControlPlaneServerTls, active_roles, env_flag, env_port, has_role, load_yaml_config,
+    optional_env, traffic_percent_from_env,
+};
 pub use fields::{condition_matches, extract_json_path, match_conditions};
 pub use http::{extract_http_test_id, resolve_http_field};
 pub use models::{
@@ -35,6 +39,7 @@ pub use resources::{
 pub use roles::{QueueWorkerRole, queue_worker_role};
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};
+pub use server::serve_control_plane;
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};
 
 #[cfg(test)]

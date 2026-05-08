@@ -16,6 +16,15 @@ pub struct E2eHarness {
 impl E2eHarness {
     pub async fn setup() -> Result<Self> {
         let config = E2eConfig::from_env()?;
+        Self::setup_with_config(config).await
+    }
+
+    pub async fn setup_full_tls() -> Result<Self> {
+        let config = E2eConfig::from_env_full_tls()?;
+        Self::setup_with_config(config).await
+    }
+
+    async fn setup_with_config(config: E2eConfig) -> Result<Self> {
         verify_commands(config.build_images)?;
         let kube = Kube::new().await?;
 
@@ -200,6 +209,7 @@ fn build_single_platform_alias(source: &str, tag: &str, arch: &str) -> Result<()
 async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
     kube.apply_namespace(&config.system_namespace).await?;
     kube.apply_namespace(&config.namespace).await?;
+    apply_tls_fixture(config, kube).await?;
     kube.apply_file(&config.deploy_file("infra/httpbin.yaml"))
         .await?;
     kube.apply_file(&config.deploy_file("infra/rabbitmq.yaml"))
@@ -233,6 +243,79 @@ async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
     }
     tokio::time::sleep(Duration::from_secs(15)).await;
     Ok(())
+}
+
+async fn apply_tls_fixture(config: &E2eConfig, kube: &Kube) -> Result<()> {
+    let cert = rcgen::generate_simple_self_signed([
+        format!("fluidbg-operator.{}", config.system_namespace),
+        format!("fluidbg-operator.{}.svc", config.system_namespace),
+        format!("fluidbg-rabbitmq-manager.{}", config.system_namespace),
+        format!("fluidbg-rabbitmq-manager.{}.svc", config.system_namespace),
+        format!("rabbitmq.{}", config.system_namespace),
+        format!("rabbitmq.{}.svc", config.system_namespace),
+        format!("httpbin.{}", config.system_namespace),
+        format!("httpbin.{}.svc", config.system_namespace),
+        format!("*.{}", config.system_namespace),
+        format!("*.{}.svc", config.system_namespace),
+        format!("*.{}.svc.cluster.local", config.system_namespace),
+        format!("*.{}", config.namespace),
+        format!("*.{}.svc", config.namespace),
+        format!("*.{}.svc.cluster.local", config.namespace),
+        "localhost".to_string(),
+    ])?;
+    let cert_pem = cert.cert.pem();
+    let key_pem = cert.signing_key.serialize_pem();
+
+    for namespace in [&config.system_namespace, &config.namespace] {
+        kube.apply_secret_string_data(
+            namespace,
+            "fluidbg-e2e-tls",
+            serde_json::Map::from_iter([
+                (
+                    "tls.crt".to_string(),
+                    serde_json::Value::String(cert_pem.clone()),
+                ),
+                (
+                    "tls.key".to_string(),
+                    serde_json::Value::String(key_pem.clone()),
+                ),
+                (
+                    "ca.crt".to_string(),
+                    serde_json::Value::String(cert_pem.clone()),
+                ),
+            ]),
+        )
+        .await?;
+    }
+
+    kube.apply_configmap_data(
+        &config.system_namespace,
+        "rabbitmq-tls-config",
+        serde_json::Map::from_iter([(
+            "rabbitmq.conf".to_string(),
+            serde_json::Value::String(
+                r#"
+listeners.tcp.default = 5672
+listeners.ssl.default = 5671
+ssl_options.cacertfile = /tls/ca.crt
+ssl_options.certfile = /tls/tls.crt
+ssl_options.keyfile = /tls/tls.key
+ssl_options.verify = verify_none
+ssl_options.fail_if_no_peer_cert = false
+management.tcp.port = 15672
+management.ssl.port = 15671
+management.ssl.cacertfile = /tls/ca.crt
+management.ssl.certfile = /tls/tls.crt
+management.ssl.keyfile = /tls/tls.key
+management.ssl.verify = verify_none
+management.ssl.fail_if_no_peer_cert = false
+"#
+                .trim()
+                .to_string(),
+            ),
+        )]),
+    )
+    .await
 }
 
 async fn reset_previous_resources(config: &E2eConfig, kube: &Kube) -> Result<()> {

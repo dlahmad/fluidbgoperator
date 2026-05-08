@@ -109,6 +109,15 @@ also uses `https://management.azure.com/.default`. The manager service account
 must be configured by the cluster owner with the appropriate Azure Workload
 Identity labels/annotations and Azure permissions.
 
+Azure Service Bus data-plane and ARM calls are HTTPS-only. Public Microsoft
+certificates work without additional configuration. Operator-to-manager and
+operator-to-inceptor lifecycle calls can also use HTTPS by setting
+`manager.controlPlaneTls` and `inceptor.controlPlaneTls` on the
+`InceptionPlugin`; the built-in Helm values expose these as
+`builtinPlugins.azureServiceBus.manager.controlPlaneTls` and
+`builtinPlugins.azureServiceBus.controlPlaneTls`. Use `caCertPath` only for
+private/internal plugin serving certificates.
+
 ## Role Behavior
 
 | Role | Behavior | Assignments |
