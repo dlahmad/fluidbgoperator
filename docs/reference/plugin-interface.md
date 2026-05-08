@@ -53,7 +53,7 @@ SDKs keep the same JSON shapes and endpoint semantics.
 
 ### InceptionPlugin CRD
 
-An `InceptionPlugin` declares:
+An `InceptionPlugin` is cluster-scoped and declares:
 
 - `supportedRoles`
 - `topology`
@@ -148,9 +148,9 @@ The inceptor does not guess where the operator or test container are. The operat
 For standalone inceptors the operator injects:
 
 - `FLUIDBG_OPERATOR_URL`
-  - example: `http://fluidbg-operator.fluidbg-system:8090`
+  - example: `http://fluidbg-operator.<operator-namespace>:8090`
 - `FLUIDBG_TESTCASE_REGISTRATION_URL`
-  - example: `http://fluidbg-operator.fluidbg-system:8090/testcases`
+  - example: `http://fluidbg-operator.<operator-namespace>:8090/testcases`
 - `FLUIDBG_TEST_CONTAINER_URL`
   - example: `http://test-container.fluidbg-test:8080`
 - `FLUIDBG_TESTCASE_VERIFY_PATH_TEMPLATE`

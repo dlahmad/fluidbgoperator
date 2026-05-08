@@ -44,8 +44,8 @@ pub async fn helm_uninstall_cleans_operator_resources(
             cfg.system_namespace.as_str(),
         ),
         ("secret", "fluidbg-e2e-auth", cfg.system_namespace.as_str()),
-        ("inceptionplugin", "http", cfg.namespace.as_str()),
-        ("inceptionplugin", "rabbitmq", cfg.namespace.as_str()),
+        ("inceptionplugin", "http", ""),
+        ("inceptionplugin", "rabbitmq", ""),
     ] {
         harness
             .kube

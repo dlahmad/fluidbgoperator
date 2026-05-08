@@ -18,6 +18,10 @@ Resources:
 - `BlueGreenDeployment`
 - `InceptionPlugin`
 
+`BlueGreenDeployment` is namespaced. `InceptionPlugin` is cluster-scoped:
+register a plugin once and reference it by `pluginRef.name` from BGDs in any
+namespace watched by the operator.
+
 `BlueGreenDeployment.status.phase` is one of `Pending`, `Observing`,
 `Promoting`, `Draining`, `Completed`, `RolledBack`, or `Invalid`. User-visible
 failure diagnostics are exposed through `status.conditions`; see

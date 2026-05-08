@@ -28,9 +28,10 @@ pub(in crate::controller) async fn ensure_inception_resources(
     namespace: &str,
     auth: &AuthConfig,
 ) -> std::result::Result<(), ReconcileError> {
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
     let blue_green_uid = bgd.metadata.uid.as_deref().unwrap_or("");
-    let operator_url = "http://fluidbg-operator.fluidbg-system:8090";
+    let operator_url = std::env::var("FLUIDBG_OPERATOR_URL")
+        .unwrap_or_else(|_| "http://fluidbg-operator.fluidbg-system:8090".to_string());
     let test_container_url = if let Some(test) = bgd.spec.test.as_ref() {
         let port = test_service_port(test)?;
         format!(
@@ -88,7 +89,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
             ip,
             ReconcileInceptionContext {
                 namespace,
-                operator_url,
+                operator_url: &operator_url,
                 test_container_url: &test_container_url,
                 test_data_verify_path,
                 blue_deployment_name: &candidate_ref(bgd).name,

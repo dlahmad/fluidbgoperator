@@ -10,7 +10,7 @@ spec:
     plural: inceptionplugins
     shortNames: []
     singular: inceptionplugin
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns: []
     name: v1alpha1

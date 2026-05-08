@@ -1,14 +1,11 @@
 {{- define "fluidbg.builtinPluginManifests" -}}
 {{- $root := . -}}
-{{- $namespaces := .Values.builtinPlugins.namespaces | default (list .Release.Namespace) -}}
-{{- range $namespace := $namespaces }}
 {{- if $root.Values.builtinPlugins.rabbitmq.enabled }}
 ---
 apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: rabbitmq
-  namespace: {{ $namespace }}
   labels:
     {{- include "fluidbg.labels" $root | nindent 4 }}
 spec:
@@ -118,7 +115,6 @@ apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: http
-  namespace: {{ $namespace }}
   labels:
     {{- include "fluidbg.labels" $root | nindent 4 }}
 spec:
@@ -185,7 +181,6 @@ apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: azure-servicebus
-  namespace: {{ $namespace }}
   labels:
     {{- include "fluidbg.labels" $root | nindent 4 }}
 spec:
@@ -326,7 +321,6 @@ spec:
     ports:
       - name: health
         containerPort: 9090
-{{- end }}
 {{- end }}
 {{- end -}}
 

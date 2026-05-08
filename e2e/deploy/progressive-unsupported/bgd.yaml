@@ -2,7 +2,6 @@ apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: rabbitmq-no-progressive
-  namespace: fluidbg-test
 spec:
   description: RabbitMQ transport plugin without progressive shifting
   image: fluidbg/fbg-plugin-rabbitmq:dev

@@ -330,20 +330,10 @@ async fn install_operator(config: &E2eConfig, kube: &Kube) -> Result<()> {
         Duration::from_secs(120),
     )
     .await?;
-    kube.wait_exists(
-        "inceptionplugin",
-        "http",
-        &config.namespace,
-        Duration::from_secs(60),
-    )
-    .await?;
-    kube.wait_exists(
-        "inceptionplugin",
-        "rabbitmq",
-        &config.namespace,
-        Duration::from_secs(60),
-    )
-    .await
+    kube.wait_exists("inceptionplugin", "http", "", Duration::from_secs(60))
+        .await?;
+    kube.wait_exists("inceptionplugin", "rabbitmq", "", Duration::from_secs(60))
+        .await
 }
 
 async fn target_arch(kube: &Kube) -> String {

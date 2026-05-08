@@ -102,10 +102,8 @@ stateStore:
 
 builtinPlugins:
   install: true
-  # InceptionPlugin resources are namespaced and are resolved in the same
-  # namespace as the BlueGreenDeployment. Leave empty to install into the Helm
-  # release namespace. Add application namespaces that should use the built-ins.
-  namespaces: []
+  # Built-in InceptionPlugin registrations are cluster-scoped. Install once and
+  # reference them by name from BlueGreenDeployment resources in any namespace.
   http:
     enabled: true
     # Optional RUST_LOG for generated HTTP inceptor pods. Empty uses the binary

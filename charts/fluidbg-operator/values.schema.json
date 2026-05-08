@@ -57,10 +57,6 @@
       "type": "object",
       "properties": {
         "install": { "type": "boolean" },
-        "namespaces": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
         "http": { "$ref": "#/$defs/builtinPlugin" },
         "rabbitmq": { "$ref": "#/$defs/builtinPlugin" },
         "azureServiceBus": { "$ref": "#/$defs/builtinPlugin" }

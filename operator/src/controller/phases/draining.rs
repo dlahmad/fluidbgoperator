@@ -35,7 +35,7 @@ pub(in crate::controller) async fn reconcile_draining(
         .unwrap_or_else(Utc::now);
     let elapsed_seconds = (Utc::now() - drain_started_at).num_seconds().max(0);
 
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
     let mut statuses = Vec::new();
     let mut all_final = true;
     let previous_statuses = bgd
@@ -166,7 +166,7 @@ async fn finalize_draining(
     auth: &AuthConfig,
     terminal_counts_have_failure: bool,
 ) -> std::result::Result<(), ReconcileError> {
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
         let _ = invoke_inceptor_lifecycle(

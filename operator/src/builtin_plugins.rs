@@ -48,36 +48,27 @@ fn read_plugins(path: &str) -> Result<Vec<InceptionPlugin>> {
 
 async fn apply_plugins(client: kube::Client, plugins: Vec<InceptionPlugin>) -> Result<()> {
     let params = PatchParams::apply("fluidbg-builtin-plugin-hook").force();
+    let api: Api<InceptionPlugin> = Api::all(client);
     for plugin in plugins {
-        let namespace = plugin
-            .namespace()
-            .context("builtin InceptionPlugin manifest is missing metadata.namespace")?;
         let name = plugin.name_any();
-        let api: Api<InceptionPlugin> = Api::namespaced(client.clone(), &namespace);
         api.patch(&name, &params, &Patch::Apply(&plugin))
             .await
-            .with_context(|| {
-                format!("failed to apply builtin InceptionPlugin {namespace}/{name}")
-            })?;
-        info!("applied builtin InceptionPlugin {namespace}/{name}");
+            .with_context(|| format!("failed to apply builtin InceptionPlugin {name}"))?;
+        info!("applied builtin InceptionPlugin {name}");
     }
     Ok(())
 }
 
 async fn delete_plugins(client: kube::Client, plugins: Vec<InceptionPlugin>) -> Result<()> {
+    let api: Api<InceptionPlugin> = Api::all(client);
     for plugin in plugins {
-        let namespace = plugin
-            .namespace()
-            .context("builtin InceptionPlugin manifest is missing metadata.namespace")?;
         let name = plugin.name_any();
-        let api: Api<InceptionPlugin> = Api::namespaced(client.clone(), &namespace);
         match api.delete(&name, &DeleteParams::default()).await {
-            Ok(_) => info!("deleted builtin InceptionPlugin {namespace}/{name}"),
+            Ok(_) => info!("deleted builtin InceptionPlugin {name}"),
             Err(kube::Error::Api(error)) if error.code == 404 => {}
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("failed to delete builtin InceptionPlugin {namespace}/{name}")
-                });
+                return Err(error)
+                    .with_context(|| format!("failed to delete builtin InceptionPlugin {name}"));
             }
         }
     }
@@ -126,7 +117,6 @@ apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: http
-  namespace: fluidbg-test
 spec:
   description: http
   image: http:dev
@@ -140,7 +130,6 @@ apiVersion: fluidbg.io/v1alpha1
 kind: InceptionPlugin
 metadata:
   name: custom-events
-  namespace: fluidbg-test
 spec:
   description: custom events
   image: custom-events:dev

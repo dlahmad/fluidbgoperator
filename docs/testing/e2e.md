@@ -150,7 +150,7 @@ sequenceDiagram
     E->>H: helm install chart
     H->>O: Helm creates CRDs, operator, auth Secret
     H->>M: Helm creates manager
-    H->>I: Helm hook applies built-in InceptionPlugins after CRD establishment
+    H->>I: Helm hook applies cluster-scoped built-in InceptionPlugins after CRD establishment
     O->>I: create idle per-inception Deployments with token only
     O->>M: POST /manager/prepare with signed JWT
     M->>R: create derived temp queues and optional shadow queues

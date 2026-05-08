@@ -126,8 +126,7 @@ impl Kube {
                 apply_typed(&api, &name, &value).await
             }
             "InceptionPlugin" => {
-                let api: Api<InceptionPlugin> =
-                    Api::namespaced(self.client.clone(), namespace_required(kind, &namespace)?);
+                let api: Api<InceptionPlugin> = Api::all(self.client.clone());
                 apply_typed(&api, &name, &value).await
             }
             other => bail!("unsupported manifest kind in Rust e2e apply: {other}"),
@@ -502,7 +501,7 @@ impl Kube {
                     .flatten()
                     .is_some()
             }
-            "inceptionplugin" => Api::<InceptionPlugin>::namespaced(self.client.clone(), namespace)
+            "inceptionplugin" => Api::<InceptionPlugin>::all(self.client.clone())
                 .get_opt(name)
                 .await
                 .ok()
@@ -671,11 +670,7 @@ impl Kube {
                 .await
             }
             "inceptionplugin" => {
-                delete_if_exists(
-                    &Api::<InceptionPlugin>::namespaced(self.client.clone(), namespace),
-                    name,
-                )
-                .await
+                delete_if_exists(&Api::<InceptionPlugin>::all(self.client.clone()), name).await
             }
             "bluegreendeployment" => {
                 delete_if_exists(
@@ -1283,8 +1278,6 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "operator.auth.signingSecretKey=signing-key".to_string(),
         "--set-string".to_string(),
         "operator.auth.signingSecretValue=fluidbg-e2e-signing-key".to_string(),
-        "--set".to_string(),
-        format!("builtinPlugins.namespaces[0]={}", config.namespace),
         "--set".to_string(),
         "builtinPlugins.http.image.repository=fluidbg/fbg-plugin-http".to_string(),
         "--set".to_string(),

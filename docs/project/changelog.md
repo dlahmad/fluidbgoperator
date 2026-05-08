@@ -4,6 +4,17 @@ title: Changelog
 
 # Changelog
 
+## 0.3.0 - 2026-05-08
+
+- Changed `InceptionPlugin` from namespaced to cluster-scoped. Built-in plugins
+  are now registered once per cluster and can be referenced by BGDs in any
+  watched namespace.
+- Removed `builtinPlugins.namespaces` from the Helm chart.
+- The operator now injects its service URL from chart runtime configuration
+  instead of assuming only the default system namespace.
+- Existing `0.2.x` clusters must delete the old namespaced
+  `inceptionplugins.fluidbg.io` CRD before installing this release.
+
 ## 0.2.4 - 2026-05-08
 
 - Updated CI/CD GitHub Actions to current Node 24-compatible major versions

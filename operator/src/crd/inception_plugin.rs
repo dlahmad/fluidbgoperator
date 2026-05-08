@@ -139,12 +139,7 @@ pub struct PluginManager {
 
 #[derive(Clone, Debug, CustomResource, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[kube(
-    group = "fluidbg.io",
-    version = "v1alpha1",
-    kind = "InceptionPlugin",
-    namespaced
-)]
+#[kube(group = "fluidbg.io", version = "v1alpha1", kind = "InceptionPlugin")]
 #[kube(status = "InceptionPluginStatus")]
 pub struct InceptionPluginSpec {
     pub description: String,

@@ -88,7 +88,7 @@ flowchart TD
 |---|---|
 | `BlueGreenDeployment` | Names the green deployment, candidate deployment template, inception points, one verifier, and promotion strategy. |
 | `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
-| `InceptionPlugin` | A namespaced plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
+| `InceptionPlugin` | A cluster-scoped plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
 | Plugin manager | Long-running privileged control-plane component in the operator namespace. It creates and deletes derived infrastructure after verifying the per-inception JWT. |
 | Plugin inceptor | Per-inception traffic component in the application namespace. It moves, observes, writes, mocks, or combines traffic but should not hold infrastructure-admin credentials when a manager is configured. |
 | Plugin role | The behavior activated for an inception point: `duplicator`, `splitter`, `combiner`, `observer`, `mock`, `writer`, or `consumer`. |
@@ -550,8 +550,7 @@ traffic.
 | `azure-servicebus` | `duplicator`, `splitter`, `observer`, `writer`, `consumer`, `combiner` | `standalone` | yes | Mirrors the RabbitMQ queue model for Azure Service Bus with connection-string and workload-identity auth. |
 
 Standalone plugin manifest examples live in `builtin-plugins/`. The Helm chart
-templates the installable built-in plugin registrations for each configured
-namespace.
+templates the cluster-scoped built-in plugin registrations once per install.
 
 ## Filtering, Selectors, and Field Namespaces
 

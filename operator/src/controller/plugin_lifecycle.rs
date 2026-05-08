@@ -462,7 +462,7 @@ pub(super) async fn start_plugin_draining(
     auth: &AuthConfig,
     restore_targets: &[AssignmentTarget],
 ) -> std::result::Result<(), ReconcileError> {
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;

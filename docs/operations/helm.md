@@ -81,7 +81,7 @@ Typical pinned install:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.4
+  --set global.imageTag=0.3.0
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -91,7 +91,7 @@ version:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.4 \
+  --set global.imageTag=0.3.0 \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 
@@ -148,7 +148,7 @@ GitHub Actions release workflow identity:
 
 ```sh
 docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify \
-  ghcr.io/dlahmad/fbg-operator:0.2.4 \
+  ghcr.io/dlahmad/fbg-operator:0.3.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 ```
@@ -165,25 +165,25 @@ dependency list.
 Inspect the BuildKit-attached image SBOM:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.2.4 \
+docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.3.0 \
   --format '{{ range (index .SBOM "linux/amd64").SPDX.packages }}{{ .name }} {{ .versionInfo }}{{ println }}{{ end }}'
 ```
 
 Download the release SBOMs and list Rust crate dependencies:
 
 ```sh
-gh release download v0.2.4 \
+gh release download v0.3.0 \
   --repo dlahmad/fluidbgoperator \
-  --pattern 'fbg-operator-0.2.4-linux-amd64.cyclonedx.json'
+  --pattern 'fbg-operator-0.3.0-linux-amd64.cyclonedx.json'
 
 jq -r '.components[] | select(.type == "library") | [.name, .version] | @tsv' \
-  fbg-operator-0.2.4-linux-amd64.cyclonedx.json
+  fbg-operator-0.3.0-linux-amd64.cyclonedx.json
 ```
 
 Verify and inspect the image SBOM attestation with GitHub CLI:
 
 ```sh
-gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.2.4 \
+gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.3.0 \
   --repo dlahmad/fluidbgoperator
 
 jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicateType' sha256:*.jsonl
@@ -202,7 +202,7 @@ docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify-attestation \
   --type cyclonedx \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-  ghcr.io/dlahmad/fbg-operator:0.2.4 > sbom.intoto.jsonl
+  ghcr.io/dlahmad/fbg-operator:0.3.0 > sbom.intoto.jsonl
 
 trivy sbom sbom.intoto.jsonl
 ```
@@ -446,19 +446,22 @@ the base Secret or workload identity in the operator namespace and returns the
 per-inception runtime environment over the authenticated manager prepare call;
 these fields are not accepted in BGD `inceptionPoints.config`.
 
-## Plugin Namespaces
+## Plugin Registrations
 
-`InceptionPlugin` is namespaced. The operator resolves plugin references in the
-same namespace as the `BlueGreenDeployment`. Install built-in plugin CRs into
-every namespace that should use the built-in chart resources:
+`InceptionPlugin` is cluster-scoped. The operator resolves plugin references
+from the cluster plugin catalog, so a built-in plugin is registered once and can
+be referenced by `BlueGreenDeployment` resources in any namespace the operator
+is allowed to watch:
 
 ```yaml
 builtinPlugins:
   install: true
-  namespaces:
-    - fluidbg-system
-    - checkout
-    - payments
+  rabbitmq:
+    enabled: true
+  http:
+    enabled: true
+  azureServiceBus:
+    enabled: true
 ```
 
 The chart does not render those plugin CRs as normal release resources. Helm
@@ -469,9 +472,9 @@ post-install/post-upgrade hook Job using the operator image. The hook waits for
 `inceptionplugins.fluidbg.io` to be established and then server-side-applies the
 registrations.
 
-On uninstall, a pre-delete hook Job deletes the built-in registrations for the
-configured namespaces. CRDs remain installed because Helm intentionally does not
-delete CRDs from a chart's `crds/` directory.
+On uninstall, a pre-delete hook Job deletes the built-in cluster-scoped
+registrations. CRDs remain installed because Helm intentionally does not delete
+CRDs from a chart's `crds/` directory.
 
 ## CRD Upgrades
 
@@ -483,3 +486,25 @@ changes, apply the generated CRDs explicitly before upgrading the chart:
 kubectl apply -f crds/
 helm upgrade fluidbg ./charts/fluidbg-operator -n fluidbg-system
 ```
+
+### Migrating To 0.3.0
+
+`0.3.0` changes `InceptionPlugin` from namespaced to cluster-scoped. Kubernetes
+does not safely convert that CRD scope in place. On clusters that previously
+installed `0.2.x`, remove active rollouts, delete old namespaced plugin
+registrations, delete the old `inceptionplugins.fluidbg.io` CRD, and then
+install or upgrade the chart:
+
+```sh
+kubectl get bgd -A
+kubectl delete inceptionplugin -A --all
+kubectl delete crd inceptionplugins.fluidbg.io
+
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
+  --namespace fluidbg-system \
+  --create-namespace \
+  --set global.imageTag=0.3.0
+```
+
+After the chart hook recreates the cluster-scoped built-in registrations,
+`kubectl get inceptionplugins` should show one global entry per enabled plugin.

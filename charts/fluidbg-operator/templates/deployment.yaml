@@ -62,6 +62,8 @@ spec:
               value: {{ .Values.operator.auth.signingSecretKey | quote }}
             - name: FLUIDBG_AUTH_SIGNING_SECRET_NAMESPACE
               value: {{ .Values.operator.auth.signingSecretNamespace | default .Release.Namespace | quote }}
+            - name: FLUIDBG_OPERATOR_URL
+              value: {{ printf "http://fluidbg-operator.%s:%v" .Release.Namespace .Values.service.port | quote }}
             - name: FLUIDBG_STATE_STORE_TYPE
               value: {{ .Values.stateStore.type | quote }}
             - name: FLUIDBG_ORPHAN_CLEANUP_INTERVAL_SECONDS

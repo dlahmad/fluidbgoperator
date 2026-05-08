@@ -5,8 +5,6 @@ operator:
     signingSecretValue: dev-signing-key-change-me
 
 builtinPlugins:
-  namespaces:
-    - fluidbg-demo
   rabbitmq:
     manager:
       enabled: true

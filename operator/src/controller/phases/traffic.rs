@@ -10,7 +10,7 @@ use crate::crd::inception_plugin::{InceptionPlugin, PluginRole};
 pub(in crate::controller) async fn validate_progressive_shifting_support(
     bgd: &BlueGreenDeployment,
     client: &kube::Client,
-    namespace: &str,
+    _namespace: &str,
 ) -> std::result::Result<(), ReconcileError> {
     let Some(promotion) = bgd.spec.promotion.as_ref() else {
         return Ok(());
@@ -19,7 +19,7 @@ pub(in crate::controller) async fn validate_progressive_shifting_support(
         return Ok(());
     }
 
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
     let mut saw_splitter = false;
     for ip in &bgd.spec.inception_points {
         if !ip
@@ -84,7 +84,7 @@ pub(in crate::controller) async fn apply_splitter_traffic_percent(
     auth: &AuthConfig,
     traffic_percent: i32,
 ) -> std::result::Result<(), ReconcileError> {
-    let plugins: Api<InceptionPlugin> = Api::namespaced(client.clone(), namespace);
+    let plugins: Api<InceptionPlugin> = Api::all(client.clone());
 
     for ip in &bgd.spec.inception_points {
         if !ip

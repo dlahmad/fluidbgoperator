@@ -57,14 +57,15 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --create-namespace
 ```
 
-If your `BlueGreenDeployment` resources live in application namespaces, install
-built-in plugin CRs into those namespaces too:
+Built-in plugin registrations are cluster-scoped. Install the chart once, then
+reference `rabbitmq`, `http`, or `azure-servicebus` from
+`BlueGreenDeployment` resources in any namespace the operator is allowed to
+watch.
 
 ```sh
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
-  --create-namespace \
-  --set builtinPlugins.namespaces='{fluidbg-system,my-app-namespace}'
+  --create-namespace
 ```
 
 ## Run E2E

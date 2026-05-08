@@ -96,14 +96,14 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
 ```
 
 The operator watches `BlueGreenDeployment` resources cluster-wide by default.
-Because `InceptionPlugin` resources are namespaced, install built-in plugin CRs
-into every application namespace that should use the chart-provided plugins:
+Built-in `InceptionPlugin` registrations are cluster-scoped, so the chart
+registers each enabled plugin once and BGDs can reference those plugins from any
+watched namespace:
 
 ```sh
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
-  --create-namespace \
-  --set builtinPlugins.namespaces='{fluidbg-system,my-app-namespace}'
+  --create-namespace
 ```
 
 ## Images
