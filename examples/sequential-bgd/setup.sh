@@ -96,8 +96,8 @@ helm "${helm_args[@]}"
 
 kubectl rollout status "deploy/fluidbg-fluidbg-operator" -n "$SYSTEM_NAMESPACE" --timeout=180s
 kubectl rollout status "deploy/fluidbg-rabbitmq-manager" -n "$SYSTEM_NAMESPACE" --timeout=180s
-kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n "$NAMESPACE" --timeout=60s
-kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n "$NAMESPACE" --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http --timeout=60s
 
 cat <<EOF
 

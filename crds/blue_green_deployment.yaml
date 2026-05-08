@@ -10333,11 +10333,6 @@ spec:
                       required:
                       - name
                       type: object
-                    resources:
-                      items:
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
-                      type: array
                     roles:
                       items:
                         enum:

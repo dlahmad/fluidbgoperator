@@ -144,7 +144,8 @@ sequenceDiagram
         M->>M: derive secured temp resource names
         M->>T: create derived temporary resources
         M-->>O: inceptorEnv with scoped runtime access
-        O->>I: create ConfigMap/Deployment/Service with token + inceptorEnv
+        O->>I: create Secret/ConfigMap/Deployment/Service
+        O->>I: mount token + inceptorEnv by secretKeyRef
         I->>I: stay idle until prepared
         O->>I: POST /prepare + Bearer same JWT
         I->>I: exact token match, setup only, remain idle

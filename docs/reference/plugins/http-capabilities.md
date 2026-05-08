@@ -21,9 +21,6 @@ configuration.
 | `observer` + `writer` | Proxies/observes application calls and exposes `/write`. | yes | yes | no | yes | no | Depends on observer config. |
 | `splitter` + `observer` + `writer` | Progressive HTTP proxy, observation, and verifier-triggered writes in one inceptor. | yes | yes | no | yes | yes | Splitter path is bounded-buffered. |
 
-Legacy `FLUIDBG_MODE` modes are not part of the HTTP plugin contract. Behavior is
-role-based.
-
 ## HTTP And TLS Support
 
 | Capability | Current support | Details |

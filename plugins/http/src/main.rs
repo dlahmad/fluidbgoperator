@@ -58,14 +58,14 @@ async fn main() -> Result<()> {
         traffic_percent: Arc::new(AtomicUsize::new(traffic_percent_from_env() as usize)),
     };
 
-    let app = router(state.clone());
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let control_plane_tls = ControlPlaneServerTls::from_env();
     let control_plane_tls_port = env_port("FLUIDBG_CONTROL_PLANE_TLS_PORT", 9443);
+    let control_plane_tls_enabled = control_plane_tls.enabled;
 
     if state.config.tls.inbound.enabled {
         let https_port = state.config.inbound_https_port();
-        if !(control_plane_tls.enabled && https_port == control_plane_tls_port) {
+        if !(control_plane_tls_enabled && https_port == control_plane_tls_port) {
             let https_addr = std::net::SocketAddr::from(([0, 0, 0, 0], https_port));
             let cert = state
                 .config
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
                 .with_context(|| {
                     format!("failed to load inbound TLS certificate {cert} and key {key}")
                 })?;
-            let https_app = router(state.clone());
+            let https_app = traffic_router(state.clone(), !control_plane_tls_enabled);
             tokio::spawn(async move {
                 info!("http plugin HTTPS traffic listener on {}", https_addr);
                 if let Err(err) = axum_server::bind_rustls(https_addr, tls_config)
@@ -99,9 +99,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    if control_plane_tls.enabled {
+    if control_plane_tls_enabled {
         let control_addr = std::net::SocketAddr::from(([0, 0, 0, 0], control_plane_tls_port));
-        let control_app = router(state.clone());
+        let control_app = if state.config.tls.inbound.enabled
+            && state.config.inbound_https_port() == control_plane_tls_port
+        {
+            traffic_router(state.clone(), true)
+        } else {
+            control_router(state.clone())
+        };
         tokio::spawn(async move {
             info!(
                 "http plugin HTTPS control-plane listener on {}",
@@ -117,7 +123,7 @@ async fn main() -> Result<()> {
 
     info!("http plugin HTTP control/traffic listener on {}", addr);
     serve_control_plane(
-        app,
+        traffic_router(state, !control_plane_tls_enabled),
         &addr.to_string(),
         ControlPlaneServerTls {
             enabled: false,
@@ -130,7 +136,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn router(state: AppState) -> axum::Router {
+fn control_router(state: AppState) -> axum::Router {
+    control_routes().with_state(state)
+}
+
+fn control_routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/health", axum::routing::get(health))
         .route("/prepare", axum::routing::post(prepare_handler))
@@ -140,8 +150,15 @@ fn router(state: AppState) -> axum::Router {
         .route("/drain-status", axum::routing::get(drain_status))
         .route("/traffic", axum::routing::post(traffic_shift_handler))
         .route("/write", axum::routing::post(write_handler))
-        .fallback(proxy_handler)
-        .with_state(state)
+}
+
+fn traffic_router(state: AppState, include_control_plane_routes: bool) -> axum::Router {
+    let app = if include_control_plane_routes {
+        control_routes()
+    } else {
+        axum::Router::new().route("/health", axum::routing::get(health))
+    };
+    app.fallback(proxy_handler).with_state(state)
 }
 
 #[cfg(test)]

@@ -26,3 +26,12 @@ Include:
 The Helm chart runs the operator as non-root, drops Linux capabilities, uses a
 read-only root filesystem, and applies the Kubernetes `RuntimeDefault` seccomp
 profile.
+
+## Runtime Authorization Model
+
+The operational security model is documented in
+[Security Model](../reference/security-model.md). In short, the Helm chart
+installs a `ValidatingAdmissionPolicy` so a user can create or update a
+`BlueGreenDeployment` only when that same user has the Kubernetes permissions
+needed for the namespace-scoped Deployments, Services, ConfigMaps, Secrets, and
+FluidBG-labeled Pod cleanup that the operator performs for that rollout.

@@ -6,7 +6,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use chrono::{Duration, Utc};
-use fluidbg_plugin_sdk::{AUTHORIZATION_HEADER, RegisterTestCaseRequest, bearer_token};
+use fluidbg_plugin_sdk::{
+    AUTHORIZATION_HEADER, RegisterTestCaseRequest, bearer_matches, bearer_token,
+};
 use kube::api::Api;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -178,6 +180,7 @@ pub async fn register_test_case(
 
 pub async fn set_verdict(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<VerdictRequest>,
 ) -> impl IntoResponse {
     debug!(
@@ -193,9 +196,74 @@ pub async fn set_verdict(
             }),
         );
     };
+    let auth_header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let claims = match validate_plugin_auth(&state.client, &state.auth, auth_header).await {
+        Ok(Some(claims)) => claims,
+        Ok(None) | Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(VerdictResponse {
+                    test_id: req.test_id,
+                    status: "Unauthorized".to_string(),
+                }),
+            );
+        }
+    };
+    let state_key = match state_key_for_authorized_ref(&claims, blue_green_ref) {
+        Some(state_key) => state_key,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(VerdictResponse {
+                    test_id: req.test_id,
+                    status: "Unauthorized".to_string(),
+                }),
+            );
+        }
+    };
+    let record = match state.store.get(&state_key, &req.test_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(VerdictResponse {
+                    test_id: req.test_id,
+                    status: "error: test case not found".to_string(),
+                }),
+            );
+        }
+        Err(e) => {
+            warn!(
+                "failed to load testCase {} before verdict authorization: {}",
+                req.test_id, e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(VerdictResponse {
+                    test_id: req.test_id,
+                    status: format!("error: {}", e),
+                }),
+            );
+        }
+    };
+    if !verdict_authorized(auth_header, &record) {
+        warn!(
+            "rejecting unauthorized verdict for testCase id={} bgd={}",
+            req.test_id, state_key
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(VerdictResponse {
+                test_id: req.test_id,
+                status: "Unauthorized".to_string(),
+            }),
+        );
+    }
     match state
         .store
-        .set_verdict(blue_green_ref, &req.test_id, req.passed, None)
+        .set_verdict(&state_key, &req.test_id, req.passed, None)
         .await
     {
         Ok(()) => (
@@ -217,9 +285,42 @@ pub async fn set_verdict(
 
 pub async fn get_counts(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     axum::extract::Path(bg_ref): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    match state.store.counts(&bg_ref).await {
+    let auth_header = headers
+        .get(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let state_key = match validate_plugin_auth(&state.client, &state.auth, auth_header).await {
+        Ok(Some(claims)) => match state_key_for_authorized_ref(&claims, &bg_ref) {
+            Some(state_key) => state_key,
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(CountsResponse {
+                        blue_green_ref: bg_ref,
+                        passed: 0,
+                        failed: 0,
+                        timed_out: 0,
+                        pending: 0,
+                    }),
+                );
+            }
+        },
+        Ok(_) | Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(CountsResponse {
+                    blue_green_ref: bg_ref,
+                    passed: 0,
+                    failed: 0,
+                    timed_out: 0,
+                    pending: 0,
+                }),
+            );
+        }
+    };
+    match state.store.counts(&state_key).await {
         Ok(Counts {
             passed,
             failed,
@@ -228,7 +329,7 @@ pub async fn get_counts(
         }) => (
             StatusCode::OK,
             Json(CountsResponse {
-                blue_green_ref: bg_ref,
+                blue_green_ref: state_key,
                 passed,
                 failed,
                 timed_out,
@@ -238,7 +339,7 @@ pub async fn get_counts(
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(CountsResponse {
-                blue_green_ref: bg_ref,
+                blue_green_ref: state_key,
                 passed: 0,
                 failed: 0,
                 timed_out: 0,
@@ -267,6 +368,23 @@ fn claims_match_request(
     req: &RegisterTestCaseRequest,
 ) -> bool {
     claims.blue_green_ref == req.blue_green_ref && claims.inception_point == req.inception_point
+}
+
+fn verdict_authorized(header_value: Option<&str>, record: &TestCaseRecord) -> bool {
+    bearer_matches(header_value, Some(&record.verifier_auth_token))
+}
+
+fn state_key_for_authorized_ref(
+    claims: &fluidbg_plugin_sdk::PluginAuthClaims,
+    requested_ref: &str,
+) -> Option<String> {
+    let state_key =
+        crate::controller::blue_green_state_key(&claims.namespace, &claims.blue_green_ref);
+    if requested_ref == claims.blue_green_ref || requested_ref == state_key {
+        Some(state_key)
+    } else {
+        None
+    }
 }
 
 async fn validate_registration_bgd(
@@ -340,5 +458,43 @@ mod tests {
             &claims,
             &request("orders", "outgoing")
         ));
+    }
+
+    #[test]
+    fn verdict_requires_stored_verifier_token() {
+        let record = TestCaseRecord {
+            test_id: "case-1".to_string(),
+            blue_green_ref: "ns/orders".to_string(),
+            triggered_at: Utc::now(),
+            source_inception_point: "incoming".to_string(),
+            timeout: Duration::seconds(60),
+            status: TestStatus::Triggered,
+            verdict: None,
+            verification_mode: VerificationMode::Data,
+            verify_url: "http://verifier/result/case-1".to_string(),
+            verifier_auth_token: "expected-token".to_string(),
+            retries_remaining: 0,
+            failure_message: None,
+        };
+
+        assert!(verdict_authorized(Some("Bearer expected-token"), &record));
+        assert!(!verdict_authorized(Some("Bearer wrong"), &record));
+        assert!(!verdict_authorized(None, &record));
+    }
+
+    #[test]
+    fn state_key_is_derived_from_verified_claims() {
+        let claims = PluginAuthClaims::new("apps", "orders", "incoming", "rabbitmq");
+
+        assert_eq!(
+            state_key_for_authorized_ref(&claims, "orders").as_deref(),
+            Some("apps/orders")
+        );
+        assert_eq!(
+            state_key_for_authorized_ref(&claims, "apps/orders").as_deref(),
+            Some("apps/orders")
+        );
+        assert!(state_key_for_authorized_ref(&claims, "other").is_none());
+        assert!(state_key_for_authorized_ref(&claims, "other/orders").is_none());
     }
 }

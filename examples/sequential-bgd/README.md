@@ -136,7 +136,7 @@ rm -rf "$tmpdir"
 
 If you did not use `setup.sh`, run these commands from the repository root to
 install the operator chart into the system namespace and register built-in
-plugins in the demo namespace:
+cluster-scoped plugins:
 
 ```sh
 kubectl create namespace fluidbg-demo --dry-run=client -o yaml | kubectl apply -f -
@@ -146,8 +146,8 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --create-namespace \
   -f examples/sequential-bgd/operator-values.yaml
 
-kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n fluidbg-demo --timeout=60s
-kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n fluidbg-demo --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http --timeout=60s
 ```
 
 `operator-values.yaml` enables the RabbitMQ manager and explicitly sets

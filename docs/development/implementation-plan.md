@@ -40,19 +40,17 @@ controller/status.rs           BlueGreenDeployment status patches
 | CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment` and `InceptionPlugin` |
 | State stores | In-memory, PostgreSQL, and Azure Cosmos DB backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |
-| Plugin model | Generic plugin CRD rendering plus built-in combined HTTP/RabbitMQ manifests |
-| Operator API | `/health`, `/testcases`, `/testcase-verdicts` keyed by `blue_green_ref` plus `test_id`, `/counts/{bg_ref}` |
+| Plugin model | Generic plugin CRD rendering plus built-in combined HTTP, RabbitMQ, and Azure Service Bus manifests |
+| Operator API | `/health`, `/testcases`, `/testcase-verdicts`, and `/counts/{bg_ref}` with BGD identity derived from authenticated token claims |
 | Test harness | Unit tests plus a Rust/kube-rs kind-based e2e harness |
-| Packaging | Helm chart, consolidated GitHub Actions CI/CD workflow, docs publishing, optional e2e gate, GHCR release targets |
+| Packaging | Helm chart, consolidated GitHub Actions CI/CD workflow, docs publishing, optional e2e gate, GHCR release targets, image signatures, SBOMs, and provenance attestations |
 
 ## Near-Term Work
 
-1. Expand controller unit tests around draining finalization and env assignment grouping.
-2. Add integration tests for PostgreSQL state-store migration and recovery.
-3. Add standalone plugin contract tests that exercise `/prepare`, `/activate`, `/drain`, `/drain-status`, `/cleanup`, `/traffic`, and returned assignments outside the e2e suite.
-4. Decide whether Redis remains on the roadmap; if yes, add the backend and document its operational model before advertising it as supported.
-5. Add release hardening for signed images, SBOMs, provenance attestations, and package retention policy.
-6. Migrate JavaScript-based GitHub Actions to Node 24-compatible action versions as they become available.
+1. Expand plugin contract tests that exercise `/prepare`, `/activate`, `/drain`, `/drain-status`, `/cleanup`, `/traffic`, and returned assignments outside the full e2e suite.
+2. Add focused integration tests for PostgreSQL and Cosmos DB migration/recovery paths without requiring the full rollout scenario.
+3. Add more failure-injection tests around plugin manager outages, API-server conflicts, and forced-delete orphan cleanup.
+4. Keep release tooling current as GitHub Actions and Sigstore tooling move to newer runtime versions.
 
 ## Local Verification
 

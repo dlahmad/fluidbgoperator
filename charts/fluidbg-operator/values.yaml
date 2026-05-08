@@ -71,6 +71,13 @@ service:
 rbac:
   create: true
 
+admissionPolicy:
+  # Kubernetes ValidatingAdmissionPolicy is used to enforce privilege parity:
+  # a user may create/update BlueGreenDeployment only if the same principal has
+  # the namespace permissions needed for the generated Deployments, Services,
+  # ConfigMaps, Secrets, and FluidBG-labeled Pod cleanup.
+  enabled: true
+
 serviceAccount:
   create: true
   name: ""

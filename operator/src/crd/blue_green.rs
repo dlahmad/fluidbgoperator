@@ -108,9 +108,6 @@ pub struct InceptionPoint {
     pub config: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drain: Option<InceptionPointDrainSpec>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(schema_with = "arbitrary_array_schema")]
-    pub resources: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -353,16 +350,6 @@ fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
     schemars::json_schema!({
         "type": "object",
         "x-kubernetes-preserve-unknown-fields": true
-    })
-}
-
-fn arbitrary_array_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "array",
-        "items": {
-            "type": "object",
-            "x-kubernetes-preserve-unknown-fields": true
-        }
     })
 }
 

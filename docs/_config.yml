@@ -9,11 +9,11 @@ relative_links:
   collections: true
 header_pages:
   - getting-started.md
-  - operations/helm.md
-  - reference/architecture.md
-  - reference/plugin-interface.md
+  - operations/index.md
+  - reference/index.md
   - reference/plugins/index.md
   - testing/e2e.md
+  - development/index.md
 
 defaults:
   - scope:

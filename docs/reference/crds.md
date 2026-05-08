@@ -21,6 +21,9 @@ Resources:
 `BlueGreenDeployment` is namespaced. `InceptionPlugin` is cluster-scoped:
 register a plugin once and reference it by `pluginRef.name` from BGDs in any
 namespace watched by the operator.
+When installed through the Helm chart, BGD create/update admission also checks
+that the requesting user has the namespace permissions required for the
+operator-generated resources. See [Security Model](security-model.md).
 
 `BlueGreenDeployment.status.phase` is one of `Pending`, `Observing`,
 `Promoting`, `Draining`, `Completed`, `RolledBack`, or `Invalid`. User-visible

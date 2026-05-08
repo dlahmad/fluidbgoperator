@@ -13,8 +13,8 @@ use super::super::plugin_lifecycle::{
     invoke_inceptor_lifecycle, invoke_plugin_manager_lifecycle,
 };
 use super::super::resources::{
-    apply_resource, ensure_inception_point_owned_resources, ensure_test_resources,
-    sign_inception_auth_token, test_instance_name, test_service_port, wait_for_test_services_ready,
+    apply_resource, ensure_test_resources, ensure_verifier_auth_secret, sign_inception_auth_token,
+    test_instance_name, test_service_port, verifier_auth_env, wait_for_test_services_ready,
 };
 use crate::crd::blue_green::{BlueGreenDeployment, InceptionPoint};
 use crate::crd::inception_plugin::InceptionPlugin;
@@ -87,7 +87,6 @@ pub(in crate::controller) async fn ensure_inception_resources(
         )
         .await?;
         verifier_auth_tokens.insert(ip.name.clone(), auth_token.clone());
-        ensure_inception_point_owned_resources(client, namespace, ip).await?;
         let resources = reconcile_inception_point(
             &plugin,
             ip,
@@ -120,6 +119,13 @@ pub(in crate::controller) async fn ensure_inception_resources(
                 ReconcileError::Resource("generated ConfigMap has no name".into())
             })?;
             apply_resource(Api::namespaced(client.clone(), namespace), &name, &cm).await?;
+        }
+        for secret in resources.secrets {
+            let name =
+                secret.metadata.name.clone().ok_or_else(|| {
+                    ReconcileError::Resource("generated Secret has no name".into())
+                })?;
+            apply_resource(Api::namespaced(client.clone(), namespace), &name, &secret).await?;
         }
         for deployment in resources.deployments {
             let name = deployment.metadata.name.clone().ok_or_else(|| {
@@ -184,21 +190,19 @@ pub(in crate::controller) async fn ensure_inception_resources(
         }
     }
 
+    let mut extra_test_env = Vec::new();
     if bgd.spec.test.is_some() {
-        test_assignments.push(PropertyAssignment {
-            target: AssignmentTarget::Test,
-            kind: AssignmentKind::Env,
-            name: "FLUIDBG_VERIFIER_AUTH_TOKENS_JSON".to_string(),
-            value: serde_json::to_string(&verifier_auth_tokens).map_err(|err| {
-                ReconcileError::Auth(format!("failed to serialize verifier auth tokens: {err}"))
-            })?,
-            container_name: None,
-        });
+        let tokens_json = serde_json::to_string(&verifier_auth_tokens).map_err(|err| {
+            ReconcileError::Auth(format!("failed to serialize verifier auth tokens: {err}"))
+        })?;
+        let secret_name = ensure_verifier_auth_secret(bgd, client, namespace, &tokens_json).await?;
+        extra_test_env.push(verifier_auth_env(&secret_name));
     }
 
     ensure_declared_deployments(bgd, client, namespace, &pre_activation_assignments).await?;
 
-    let test_deployments = ensure_test_resources(bgd, client, namespace, &test_assignments).await?;
+    let test_deployments =
+        ensure_test_resources(bgd, client, namespace, &test_assignments, &extra_test_env).await?;
     wait_for_deployments_ready(client, &test_deployments).await?;
     wait_for_test_services_ready(bgd, client, namespace).await?;
 

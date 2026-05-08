@@ -62,11 +62,9 @@ reference `rabbitmq`, `http`, or `azure-servicebus` from
 `BlueGreenDeployment` resources in any namespace the operator is allowed to
 watch.
 
-```sh
-helm upgrade --install fluidbg ./charts/fluidbg-operator \
-  --namespace fluidbg-system \
-  --create-namespace
-```
+For production values, auth, state stores, TLS, and required BGD-author
+permissions, continue with [Helm Installation](operations/helm.md) and
+[Security Model](reference/security-model.md).
 
 ## Run E2E
 

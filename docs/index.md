@@ -9,29 +9,31 @@ are promoted.
 
 ## Start Here
 
-- [Getting Started](getting-started.md)
-- [Sequential Example](examples/sequential-bgd.md)
-- [Helm Installation](operations/helm.md)
-- [Troubleshooting](operations/troubleshooting.md)
+| Goal | Start Here |
+|---|---|
+| Try FluidBG locally | [Getting Started](getting-started.md), then [Sequential Example](examples/sequential-bgd.md) |
+| Install or operate a cluster | [Operations](operations/index.md), then [Helm Installation](operations/helm.md) |
+| Understand the system | [Reference](reference/index.md), then [Architecture](reference/architecture.md) |
+| Build a plugin | [Plugin Architecture](reference/plugin-architecture.md), [Plugin Interface](reference/plugin-interface.md), and [SDK Contract](reference/sdk.md) |
+| Diagnose a rollout | [Troubleshooting](operations/troubleshooting.md) and [E2E Test Flow](testing/e2e.md) |
 
-## Reference
+## Documentation Map
 
-- [Architecture](reference/architecture.md)
-- [Plugin Architecture](reference/plugin-architecture.md)
-- [Plugin Interface](reference/plugin-interface.md)
-- [Built-In Plugins](reference/plugins/index.md)
-- [SDK Contract](reference/sdk.md)
-- [CRDs](reference/crds.md)
+| Area | Contents |
+|---|---|
+| [Tutorials](getting-started.md) | First install, local image loop, and runnable demo. |
+| [Operations](operations/index.md) | Helm values, runtime configuration, troubleshooting, release verification, SBOMs, and signatures. |
+| [Reference](reference/index.md) | Architecture, CRDs, security model, plugin contract, SDK, and built-in plugin behavior. |
+| [Testing](testing/e2e.md) | End-to-end suite topology, scenarios, cleanup assertions, and HA store modes. |
+| [Project](project/changelog.md) | Changelog, contribution rules, and security reporting. |
 
-## Operations And Development
+## Source Of Truth
 
-- [Release](operations/release.md)
-- [E2E Test Flow](testing/e2e.md)
-- [Development](development/development.md)
-- [Implementation Plan](development/implementation-plan.md)
-- [Changelog](project/changelog.md)
-- [Contributing](project/contributing.md)
-- [Security Policy](project/security.md)
+- CRD schema: Rust models in `operator/src/crd`, generated into [CRDs](reference/crds.md).
+- Operator behavior: [Architecture](reference/architecture.md) and [Security Model](reference/security-model.md).
+- Plugin protocol: [Plugin Interface](reference/plugin-interface.md) and [SDK Contract](reference/sdk.md).
+- Built-in plugin behavior: [Built-In Plugins](reference/plugins/index.md).
+- Installable runtime defaults: [Helm Installation](operations/helm.md).
 
 ## What Ships
 
@@ -40,4 +42,4 @@ are promoted.
 - Versioned CRDs under `fluidbg.io/v1alpha1`.
 - A versioned plugin API under `fluidbg.plugin/v1alpha1`.
 - A Rust plugin SDK plus OpenAPI specs for generated SDKs in other languages.
-- A Helm chart for cluster-wide operator watching and namespaced built-in plugin CRs.
+- A Helm chart for cluster-wide operator watching and cluster-scoped built-in plugin registrations.

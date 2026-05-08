@@ -77,6 +77,12 @@
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
+    "admissionPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
     "builtinPlugins": {
       "type": "object",
       "properties": {

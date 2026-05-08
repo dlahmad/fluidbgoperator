@@ -1,21 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Endpoints, EnvVar, Namespace, Pod, Secret, Service, ServiceSpec,
+    ConfigMap, Endpoints, EnvVar, EnvVarSource, Namespace, Pod, Secret, SecretKeySelector, Service,
+    ServiceSpec,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::ResourceExt;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
-use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::core::NamespaceResourceScope;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
-use crate::crd::blue_green::{
-    BlueGreenDeployment, InceptionPoint, ManagedDeploymentSpec, TestSpec,
-};
+use crate::crd::blue_green::{BlueGreenDeployment, ManagedDeploymentSpec, TestSpec};
 use crate::crd::inception_plugin::InceptionPlugin;
 use crate::plugins::reconciler::{
     inception_auth_secret_name, inception_config_map_name, inception_instance_base_name,
@@ -35,6 +34,7 @@ pub(super) async fn ensure_test_resources(
     client: &kube::Client,
     namespace: &str,
     assignments: &[PropertyAssignment],
+    extra_env: &[EnvVar],
 ) -> std::result::Result<Vec<DeploymentIdentity>, ReconcileError> {
     let mut deployments = Vec::new();
     if let Some(test) = bgd.spec.test.as_ref() {
@@ -47,6 +47,7 @@ pub(super) async fn ensure_test_resources(
             assignments,
             AssignmentTarget::Test,
         )?;
+        apply_extra_env_to_deployment_spec(&mut deployment_spec, extra_env)?;
 
         let deployment = Deployment {
             metadata: ObjectMeta {
@@ -91,6 +92,48 @@ pub(super) async fn ensure_test_resources(
     Ok(deployments)
 }
 
+pub(super) async fn ensure_verifier_auth_secret(
+    bgd: &BlueGreenDeployment,
+    client: &kube::Client,
+    namespace: &str,
+    auth_tokens_json: &str,
+) -> std::result::Result<String, ReconcileError> {
+    let Some(name) = bgd.metadata.name.as_deref() else {
+        return Err(ReconcileError::Resource(
+            "BlueGreenDeployment is missing metadata.name".to_string(),
+        ));
+    };
+    let secret_name = verifier_auth_secret_name(bgd);
+    let labels = BTreeMap::from([
+        ("fluidbg.io/blue-green-ref".to_string(), name.to_string()),
+        (
+            "fluidbg.io/blue-green-uid".to_string(),
+            bgd.metadata.uid.as_deref().unwrap_or("").to_string(),
+        ),
+        ("fluidbg.io/verifier-auth".to_string(), "true".to_string()),
+    ]);
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(secret_name.clone()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            "tokens.json".to_string(),
+            ByteString(auth_tokens_json.as_bytes().to_vec()),
+        )])),
+        ..Default::default()
+    };
+    apply_resource(
+        Api::namespaced(client.clone(), namespace),
+        &secret_name,
+        &secret,
+    )
+    .await?;
+    Ok(secret_name)
+}
+
 fn apply_assignments_to_deployment_spec(
     deployment: &mut DeploymentSpec,
     assignments: &[PropertyAssignment],
@@ -115,6 +158,30 @@ fn apply_assignments_to_deployment_spec(
                 &assignment.name,
                 &assignment.value,
             );
+        }
+    }
+    Ok(())
+}
+
+fn apply_extra_env_to_deployment_spec(
+    deployment: &mut DeploymentSpec,
+    extra_env: &[EnvVar],
+) -> std::result::Result<(), ReconcileError> {
+    if extra_env.is_empty() {
+        return Ok(());
+    }
+    let pod_spec =
+        deployment.template.spec.as_mut().ok_or_else(|| {
+            ReconcileError::Store("deployment has no pod template spec".to_string())
+        })?;
+    for container in &mut pod_spec.containers {
+        let env = container.env.get_or_insert_with(Vec::new);
+        for extra in extra_env {
+            if let Some(existing) = env.iter_mut().find(|env| env.name == extra.name) {
+                *existing = extra.clone();
+            } else {
+                env.push(extra.clone());
+            }
         }
     }
     Ok(())
@@ -261,6 +328,42 @@ pub(super) fn test_instance_name(bgd: &BlueGreenDeployment, logical_name: &str) 
     format!("{prefix}{trimmed}-{suffix}")
 }
 
+pub(super) fn verifier_auth_secret_name(bgd: &BlueGreenDeployment) -> String {
+    let bgd_name = bgd.metadata.name.as_deref().unwrap_or("bgd");
+    let bgd_uid = bgd.metadata.uid.as_deref().unwrap_or("");
+    let digest = Sha256::digest(format!("{bgd_name}:{bgd_uid}:verifier-auth").as_bytes());
+    let suffix = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let prefix = "fluidbg-verifier-auth-";
+    let max_name_len = 63usize.saturating_sub(prefix.len() + suffix.len() + 1);
+    let safe_name = sanitize_dns_label(bgd_name);
+    let safe_name = if safe_name.is_empty() {
+        "bgd".to_string()
+    } else {
+        safe_name
+    };
+    let trimmed = safe_name.chars().take(max_name_len).collect::<String>();
+    format!("{prefix}{trimmed}-{suffix}")
+}
+
+pub(super) fn verifier_auth_env(secret_name: &str) -> EnvVar {
+    EnvVar {
+        name: "FLUIDBG_VERIFIER_AUTH_TOKENS_JSON".to_string(),
+        value_from: Some(EnvVarSource {
+            secret_key_ref: Some(SecretKeySelector {
+                name: secret_name.to_string(),
+                key: "tokens.json".to_string(),
+                optional: Some(false),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 fn sanitize_dns_label(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut last_was_dash = false;
@@ -360,17 +463,6 @@ fn test_name_collision_error(
         bgd.metadata.name.as_deref().unwrap_or(""),
         logical_name
     ))
-}
-
-pub(super) async fn ensure_inception_point_owned_resources(
-    client: &kube::Client,
-    default_namespace: &str,
-    ip: &InceptionPoint,
-) -> std::result::Result<(), ReconcileError> {
-    for manifest in &ip.resources {
-        apply_dynamic_manifest(client, default_namespace, manifest).await?;
-    }
-    Ok(())
 }
 
 pub(super) async fn read_operator_signing_key(
@@ -473,99 +565,6 @@ pub(super) async fn validate_inception_auth_token(
         Ok(claims) => Ok(Some(claims)),
         Err(_) => Ok(None),
     }
-}
-
-async fn cleanup_inception_point_owned_resources(
-    client: &kube::Client,
-    default_namespace: &str,
-    ip: &InceptionPoint,
-) -> std::result::Result<(), ReconcileError> {
-    for manifest in &ip.resources {
-        delete_dynamic_manifest(client, default_namespace, manifest).await?;
-    }
-    Ok(())
-}
-
-async fn apply_dynamic_manifest(
-    client: &kube::Client,
-    default_namespace: &str,
-    manifest: &Value,
-) -> std::result::Result<(), ReconcileError> {
-    let identity = manifest_identity(default_namespace, manifest)?;
-    let mut object: DynamicObject = serde_json::from_value(manifest.clone()).map_err(|err| {
-        ReconcileError::Store(format!(
-            "failed to deserialize dynamic resource {}/{}/{}: {err}",
-            identity.api_version, identity.kind, identity.name
-        ))
-    })?;
-    object
-        .metadata
-        .namespace
-        .get_or_insert_with(|| identity.namespace.clone());
-    let api: Api<DynamicObject> =
-        Api::namespaced_with(client.clone(), &identity.namespace, &identity.api_resource);
-    let pp = PatchParams::apply("fluidbg-operator").force();
-    api.patch(&identity.name, &pp, &Patch::Apply(&object))
-        .await?;
-    Ok(())
-}
-
-async fn delete_dynamic_manifest(
-    client: &kube::Client,
-    default_namespace: &str,
-    manifest: &Value,
-) -> std::result::Result<(), ReconcileError> {
-    let identity = manifest_identity(default_namespace, manifest)?;
-    let api: Api<DynamicObject> =
-        Api::namespaced_with(client.clone(), &identity.namespace, &identity.api_resource);
-    delete_resource(api, &identity.kind, &identity.namespace, &identity.name).await
-}
-
-struct DynamicManifestIdentity {
-    api_version: String,
-    kind: String,
-    name: String,
-    namespace: String,
-    api_resource: ApiResource,
-}
-
-fn manifest_identity(
-    default_namespace: &str,
-    manifest: &Value,
-) -> std::result::Result<DynamicManifestIdentity, ReconcileError> {
-    let api_version = manifest
-        .get("apiVersion")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ReconcileError::Store("resource manifest is missing apiVersion".into()))?;
-    let kind = manifest
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ReconcileError::Store("resource manifest is missing kind".into()))?;
-    let name = manifest
-        .get("metadata")
-        .and_then(|value| value.get("name"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ReconcileError::Store("resource manifest is missing metadata.name".into())
-        })?;
-    let namespace = manifest
-        .get("metadata")
-        .and_then(|value| value.get("namespace"))
-        .and_then(Value::as_str)
-        .unwrap_or(default_namespace);
-
-    let (group, version) = match api_version.split_once('/') {
-        Some((group, version)) => (group, version),
-        None => ("", api_version),
-    };
-    let gvk = GroupVersionKind::gvk(group, version, kind);
-    Ok(DynamicManifestIdentity {
-        api_version: api_version.to_string(),
-        kind: kind.to_string(),
-        name: name.to_string(),
-        namespace: namespace.to_string(),
-        api_resource: ApiResource::from_gvk(&gvk),
-    })
 }
 
 pub(super) async fn apply_deployment_manifest(
@@ -724,9 +723,40 @@ where
         + serde::Serialize
         + std::fmt::Debug,
 {
+    ensure_apply_target_available(&api, name, resource).await?;
     let pp = PatchParams::apply("fluidbg-operator").force();
     api.patch(name, &pp, &Patch::Apply(resource)).await?;
     Ok(())
+}
+
+async fn ensure_apply_target_available<K>(
+    api: &Api<K>,
+    name: &str,
+    resource: &K,
+) -> std::result::Result<(), ReconcileError>
+where
+    K: kube::Resource<DynamicType = ()> + Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let expected = resource.labels();
+    let Some(expected_ref) = expected.get("fluidbg.io/blue-green-ref") else {
+        return Ok(());
+    };
+    let expected_uid = expected.get("fluidbg.io/blue-green-uid");
+    let Some(existing) = api.get_opt(name).await? else {
+        return Ok(());
+    };
+    let existing_labels = existing.labels();
+    let existing_ref = existing_labels.get("fluidbg.io/blue-green-ref");
+    let existing_uid = existing_labels.get("fluidbg.io/blue-green-uid");
+    if existing_ref == Some(expected_ref)
+        && (expected_uid.is_none() || existing_uid == expected_uid)
+    {
+        return Ok(());
+    }
+    Err(ReconcileError::Resource(format!(
+        "refusing to apply generated resource '{}' because an existing resource with that name is not owned by this BlueGreenDeployment",
+        name
+    )))
 }
 
 pub(super) async fn cleanup_test_resources(
@@ -738,6 +768,7 @@ pub(super) async fn cleanup_test_resources(
         let test_name = test_instance_name(bgd, &test.name);
         delete_deployment(client, namespace, &test_name).await?;
         delete_service(client, namespace, &test_name).await?;
+        delete_secret(client, namespace, &verifier_auth_secret_name(bgd)).await?;
     }
 
     wait_for_test_resources_deleted(bgd, client, namespace).await
@@ -750,7 +781,6 @@ pub(super) async fn cleanup_inception_resources(
 ) -> std::result::Result<(), ReconcileError> {
     let blue_green_ref = bgd.metadata.name.as_deref().unwrap_or("");
     for ip in &bgd.spec.inception_points {
-        cleanup_inception_point_owned_resources(client, namespace, ip).await?;
         let deployment_name = inception_instance_base_name(blue_green_ref, &ip.name);
         let service_name = inception_service_name(blue_green_ref, &ip.name);
         let config_map_name = inception_config_map_name(blue_green_ref, &ip.name);
@@ -1055,7 +1085,7 @@ mod tests {
     use super::{
         apply_assignments_to_deployment_spec, deployment_spec_for_test,
         deployment_spec_with_test_patch, service_spec_for_test, test_instance_name,
-        test_service_port,
+        test_service_port, verifier_auth_env, verifier_auth_secret_name,
     };
     use crate::controller::plugin_lifecycle::{
         AssignmentKind, AssignmentTarget, PropertyAssignment,
@@ -1142,6 +1172,23 @@ mod tests {
             name.chars()
                 .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
         );
+    }
+
+    #[test]
+    fn verifier_auth_env_uses_secret_key_reference() {
+        let secret_name = verifier_auth_secret_name(&bgd_with_uid("rollout-a", "uid-a"));
+        let env = verifier_auth_env(&secret_name);
+
+        assert_eq!(env.name, "FLUIDBG_VERIFIER_AUTH_TOKENS_JSON");
+        assert!(env.value.is_none());
+        let selector = env
+            .value_from
+            .as_ref()
+            .and_then(|source| source.secret_key_ref.as_ref())
+            .unwrap();
+        assert_eq!(selector.name, secret_name);
+        assert_eq!(selector.key, "tokens.json");
+        assert_eq!(selector.optional, Some(false));
     }
 
     #[test]

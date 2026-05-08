@@ -1,0 +1,108 @@
+{{- if .Values.admissionPolicy.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "fluidbg.fullname" . }}-bgd-privilege-parity
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["fluidbg.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["bluegreendeployments"]
+  validations:
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(request.namespace).check("create").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in the BGD namespace for generated inceptor and test deployments."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in the BGD namespace for generated inceptor and test deployments."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in the BGD namespace for generated inceptor and test deployments."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in the BGD namespace for generated inceptor and test deployments."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.deployment.namespace) && object.spec.deployment.namespace != "" ? object.spec.deployment.namespace : request.namespace).check("create").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in spec.deployment.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.deployment.namespace) && object.spec.deployment.namespace != "" ? object.spec.deployment.namespace : request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in spec.deployment.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.deployment.namespace) && object.spec.deployment.namespace != "" ? object.spec.deployment.namespace : request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in spec.deployment.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.deployment.namespace) && object.spec.deployment.namespace != "" ? object.spec.deployment.namespace : request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to apps/v1 Deployments in spec.deployment.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.selector.namespace) && object.spec.selector.namespace != "" ? object.spec.selector.namespace : request.namespace).check("get").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires get, list, update, patch, and delete access to selected apps/v1 Deployments in spec.selector.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.selector.namespace) && object.spec.selector.namespace != "" ? object.spec.selector.namespace : request.namespace).check("list").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires get, list, update, patch, and delete access to selected apps/v1 Deployments in spec.selector.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.selector.namespace) && object.spec.selector.namespace != "" ? object.spec.selector.namespace : request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires get, list, update, patch, and delete access to selected apps/v1 Deployments in spec.selector.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.selector.namespace) && object.spec.selector.namespace != "" ? object.spec.selector.namespace : request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires get, list, update, patch, and delete access to selected apps/v1 Deployments in spec.selector.namespace or the BGD namespace."
+    - expression: 'authorizer.group("apps").resource("deployments").namespace(has(object.spec.selector.namespace) && object.spec.selector.namespace != "" ? object.spec.selector.namespace : request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires get, list, update, patch, and delete access to selected apps/v1 Deployments in spec.selector.namespace or the BGD namespace."
+    - expression: 'authorizer.group("").resource("services").namespace(request.namespace).check("create").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Services in the BGD namespace."
+    - expression: 'authorizer.group("").resource("services").namespace(request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Services in the BGD namespace."
+    - expression: 'authorizer.group("").resource("services").namespace(request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Services in the BGD namespace."
+    - expression: 'authorizer.group("").resource("services").namespace(request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Services in the BGD namespace."
+    - expression: 'authorizer.group("").resource("configmaps").namespace(request.namespace).check("create").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to ConfigMaps in the BGD namespace."
+    - expression: 'authorizer.group("").resource("configmaps").namespace(request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to ConfigMaps in the BGD namespace."
+    - expression: 'authorizer.group("").resource("configmaps").namespace(request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to ConfigMaps in the BGD namespace."
+    - expression: 'authorizer.group("").resource("configmaps").namespace(request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to ConfigMaps in the BGD namespace."
+    - expression: 'authorizer.group("").resource("secrets").namespace(request.namespace).check("create").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Secrets in the BGD namespace."
+    - expression: 'authorizer.group("").resource("secrets").namespace(request.namespace).check("update").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Secrets in the BGD namespace."
+    - expression: 'authorizer.group("").resource("secrets").namespace(request.namespace).check("patch").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Secrets in the BGD namespace."
+    - expression: 'authorizer.group("").resource("secrets").namespace(request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires create, update, patch, and delete access to Secrets in the BGD namespace."
+    - expression: 'authorizer.group("").resource("pods").namespace(request.namespace).check("list").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires list and delete access to Pods in the BGD namespace because orphan cleanup removes FluidBG-labeled leftover Pods."
+    - expression: 'authorizer.group("").resource("pods").namespace(request.namespace).check("delete").allowed()'
+      reason: Forbidden
+      message: "Creating or updating a BlueGreenDeployment requires list and delete access to Pods in the BGD namespace because orphan cleanup removes FluidBG-labeled leftover Pods."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "fluidbg.fullname" . }}-bgd-privilege-parity
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "fluidbg.fullname" . }}-bgd-privilege-parity
+  validationActions: ["Deny"]
+{{- end }}

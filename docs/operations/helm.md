@@ -27,6 +27,15 @@ The operator always watches `BlueGreenDeployment` resources cluster-wide,
 limited only by the permissions granted to its ServiceAccount. Per-BGD work is
 still performed in the namespace of the BGD object.
 
+## Admission And User Permissions
+
+The chart also installs a Kubernetes `ValidatingAdmissionPolicy` by default.
+It enforces privilege parity: the user or ServiceAccount creating/updating a
+BGD must already have the namespace permissions needed for the resources the
+operator will create, update, patch, or delete. See
+[Security Model](../reference/security-model.md) for the exact permission
+matrix and the effect of disabling `admissionPolicy.enabled`.
+
 ## Production Image Values
 
 The checked-in chart defaults point at this repository's GHCR packages. For a
@@ -157,7 +166,7 @@ Typical pinned install:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.4.0
+  --set global.imageTag=<version>
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -167,7 +176,7 @@ version:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.4.0 \
+  --set global.imageTag=<version> \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 
@@ -201,7 +210,7 @@ If you pass these filters through Helm CLI `--set`/`--set-string`, escape
 commas because Helm treats commas as value separators:
 
 ```sh
-helm upgrade --install fluidbg charts/fluidbg-operator \
+helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --set-string operator.rustLog='fluidbg_operator=debug\,warn'
 ```
@@ -224,7 +233,7 @@ GitHub Actions release workflow identity:
 
 ```sh
 docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify \
-  ghcr.io/dlahmad/fbg-operator:0.4.0 \
+  ghcr.io/dlahmad/fbg-operator:<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 ```
@@ -241,25 +250,25 @@ dependency list.
 Inspect the BuildKit-attached image SBOM:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.4.0 \
+docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:<version> \
   --format '{{ range (index .SBOM "linux/amd64").SPDX.packages }}{{ .name }} {{ .versionInfo }}{{ println }}{{ end }}'
 ```
 
 Download the release SBOMs and list Rust crate dependencies:
 
 ```sh
-gh release download v0.4.0 \
+gh release download v<version> \
   --repo dlahmad/fluidbgoperator \
-  --pattern 'fbg-operator-0.4.0-linux-amd64.cyclonedx.json'
+  --pattern 'fbg-operator-<version>-linux-amd64.cyclonedx.json'
 
 jq -r '.components[] | select(.type == "library") | [.name, .version] | @tsv' \
-  fbg-operator-0.4.0-linux-amd64.cyclonedx.json
+  fbg-operator-<version>-linux-amd64.cyclonedx.json
 ```
 
 Verify and inspect the image SBOM attestation with GitHub CLI:
 
 ```sh
-gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.4.0 \
+gh attestation download oci://ghcr.io/dlahmad/fbg-operator:<version> \
   --repo dlahmad/fluidbgoperator
 
 jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicateType' sha256:*.jsonl
@@ -278,7 +287,7 @@ docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify-attestation \
   --type cyclonedx \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-  ghcr.io/dlahmad/fbg-operator:0.4.0 > sbom.intoto.jsonl
+  ghcr.io/dlahmad/fbg-operator:<version> > sbom.intoto.jsonl
 
 trivy sbom sbom.intoto.jsonl
 ```
@@ -579,7 +588,7 @@ kubectl delete crd inceptionplugins.fluidbg.io
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.4.0
+  --set global.imageTag=<version>
 ```
 
 After the chart hook recreates the cluster-scoped built-in registrations,

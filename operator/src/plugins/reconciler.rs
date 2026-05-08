@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
+use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EnvVar, PodSpec, PodTemplateSpec,
-    Service, Volume, VolumeMount,
+    ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EnvVar, EnvVarSource, PodSpec,
+    PodTemplateSpec, Secret, SecretKeySelector, Service, Volume, VolumeMount,
 };
 use kube::core::ObjectMeta;
 use sha2::{Digest, Sha256};
@@ -13,6 +14,7 @@ use crate::crd::inception_plugin::{InceptionPlugin, PluginRole};
 
 pub struct ReconciledResources {
     pub config_maps: Vec<ConfigMap>,
+    pub secrets: Vec<Secret>,
     pub deployments: Vec<Deployment>,
     pub services: Vec<Service>,
     pub green_env_injections: Vec<EnvVar>,
@@ -138,6 +140,7 @@ pub fn reconcile_inception_point(
     validate_inception_point(plugin, ip)?;
 
     let config_name = inception_config_map_name(context.blue_green_ref, &ip.name);
+    let auth_secret_name = inception_auth_secret_name(context.blue_green_ref, &ip.name);
     let role_str = ip
         .roles
         .iter()
@@ -175,10 +178,45 @@ pub fn reconcile_inception_point(
                     "fluidbg.io/blue-green-ref".to_string(),
                     context.blue_green_ref.to_string(),
                 ),
+                (
+                    "fluidbg.io/blue-green-uid".to_string(),
+                    context.blue_green_uid.to_string(),
+                ),
             ])),
             ..Default::default()
         },
         data: Some(config_data),
+        ..Default::default()
+    };
+
+    let mut secret_data = BTreeMap::from([(
+        "plugin-auth-token".to_string(),
+        ByteString(context.auth_token.as_bytes().to_vec()),
+    )]);
+    for env in context.manager_inceptor_env {
+        if let Some(value) = env.value.as_deref() {
+            secret_data.insert(env.name.clone(), ByteString(value.as_bytes().to_vec()));
+        }
+    }
+
+    let auth_secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(auth_secret_name.clone()),
+            namespace: Some(context.namespace.to_string()),
+            labels: Some(BTreeMap::from([
+                ("fluidbg.io/inception-point".to_string(), ip.name.clone()),
+                (
+                    "fluidbg.io/blue-green-ref".to_string(),
+                    context.blue_green_ref.to_string(),
+                ),
+                (
+                    "fluidbg.io/blue-green-uid".to_string(),
+                    context.blue_green_uid.to_string(),
+                ),
+            ])),
+            ..Default::default()
+        },
+        data: Some(secret_data),
         ..Default::default()
     };
 
@@ -228,7 +266,7 @@ pub fn reconcile_inception_point(
         },
         EnvVar {
             name: fluidbg_plugin_sdk::PLUGIN_AUTH_TOKEN_ENV.to_string(),
-            value: Some(context.auth_token.to_string()),
+            value_from: Some(secret_env_source(&auth_secret_name, "plugin-auth-token")),
             ..Default::default()
         },
         EnvVar {
@@ -238,7 +276,11 @@ pub fn reconcile_inception_point(
         },
     ];
     env_vars.extend(plugin.spec.inceptor.env.clone());
-    env_vars.extend(context.manager_inceptor_env.to_vec());
+    env_vars.extend(context.manager_inceptor_env.iter().map(|env| EnvVar {
+        name: env.name.clone(),
+        value_from: Some(secret_env_source(&auth_secret_name, &env.name)),
+        ..Default::default()
+    }));
 
     let volume_mounts = plugin
         .spec
@@ -296,6 +338,10 @@ pub fn reconcile_inception_point(
         (
             "fluidbg.io/blue-green-ref".to_string(),
             context.blue_green_ref.to_string(),
+        ),
+        (
+            "fluidbg.io/blue-green-uid".to_string(),
+            context.blue_green_uid.to_string(),
         ),
     ]);
     let mut pod_labels = labels.clone();
@@ -377,12 +423,24 @@ pub fn reconcile_inception_point(
 
     Ok(ReconciledResources {
         config_maps: vec![cm],
+        secrets: vec![auth_secret],
         deployments: vec![deployment],
         services: vec![service],
         green_env_injections: env_injections.green,
         blue_env_injections: env_injections.blue,
         test_env_injections: env_injections.test,
     })
+}
+
+fn secret_env_source(secret_name: &str, key: &str) -> EnvVarSource {
+    EnvVarSource {
+        secret_key_ref: Some(SecretKeySelector {
+            name: secret_name.to_string(),
+            key: key.to_string(),
+            optional: Some(false),
+        }),
+        ..Default::default()
+    }
 }
 
 fn upsert_config_volume(volumes: &mut Vec<Volume>, config_name: &str) {
@@ -797,7 +855,6 @@ mod tests {
             roles,
             config,
             drain: None,
-            resources: vec![],
         }
     }
 
@@ -1093,6 +1150,30 @@ mod tests {
                 .iter()
                 .any(|env| env.name == fluidbg_plugin_sdk::PLUGIN_AUTH_TOKEN_ENV)
         );
+        let auth_env = inceptor_env
+            .iter()
+            .find(|env| env.name == fluidbg_plugin_sdk::PLUGIN_AUTH_TOKEN_ENV)
+            .unwrap();
+        let expected_secret = inception_auth_secret_name("order-processor-bg", "incoming-events");
+        assert!(auth_env.value.is_none());
+        assert_eq!(
+            auth_env
+                .value_from
+                .as_ref()
+                .and_then(|source| source.secret_key_ref.as_ref())
+                .map(|selector| selector.name.as_str()),
+            Some(expected_secret.as_str())
+        );
+        assert_eq!(
+            resources.secrets[0]
+                .data
+                .as_ref()
+                .unwrap()
+                .get("plugin-auth-token")
+                .map(|value| String::from_utf8_lossy(&value.0).into_owned())
+                .as_deref(),
+            Some("signed-token")
+        );
         assert!(
             !inceptor_env
                 .iter()
@@ -1102,6 +1183,73 @@ mod tests {
             !inceptor_env
                 .iter()
                 .any(|env| env.name == "FLUIDBG_AUTH_SIGNING_KEY")
+        );
+    }
+
+    #[test]
+    fn manager_inceptor_env_is_stored_in_secret_not_literal_env() {
+        let plugin = make_managed_transport_plugin();
+        let ip = make_inception_point(
+            "incoming-events",
+            vec![PluginRole::Duplicator],
+            serde_json::json!({
+                "duplicator": {
+                    "source": "orders",
+                    "greenTarget": "orders-green",
+                    "blueTarget": "orders-blue"
+                }
+            }),
+        );
+        let manager_env = vec![EnvVar {
+            name: "FLUIDBG_SCOPED_CONNECTION".to_string(),
+            value: Some("secret-connection".to_string()),
+            ..Default::default()
+        }];
+
+        let resources = reconcile_inception_point(
+            &plugin,
+            &ip,
+            ReconcileInceptionContext {
+                manager_inceptor_env: &manager_env,
+                ..test_context()
+            },
+        )
+        .unwrap();
+        let inceptor_env = resources.deployments[0]
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers[0]
+            .env
+            .as_ref()
+            .unwrap();
+        let scoped = inceptor_env
+            .iter()
+            .find(|env| env.name == "FLUIDBG_SCOPED_CONNECTION")
+            .unwrap();
+
+        assert!(scoped.value.is_none());
+        assert_eq!(
+            scoped
+                .value_from
+                .as_ref()
+                .and_then(|source| source.secret_key_ref.as_ref())
+                .map(|selector| selector.key.as_str()),
+            Some("FLUIDBG_SCOPED_CONNECTION")
+        );
+        assert_eq!(
+            resources.secrets[0]
+                .data
+                .as_ref()
+                .unwrap()
+                .get("FLUIDBG_SCOPED_CONNECTION")
+                .map(|value| String::from_utf8_lossy(&value.0).into_owned())
+                .as_deref(),
+            Some("secret-connection")
         );
     }
 

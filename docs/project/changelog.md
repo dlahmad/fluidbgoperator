@@ -4,6 +4,23 @@ title: Changelog
 
 # Changelog
 
+## 0.5.0 - 2026-05-08
+
+- Added chart-managed `ValidatingAdmissionPolicy` enforcement so a BGD author
+  must already have the Kubernetes permissions needed for resources the
+  operator will create, update, patch, or delete on that BGD's behalf.
+- Removed arbitrary user-supplied inception resource manifests from the BGD API;
+  generated resources now stay under explicit operator/plugin contracts.
+- Moved per-inception and verifier auth material into generated Kubernetes
+  Secrets instead of literal pod environment values.
+- Hardened operator verifier APIs so verdict/count requests are authorized by
+  bearer token claims and mapped to the authenticated `namespace/name`.
+- Added ownership checks before applying generated resources to avoid taking
+  over unrelated objects with colliding names.
+- Reworked documentation into consistent Getting Started, Operations,
+  Reference, Testing, and Development sections, with a dedicated security model
+  and permission matrix.
+
 ## 0.4.0 - 2026-05-08
 
 - Reworked the HTTP plugin into a role-driven proxy without legacy

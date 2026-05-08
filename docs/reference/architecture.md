@@ -87,7 +87,7 @@ flowchart TD
 | Term | Current Meaning |
 |---|---|
 | `BlueGreenDeployment` | Names the green deployment, candidate deployment template, inception points, one verifier, and promotion strategy. |
-| `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options/resources. |
+| `InceptionPoint` | A named traffic interception point. It references one plugin, activates `roles`, supplies arbitrary plugin `config`, and can define drain options. |
 | `InceptionPlugin` | A cluster-scoped plugin registration CRD. It declares image, topology, supported roles, inceptor pod settings, optional manager endpoint, lifecycle paths, field namespaces, config schema, injected env vars, and optional features. |
 | Plugin manager | Long-running privileged control-plane component in the operator namespace. It creates and deletes derived infrastructure after verifying the per-inception JWT. |
 | Plugin inceptor | Per-inception traffic component in the application namespace. It moves, observes, writes, mocks, or combines traffic but should not hold infrastructure-admin credentials when a manager is configured. |
@@ -146,11 +146,6 @@ should not be used in production.
 The signing Secret is not rollout-owned and is not cleaned up by the operator.
 Rollout cleanup removes temporary inception resources and waits for Deployments,
 Services, ConfigMaps, Secrets, and Pods carrying inception labels to disappear.
-
-Older docs described `mode`, `direction`, and transport-specific orchestration
-kinds. The current CRD model is role-based. Plugins should use
-`FLUIDBG_ACTIVE_ROLES`; `FLUIDBG_MODE` is not part of the current plugin
-contract.
 
 ## CRD Model
 
@@ -477,13 +472,13 @@ Standalone inceptor containers receive these operator-managed env vars:
 | `FLUIDBG_BLUE_GREEN_REF` | Owning `BlueGreenDeployment` name. |
 | `FLUIDBG_ACTIVE_ROLES` | Comma-separated roles activated for this plugin instance. |
 | `FLUIDBG_CONFIG_PATH` | Mounted plugin config file path, currently `/etc/fluidbg/config.yaml`. |
-| `FLUIDBG_PLUGIN_AUTH_TOKEN` | Per-inception JWT used for operator, manager, and inceptor calls. |
+| `FLUIDBG_PLUGIN_AUTH_TOKEN` | Per-inception JWT used for operator, manager, and inceptor calls. It is injected from a generated Secret. |
 | `FLUIDBG_INCEPTOR_INFRA_DISABLED` | `true` when a manager owns privileged resource setup and cleanup. |
 
 Verifier containers receive `FLUIDBG_VERIFIER_AUTH_TOKENS_JSON` when
-`spec.test` is configured. They should use it to authorize observer callbacks,
-HTTP mock calls, operator result polling, and verifier-initiated inceptor calls
-such as HTTP `/write`.
+`spec.test` is configured. It is injected from a generated Secret. They should
+use it to authorize observer callbacks, HTTP mock calls, operator result
+polling, and verifier-initiated inceptor calls such as HTTP `/write`.
 
 Plugins should import shared Rust types from `sdk/rust` or generate clients from
 `sdk/spec/plugin-api-v1alpha1.openapi.yaml`. The SDK defines lifecycle payloads,
