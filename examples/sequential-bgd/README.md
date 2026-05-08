@@ -11,6 +11,13 @@ This example shows one blue-green rollout with live queue traffic:
 - one verifier test container asks the sink whether the candidate effects arrived
 - the operator increases candidate traffic only after the sink has seen both effects for candidate traffic
 
+## Prerequisites
+
+For the local kind setup, install Docker, kind, Helm, and kubectl. Docker builds
+the demo images, kind loads them into the local cluster, Helm installs the
+operator chart, and kubectl is used by the example commands for applying and
+inspecting resources.
+
 ## Images
 
 The example application images are not published release artifacts. Build them

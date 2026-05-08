@@ -19,8 +19,7 @@ folder under `e2e/deploy/`. Shared infrastructure manifests stay under
 ```mermaid
 flowchart TD
     START["Run e2e/run-test.sh"]
-    CRD["Regenerate CRDs<br/>copy into Helm chart"]
-    IMG["Build musl binaries<br/>build fbg images"]
+    IMG["Optional BUILD_IMAGES=1<br/>build musl binaries and images"]
     LOAD["Load images into kind"]
     INFRA["Apply RabbitMQ/httpbin<br/>optional Postgres<br/>install CRDs, operator, plugins with Helm"]
     BOOT["Bootstrap BGD<br/>first green deployment"]
@@ -30,7 +29,7 @@ flowchart TD
     CLEAN["Promotion or rollback<br/>drain and cleanup inception resources"]
     CHECK["Assert expected output,<br/>calls, statuses, and cleanup"]
 
-    START --> CRD --> IMG --> LOAD --> INFRA --> BOOT --> PASS --> VERIFY --> DECIDE --> CLEAN --> CHECK
+    START --> IMG --> LOAD --> INFRA --> BOOT --> PASS --> VERIFY --> DECIDE --> CLEAN --> CHECK
 ```
 
 ## Covered Scenarios
@@ -213,17 +212,19 @@ test reset.
 
 ## Harness Structure
 
-- `e2e/src/harness.rs` owns environment setup: CRD regeneration, image build/load,
+- `e2e/src/harness.rs` owns environment setup: optional image build/load,
   infrastructure install, Helm install, and reset.
 - `e2e/src/kube.rs` uses `kube-rs` and typed Kubernetes objects for BGD,
   InceptionPlugin, Deployment, Service, Secret, ConfigMap, Pod, RBAC, and CRD
-  operations.
+  operations, plus Kubernetes API port-forward/exec for verifier, RabbitMQ, and
+  Postgres checks.
 - `e2e/src/rabbitmq.rs` owns RabbitMQ management assertions and intentionally
   checks both ready and unacknowledged queue depth before accepting drain.
 - `e2e/src/scenarios/` contains scenario tests grouped by behavior: promotion,
   rollback/drain recovery, progressive shifting, HTTP proxy/observer, forced
   deletion, and Helm cleanup.
 
-The harness still shells out for non-Kubernetes-API boundaries: Helm, Docker,
-kind image loading, CRD generation, RabbitMQ management port-forward, and the
-single test-app `/cases` inspection currently done through `kubectl exec`.
+The harness shells out to Helm because the suite intentionally verifies real
+chart install/uninstall semantics. With `BUILD_IMAGES=1`, local preparation also
+requires Docker and kind for image build/load. Runtime Kubernetes interactions
+inside the test use `kube-rs`, not `kubectl`.

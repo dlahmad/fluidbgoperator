@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use crate::command;
 use crate::harness::E2eHarness;
+use crate::kube::PodHttpRequest;
 use crate::status::{bgd_status, condition_reason, condition_status, testcase_flags};
 
 pub async fn wait_for_tracked_cases(
@@ -103,38 +103,33 @@ pub async fn wait_for_bgd_rollout_generation(
     bail!("{bgd} did not start reconciling the latest generation")
 }
 
-pub fn http_case_flags(
-    namespace: &str,
-    test_deployment: &str,
-    test_id: &str,
-) -> Result<crate::status::TestcaseFlags> {
-    let output = command::output(
-        "kubectl",
-        [
-            "exec",
-            "-n",
-            namespace,
-            &format!("deploy/{test_deployment}"),
-            "--",
-            "python",
-            "-c",
-            &format!(
-                "import json,urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8080/cases')).get({test_id:?}, {{}})))"
-            ),
-        ],
-    )?;
-    let document: Value = serde_json::from_str(&format!(r#"{{"{test_id}":{output}}}"#))?;
-    testcase_flags(&document, test_id)
-}
-
 pub async fn wait_http_case_verified(
-    namespace: &str,
+    harness: &E2eHarness,
     test_deployment: &str,
     test_id: &str,
     attempts: u64,
 ) -> Result<()> {
+    let selector = harness
+        .kube
+        .deployment_pod_selector(test_deployment, &harness.config.namespace)
+        .await?;
     for _ in 1..=attempts {
-        if let Ok(flags) = http_case_flags(namespace, test_deployment, test_id) {
+        if let Ok(document) = harness
+            .kube
+            .pod_http_json_by_selector(
+                &harness.config.namespace,
+                &selector,
+                8080,
+                PodHttpRequest {
+                    method: "GET",
+                    path: "/cases",
+                    basic_auth: None,
+                    body: None,
+                },
+            )
+            .await
+            && let Ok(flags) = testcase_flags(&document, test_id)
+        {
             if flags.status == "failed" {
                 bail!("HTTP proxy case {test_id} failed in verifier");
             }

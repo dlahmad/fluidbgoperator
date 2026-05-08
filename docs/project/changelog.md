@@ -4,6 +4,15 @@ title: Changelog
 
 # Changelog
 
+## 0.2.1 - 2026-05-08
+
+- Refactored the Rust e2e harness to remove Python assumptions and use kube-rs
+  for in-cluster HTTP calls, pod exec, and RabbitMQ/Postgres test interactions.
+- Enabled the kube websocket feature and Tokio IO utilities needed by the
+  programmatic Kubernetes API test harness.
+- Updated e2e and example documentation to clarify required local tools and the
+  Kubernetes API based test flow.
+
 ## 0.2.0 - 2026-05-08
 
 - Kept queue-specific temporary name derivation inside queue plugin managers.

@@ -1,20 +1,25 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine as _;
 use fluidbg_operator::crd::blue_green::BlueGreenDeployment;
 use fluidbg_operator::crd::inception_plugin::InceptionPlugin;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, Secret, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Namespace, Node, Pod, Secret, Service, ServiceAccount,
+};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{
-    ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+    ApiResource, AttachParams, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch,
+    PatchParams,
 };
 use kube::{Api, Client, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::command;
 use crate::config::E2eConfig;
@@ -34,6 +39,18 @@ pub struct EnvPairExpectation<'a> {
     pub expected_a: &'a str,
     pub expected_b: &'a str,
     pub forbidden: &'a str,
+}
+
+pub struct PodHttpRequest<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+    pub basic_auth: Option<(&'a str, &'a str)>,
+    pub body: Option<Value>,
+}
+
+pub struct PodHttpResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 impl Kube {
@@ -263,6 +280,151 @@ impl Kube {
         })
         .await
         .with_context(|| format!("pod with selector {selector} not found in namespace {namespace}"))
+    }
+
+    pub async fn pod_http_json_by_selector(
+        &self,
+        namespace: &str,
+        selector: &str,
+        port: u16,
+        request: PodHttpRequest<'_>,
+    ) -> Result<Value> {
+        let response = self
+            .pod_http_by_selector(namespace, selector, port, request)
+            .await?;
+        if !(200..300).contains(&response.status) {
+            bail!("HTTP request failed with status {}", response.status);
+        }
+        serde_json::from_slice(trim_ascii_whitespace(&response.body))
+            .context("HTTP response body is not JSON")
+    }
+
+    pub async fn pod_http_by_selector(
+        &self,
+        namespace: &str,
+        selector: &str,
+        port: u16,
+        request: PodHttpRequest<'_>,
+    ) -> Result<PodHttpResponse> {
+        let pod = self
+            .ready_pod_name_by_selector(namespace, selector, Duration::from_secs(30))
+            .await?;
+        self.pod_http(namespace, &pod, port, request).await
+    }
+
+    async fn ready_pod_name_by_selector(
+        &self,
+        namespace: &str,
+        selector: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        wait_for_value(timeout, Duration::from_secs(1), || async {
+            api.list(&ListParams::default().labels(selector))
+                .await
+                .ok()
+                .and_then(|list| {
+                    list.items
+                        .into_iter()
+                        .find(pod_ready)
+                        .map(|item| item.name_any())
+                })
+        })
+        .await
+        .with_context(|| {
+            format!("ready pod with selector {selector} not found in namespace {namespace}")
+        })
+    }
+
+    async fn pod_http(
+        &self,
+        namespace: &str,
+        pod: &str,
+        port: u16,
+        request: PodHttpRequest<'_>,
+    ) -> Result<PodHttpResponse> {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let mut portforward = api
+            .portforward(pod, &[port])
+            .await
+            .with_context(|| format!("open Kubernetes API port-forward to pod/{pod}:{port}"))?;
+        let mut stream = portforward
+            .take_stream(port)
+            .with_context(|| format!("take port-forward stream for pod/{pod}:{port}"))?;
+        let request_path = request.path;
+        let request = render_http_request(request)?;
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .with_context(|| format!("write HTTP request to pod/{pod}:{port}{request_path}"))?;
+        let response = read_http_response(&mut stream, Duration::from_secs(10))
+            .await
+            .with_context(|| format!("read HTTP response from pod/{pod}:{port}{request_path}"))?;
+        portforward.abort();
+        parse_http_response(&response)
+            .with_context(|| format!("parse HTTP response from pod/{pod}:{port}{request_path}"))
+    }
+
+    pub async fn pod_exec_stdout_by_selector<I, S>(
+        &self,
+        namespace: &str,
+        selector: &str,
+        command: I,
+    ) -> Result<String>
+    where
+        I: IntoIterator<Item = S> + std::fmt::Debug,
+        S: Into<String>,
+    {
+        let pod = self
+            .ready_pod_name_by_selector(namespace, selector, Duration::from_secs(30))
+            .await?;
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let mut process = api
+            .exec(&pod, command, &AttachParams::default())
+            .await
+            .with_context(|| format!("exec in pod/{pod}"))?;
+        let mut stdout_reader = process.stdout().context("exec stdout was not attached")?;
+        let mut stderr_reader = process.stderr().context("exec stderr was not attached")?;
+        let status = process
+            .take_status()
+            .context("exec status was not attached")?;
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let (stdout_result, stderr_result, status) = tokio::join!(
+            stdout_reader.read_to_string(&mut stdout),
+            stderr_reader.read_to_string(&mut stderr),
+            status,
+        );
+        stdout_result.context("read exec stdout")?;
+        stderr_result.context("read exec stderr")?;
+        if let Some(status) = status
+            && status.status.as_deref() == Some("Failure")
+        {
+            bail!(
+                "pod/{pod} exec failed: {}",
+                status
+                    .message
+                    .or_else(|| (!stderr.trim().is_empty()).then(|| stderr.trim().to_string()))
+                    .unwrap_or_else(|| "unknown failure".to_string())
+            );
+        }
+        process.abort();
+        Ok(stdout)
+    }
+
+    pub async fn first_node_arch(&self) -> Result<String> {
+        let api: Api<Node> = Api::all(self.client.clone());
+        let node = api
+            .list(&ListParams::default().limit(1))
+            .await?
+            .items
+            .into_iter()
+            .next()
+            .context("cluster has no nodes")?;
+        node.status
+            .and_then(|status| status.node_info)
+            .map(|info| info.architecture)
+            .context("first node has no architecture in status.nodeInfo")
     }
 
     pub async fn wait_exists(
@@ -647,6 +809,27 @@ impl Kube {
         Ok(None)
     }
 
+    pub async fn deployment_pod_selector(
+        &self,
+        deployment: &str,
+        namespace: &str,
+    ) -> Result<String> {
+        let api: Api<Deployment> = Api::namespaced(self.client.clone(), namespace);
+        let deployment = api.get(deployment).await?;
+        let labels = deployment
+            .spec
+            .and_then(|spec| spec.selector.match_labels)
+            .context("deployment selector has no matchLabels")?;
+        if labels.is_empty() {
+            bail!("deployment selector has empty matchLabels");
+        }
+        Ok(labels
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(","))
+    }
+
     pub async fn wait_deployment_env_pair_values(
         &self,
         expected: EnvPairExpectation<'_>,
@@ -738,14 +921,10 @@ impl Kube {
         bgd_namespace: &str,
         bgd: &str,
     ) -> Result<String> {
-        command::output(
-            "kubectl",
+        self.pod_exec_stdout_by_selector(
+            system_namespace,
+            "app=postgres",
             [
-                "exec",
-                "-n",
-                system_namespace,
-                "deploy/postgres",
-                "--",
                 "env",
                 "PGPASSWORD=fluidbg",
                 "psql",
@@ -760,6 +939,7 @@ impl Kube {
                 ),
             ],
         )
+        .await
         .map(|value| value.chars().filter(|ch| !ch.is_whitespace()).collect())
     }
 }
@@ -870,6 +1050,159 @@ fn deployment_available(deployment: &Deployment) -> bool {
     status.observed_generation.unwrap_or_default() >= generation
         && status.updated_replicas.unwrap_or_default() >= desired
         && status.available_replicas.unwrap_or_default() >= desired
+}
+
+fn pod_ready(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .is_some_and(|conditions| {
+            conditions.iter().any(|condition| {
+                condition.type_ == "Ready" && condition.status.eq_ignore_ascii_case("True")
+            })
+        })
+}
+
+fn parse_http_response(response: &[u8]) -> Result<PodHttpResponse> {
+    let text = String::from_utf8_lossy(response);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .or_else(|| text.split_once("\n\n"))
+        .context("HTTP response has no header/body separator")?;
+    let status = head.lines().next().unwrap_or_default();
+    let status = status
+        .split_whitespace()
+        .nth(1)
+        .context("HTTP response has no status code")?
+        .parse::<u16>()
+        .context("HTTP response status code is not numeric")?;
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked_body(body.as_bytes())?
+    } else {
+        body.as_bytes().to_vec()
+    };
+    Ok(PodHttpResponse { status, body })
+}
+
+async fn read_http_response<R>(stream: &mut R, timeout: Duration) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let deadline = Instant::now() + timeout;
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        if http_response_complete(&response)? {
+            return Ok(response);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("timed out before HTTP response completed");
+        }
+        let read = tokio::time::timeout(remaining, stream.read(&mut chunk))
+            .await
+            .context("timed out reading HTTP response")?
+            .context("read HTTP response")?;
+        if read == 0 {
+            return Ok(response);
+        }
+        response.extend_from_slice(&chunk[..read]);
+    }
+}
+
+fn http_response_complete(response: &[u8]) -> Result<bool> {
+    let Some((header_end, separator_len)) = http_header_end(response) else {
+        return Ok(false);
+    };
+    let headers = String::from_utf8_lossy(&response[..header_end]).to_ascii_lowercase();
+    let body = &response[header_end + separator_len..];
+    if headers.contains("transfer-encoding: chunked") {
+        return Ok(decode_chunked_body(body).is_ok());
+    }
+    if let Some(length) = headers.lines().find_map(|line| {
+        line.strip_prefix("content-length:")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+    }) {
+        return Ok(body.len() >= length);
+    }
+    Ok(false)
+}
+
+fn http_header_end(response: &[u8]) -> Option<(usize, usize)> {
+    response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4))
+        .or_else(|| {
+            response
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| (position, 2))
+        })
+}
+
+fn render_http_request(request: PodHttpRequest<'_>) -> Result<String> {
+    let body = request
+        .body
+        .map(|body| serde_json::to_vec(&body))
+        .transpose()?
+        .unwrap_or_default();
+    let mut rendered = format!(
+        "{} {} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nConnection: close\r\n",
+        request.method, request.path
+    );
+    if let Some((username, password)) = request.basic_auth {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        rendered.push_str(&format!("Authorization: Basic {encoded}\r\n"));
+    }
+    if !body.is_empty() {
+        rendered.push_str("Content-Type: application/json\r\n");
+        rendered.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    rendered.push_str("\r\n");
+    if !body.is_empty() {
+        rendered.push_str(&String::from_utf8(body).context("HTTP JSON body is not UTF-8")?);
+    }
+    Ok(rendered)
+}
+
+fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
+    let mut cursor = body;
+    let mut decoded = Vec::new();
+    loop {
+        let Some(line_end) = cursor.windows(2).position(|window| window == b"\r\n") else {
+            bail!("chunked body is missing chunk header terminator");
+        };
+        let size_text = std::str::from_utf8(&cursor[..line_end])?;
+        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or_default(), 16)
+            .context("invalid chunk size")?;
+        cursor = &cursor[line_end + 2..];
+        if size == 0 {
+            return Ok(decoded);
+        }
+        if cursor.len() < size + 2 {
+            bail!("chunked body ended before declared chunk size");
+        }
+        decoded.extend_from_slice(&cursor[..size]);
+        cursor = &cursor[size + 2..];
+    }
+}
+
+fn trim_ascii_whitespace(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &value[start..end]
 }
 
 fn metadata_string(value: &Value, key: &str) -> Result<String> {

@@ -62,6 +62,7 @@ cargo test --workspace
 cargo test -p fluidbg-e2e-tests --test e2e -- --ignored --test-threads=1 --nocapture
 ```
 
-`./e2e/run-test.sh` runs the same command. The e2e harness requires Docker,
-kind, Helm, kubeconfig access to the target cluster, and local images loaded
-into the kind cluster when `BUILD_IMAGES=0`.
+`./e2e/run-test.sh` runs the same command. The e2e harness requires Helm and
+kubeconfig access to the target cluster. Local runs with `BUILD_IMAGES=1` also
+require Docker and kind; with `BUILD_IMAGES=0`, the required local images must
+already be loaded into the kind cluster.

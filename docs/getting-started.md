@@ -7,9 +7,9 @@ title: Getting Started
 ## Prerequisites
 
 - Kubernetes cluster with permission to install CRDs and cluster RBAC.
-- `kubectl`.
 - `helm` for chart installation.
-- Docker and kind for local e2e development.
+- `kubectl` for the manual commands shown in the docs and examples.
+- Docker and kind for local e2e/example development and local image loading.
 
 ## Local Checks
 

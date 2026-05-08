@@ -1,53 +1,26 @@
-use std::process::Child;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use reqwest::Client;
 use serde_json::Value;
 
-use crate::command;
+use crate::kube::{Kube, PodHttpRequest};
 
 pub struct RabbitMq {
     namespace: String,
-    port: u16,
-    client: Client,
-    port_forward: Option<Child>,
+    kube: Kube,
 }
 
 impl RabbitMq {
-    pub fn new(namespace: impl Into<String>) -> Self {
+    pub fn new(namespace: impl Into<String>, kube: Kube) -> Self {
         Self {
             namespace: namespace.into(),
-            port: random_local_port(),
-            client: Client::new(),
-            port_forward: None,
+            kube,
         }
-    }
-
-    pub async fn ensure_management_port_forward(&mut self) -> Result<()> {
-        if self
-            .port_forward
-            .as_mut()
-            .is_some_and(|child| child.try_wait().ok().flatten().is_none())
-            && self.health().await.is_ok()
-        {
-            return Ok(());
-        }
-
-        self.stop_port_forward();
-        let args = vec![
-            "port-forward".to_string(),
-            "svc/rabbitmq".to_string(),
-            format!("{}:15672", self.port),
-            "-n".to_string(),
-            self.namespace.clone(),
-        ];
-        self.port_forward = Some(command::spawn_silent("kubectl", &args)?);
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        self.wait_http("rabbitmq-management").await
     }
 
     pub async fn publish(&mut self, routing_key: &str, payload: &str) -> Result<()> {
+        self.wait_queue_exists(routing_key, Duration::from_secs(30))
+            .await?;
         let request = serde_json::json!({
             "properties": {},
             "routing_key": routing_key,
@@ -56,27 +29,43 @@ impl RabbitMq {
         });
 
         for i in 1..=10 {
-            self.ensure_management_port_forward().await?;
             let response = self
-                .client
-                .post(format!(
-                    "{}/api/exchanges/%2F/amq.default/publish",
-                    self.url()
-                ))
-                .basic_auth("fluidbg", Some("fluidbg"))
-                .json(&request)
-                .send()
+                .kube
+                .pod_http_by_selector(
+                    &self.namespace,
+                    "app=rabbitmq",
+                    15672,
+                    PodHttpRequest {
+                        method: "POST",
+                        path: "/api/exchanges/%2F/amq.default/publish",
+                        basic_auth: Some(("fluidbg", "fluidbg")),
+                        body: Some(request.clone()),
+                    },
+                )
                 .await;
-            if let Ok(response) = response
-                && response.status().is_success()
-                && response
-                    .json::<Value>()
-                    .await
-                    .ok()
-                    .and_then(|value| value.get("routed").cloned())
-                    == Some(Value::Bool(true))
-            {
-                return Ok(());
+            if let Ok(response) = response {
+                if !(200..300).contains(&response.status) {
+                    eprintln!(
+                        "RabbitMQ publish to '{routing_key}' returned HTTP {}, retrying ({i}/10)",
+                        response.status
+                    );
+                } else {
+                    match serde_json::from_slice::<Value>(&response.body) {
+                        Ok(body) if body.get("routed") == Some(&Value::Bool(true)) => {
+                            return Ok(());
+                        }
+                        Ok(body) => {
+                            eprintln!(
+                                "RabbitMQ publish to '{routing_key}' returned unexpected body {body}, retrying ({i}/10)"
+                            );
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "RabbitMQ publish to '{routing_key}' returned non-JSON body: {error}, retrying ({i}/10)"
+                            );
+                        }
+                    }
+                }
             }
             eprintln!("RabbitMQ publish to '{routing_key}' was not routed, retrying ({i}/10)");
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -85,31 +74,35 @@ impl RabbitMq {
         bail!("RabbitMQ publish to '{routing_key}' was not routed after retries")
     }
 
+    async fn wait_queue_exists(&mut self, queue: &str, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.queue_depth(queue).await?.is_some() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("queue {queue} did not exist before publish timeout");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     pub async fn queue_messages(&mut self, queue: &str, count: u32) -> Result<Vec<Value>> {
-        self.ensure_management_port_forward().await?;
         let response = self
-            .client
-            .post(format!("{}/api/queues/%2F/{}/get", self.url(), queue))
-            .basic_auth("fluidbg", Some("fluidbg"))
-            .json(&serde_json::json!({
-                "count": count,
-                "ackmode": "ack_requeue_true",
-                "encoding": "auto",
-                "truncate": 50000
-            }))
-            .send()
+            .rabbitmq_json(PodHttpRequest {
+                method: "POST",
+                path: &format!("/api/queues/%2F/{queue}/get"),
+                basic_auth: Some(("fluidbg", "fluidbg")),
+                body: Some(serde_json::json!({
+                    "count": count,
+                    "ackmode": "ack_requeue_true",
+                    "encoding": "auto",
+                    "truncate": 50000
+                })),
+            })
             .await
             .with_context(|| format!("RabbitMQ get messages from {queue}"))?;
-        if !response.status().is_success() {
-            bail!(
-                "RabbitMQ get messages from {queue} failed with {}",
-                response.status()
-            );
-        }
-        response
-            .json()
-            .await
-            .context("RabbitMQ queue get response JSON")
+        serde_json::from_value(response).context("RabbitMQ queue get response JSON")
     }
 
     pub async fn assert_queue_drained(&mut self, queue: &str) -> Result<()> {
@@ -180,24 +173,32 @@ impl RabbitMq {
     }
 
     async fn queue_depth(&mut self, queue: &str) -> Result<Option<QueueDepth>> {
-        self.ensure_management_port_forward().await?;
         let response = self
-            .client
-            .get(format!("{}/api/queues/%2F/{}", self.url(), queue))
-            .basic_auth("fluidbg", Some("fluidbg"))
-            .send()
+            .kube
+            .pod_http_by_selector(
+                &self.namespace,
+                "app=rabbitmq",
+                15672,
+                PodHttpRequest {
+                    method: "GET",
+                    path: &format!("/api/queues/%2F/{queue}"),
+                    basic_auth: Some(("fluidbg", "fluidbg")),
+                    body: None,
+                },
+            )
             .await
             .with_context(|| format!("RabbitMQ queue depth for {queue}"))?;
-        if response.status().as_u16() == 404 {
+        if response.status == 404 {
             return Ok(None);
         }
-        if !response.status().is_success() {
+        if !(200..300).contains(&response.status) {
             bail!(
                 "RabbitMQ queue depth for {queue} failed with {}",
-                response.status()
+                response.status
             );
         }
-        let payload: Value = response.json().await.context("RabbitMQ queue depth JSON")?;
+        let payload: Value =
+            serde_json::from_slice(&response.body).context("RabbitMQ queue depth JSON")?;
         Ok(Some(QueueDepth {
             ready: payload
                 .get("messages_ready")
@@ -214,41 +215,10 @@ impl RabbitMq {
         }))
     }
 
-    async fn health(&self) -> Result<()> {
-        let response = self.client.get(self.url()).send().await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            bail!("RabbitMQ management returned {}", response.status())
-        }
-    }
-
-    async fn wait_http(&self, name: &str) -> Result<()> {
-        for i in 1..=30 {
-            if self.health().await.is_ok() {
-                return Ok(());
-            }
-            eprintln!("waiting for {name} ({i}/30)");
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-        bail!("{name} did not become ready")
-    }
-
-    fn url(&self) -> String {
-        format!("http://localhost:{}", self.port)
-    }
-
-    fn stop_port_forward(&mut self) {
-        if let Some(mut child) = self.port_forward.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-impl Drop for RabbitMq {
-    fn drop(&mut self) {
-        self.stop_port_forward();
+    async fn rabbitmq_json(&self, request: PodHttpRequest<'_>) -> Result<Value> {
+        self.kube
+            .pod_http_json_by_selector(&self.namespace, "app=rabbitmq", 15672, request)
+            .await
     }
 }
 
@@ -257,14 +227,6 @@ struct QueueDepth {
     ready: u64,
     unacknowledged: u64,
     consumers: u64,
-}
-
-fn random_local_port() -> u16 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.subsec_nanos())
-        .unwrap_or(0);
-    25_000 + (nanos % 20_000) as u16
 }
 
 fn processed_message_matches(message: &Value, recovery_token: &str, instance_prefix: &str) -> bool {

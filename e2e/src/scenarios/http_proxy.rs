@@ -119,7 +119,7 @@ pub async fn http_proxy_observer_promotion(
             ),
         )
         .await?;
-    wait_http_case_verified(&cfg.namespace, &test_deployment, &verified_test_id, 120).await?;
+    wait_http_case_verified(harness, &test_deployment, &verified_test_id, 120).await?;
 
     let promotion_test_id = format!("http-proxy-{}", unique_token("case"));
     harness

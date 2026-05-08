@@ -62,9 +62,9 @@ just build-images dev
 
 End-to-end tests are implemented as a Rust `kube-rs` integration-test crate.
 Scenario modules are under `e2e/src/scenarios/` and each scenario's manifests
-are grouped under the matching `e2e/deploy/<scenario>/` folder. The wrapper
-below requires Docker, kind, Helm, kubectl for port-forward/exec boundaries,
-and local images:
+are grouped under the matching `e2e/deploy/<scenario>/` folder. For local runs,
+install Docker, kind, and Helm; the Rust harness uses the Kubernetes API
+directly and keeps Helm as the chart install/uninstall boundary.
 
 ```sh
 KIND_CLUSTER=fluidbg-dev BUILD_IMAGES=1 ./e2e/run-test.sh

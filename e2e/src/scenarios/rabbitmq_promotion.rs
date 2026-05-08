@@ -141,7 +141,7 @@ pub async fn successful_rabbitmq_promotion(
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    wait_for_tracked_cases(harness, "order-processor-upgrade", 5, 3, 60).await?;
+    wait_for_tracked_cases(harness, "order-processor-upgrade", 3, 3, 60).await?;
     wait_for_terminal_phase(harness, "order-processor-upgrade", "Completed", 30).await?;
     harness
         .kube

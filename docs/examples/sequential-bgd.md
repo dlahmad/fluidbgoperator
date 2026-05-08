@@ -79,6 +79,13 @@ flowchart LR
 - `app/`, `producer/`, `sink/`, and `verifier/` contain the small demo
   container images.
 
+## Prerequisites
+
+For the local kind setup, install Docker, kind, Helm, and kubectl. Docker builds
+the demo images, kind loads them into the local cluster, Helm installs the
+operator chart, and kubectl is used by the example commands for applying and
+inspecting resources.
+
 ## One-Time Setup
 
 For a local kind demo, run the setup helper. It builds and loads the example

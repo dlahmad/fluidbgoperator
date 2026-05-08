@@ -19,16 +19,15 @@ impl E2eHarness {
         verify_commands(config.build_images)?;
         let kube = Kube::new().await?;
 
-        regenerate_crds(&config)?;
         if config.build_images {
-            build_and_load_images(&config)?;
+            build_and_load_images(&config, &kube).await?;
         }
         deploy_infrastructure(&config, &kube).await?;
         reset_previous_resources(&config, &kube).await?;
         install_operator(&config, &kube).await?;
 
         Ok(Self {
-            rabbitmq: RabbitMq::new(config.system_namespace.clone()),
+            rabbitmq: RabbitMq::new(config.system_namespace.clone(), kube.clone()),
             config,
             kube,
         })
@@ -36,41 +35,15 @@ impl E2eHarness {
 }
 
 fn verify_commands(build_images: bool) -> Result<()> {
-    command::output("kubectl", ["version", "--client"])
-        .context("missing required command: kubectl")?;
     command::output("helm", ["version", "--short"]).context("missing required command: helm")?;
-    command::require("cargo")?;
     if build_images {
         command::require("docker")?;
     }
     Ok(())
 }
 
-fn regenerate_crds(config: &E2eConfig) -> Result<()> {
-    command::run_in(
-        &config.root_dir,
-        "cargo",
-        ["run", "-p", "fluidbg-operator", "--bin", "gen-crds"],
-    )?;
-    std::fs::copy(
-        config.root_dir.join("crds/blue_green_deployment.yaml"),
-        config
-            .root_dir
-            .join("charts/fluidbg-operator/crds/blue_green_deployment.yaml"),
-    )
-    .context("copy BlueGreenDeployment CRD into chart")?;
-    std::fs::copy(
-        config.root_dir.join("crds/inception_plugin.yaml"),
-        config
-            .root_dir
-            .join("charts/fluidbg-operator/crds/inception_plugin.yaml"),
-    )
-    .context("copy InceptionPlugin CRD into chart")?;
-    Ok(())
-}
-
-fn build_and_load_images(config: &E2eConfig) -> Result<()> {
-    let arch = target_arch();
+async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
+    let arch = target_arch(kube).await;
     let operator_image = format!("fluidbg/fbg-operator:{}", config.image_tag);
     let http_plugin_image = format!("fluidbg/fbg-plugin-http:{}", config.image_tag);
     let rabbitmq_plugin_image = format!("fluidbg/fbg-plugin-rabbitmq:{}", config.image_tag);
@@ -373,22 +346,15 @@ async fn install_operator(config: &E2eConfig, kube: &Kube) -> Result<()> {
     .await
 }
 
-fn target_arch() -> String {
-    std::env::var("TARGET_ARCH")
+async fn target_arch(kube: &Kube) -> String {
+    if let Ok(value) = std::env::var("TARGET_ARCH")
+        && !value.is_empty()
+    {
+        return value;
+    }
+    kube.first_node_arch()
+        .await
         .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            command::output(
-                "kubectl",
-                [
-                    "get",
-                    "nodes",
-                    "-o",
-                    "jsonpath={.items[0].status.nodeInfo.architecture}",
-                ],
-            )
-            .ok()
-        })
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "amd64".to_string())
 }
