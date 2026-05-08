@@ -11,8 +11,8 @@ The repository is structured as a production-ready Rust workspace:
 - CRDs are generated from Rust models and mirrored into the Helm chart
 - CI covers formatting, clippy, unit tests, shell/Python checks, Docker builds, and Helm rendering
 - scheduled/manual e2e runs execute the kind-based full rollout suite
-- releases publish BuildKit image SBOMs, SLSA provenance, and Cargo-aware
-  CycloneDX Rust dependency SBOMs
+- releases sign image manifests and publish BuildKit image SBOMs, SLSA
+  provenance, and Cargo-aware CycloneDX Rust dependency SBOMs
 
 ## Workspace
 

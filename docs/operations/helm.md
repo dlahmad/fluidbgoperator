@@ -143,6 +143,15 @@ Release images are published with two complementary SBOM layers:
   Release and attested against the GHCR image manifests with GitHub artifact
   attestations.
 
+Release image manifests are also signed with keyless Sigstore/cosign from the
+GitHub Actions release workflow identity:
+
+```sh
+cosign verify ghcr.io/dlahmad/fbg-operator:0.2.3 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+```
+
 This split is intentional. A scanner such as `syft ghcr.io/...` scans the image
 filesystem and may not recover Rust crate dependencies from stripped static
 binaries. Use the Cargo-generated CycloneDX SBOMs when you need the Rust crate

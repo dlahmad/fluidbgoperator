@@ -10,8 +10,10 @@ title: Changelog
   and architecture.
 - Attached the Rust dependency SBOMs to GitHub Releases and attested them
   against the published GHCR image manifests.
+- Signed final multi-architecture GHCR image manifests with keyless
+  Sigstore/cosign from the release workflow identity.
 - Documented how to inspect BuildKit filesystem SBOMs, Rust dependency SBOMs,
-  and GitHub image attestations from the CLI.
+  image signatures, and GitHub image attestations from the CLI.
 
 ## 0.2.2 - 2026-05-08
 

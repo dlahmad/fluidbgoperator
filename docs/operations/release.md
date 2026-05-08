@@ -19,6 +19,8 @@ multi-architecture container image manifests to GHCR, and publishes the Helm
 chart as both a GitHub Release asset and an OCI chart.
 Container images are not attached to the GitHub Release as image tarballs; GHCR
 is the source for image distribution.
+The final multi-architecture image manifests are signed with keyless
+Sigstore/cosign from the GitHub Actions release workflow identity.
 
 The amd64 and arm64 binaries are built on native GitHub-hosted Linux runners
 with the matching musl Rust target. Do not run the Rust compiler inside an
@@ -61,6 +63,14 @@ Images:
 - `ghcr.io/<owner>/fbg-plugin-http:<version>`
 - `ghcr.io/<owner>/fbg-plugin-rabbitmq:<version>`
 - `ghcr.io/<owner>/fbg-plugin-azure-servicebus:<version>`
+
+Verify an image signature:
+
+```sh
+cosign verify ghcr.io/dlahmad/fbg-operator:X.Y.Z \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+```
 
 Example/test application images are intentionally not release artifacts. Build
 them locally for kind demos or publish them to your own registry if needed.
