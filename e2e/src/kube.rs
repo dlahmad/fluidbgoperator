@@ -135,6 +135,7 @@ impl Kube {
     }
 
     pub async fn delete_crds(&self) -> Result<()> {
+        self.cleanup_stale_blue_green_deployments().await?;
         let api: Api<CustomResourceDefinition> = Api::all(self.client.clone());
         delete_if_exists(&api, "bluegreendeployments.fluidbg.io").await?;
         delete_if_exists(&api, "inceptionplugins.fluidbg.io").await?;
@@ -725,7 +726,36 @@ impl Kube {
                 .await;
             let _ = namespaced.delete(&name, &DeleteParams::default()).await;
         }
-        Ok(())
+        self.wait_no_blue_green_deployments(Duration::from_secs(90))
+            .await
+    }
+
+    async fn wait_no_blue_green_deployments(&self, timeout: Duration) -> Result<()> {
+        if !self
+            .exists("crd", "bluegreendeployments.fluidbg.io", "")
+            .await
+        {
+            return Ok(());
+        }
+        let api: Api<DynamicObject> = Api::all_with(
+            self.client.clone(),
+            &ApiResource::from_gvk(&GroupVersionKind::gvk(
+                "fluidbg.io",
+                "v1alpha1",
+                "BlueGreenDeployment",
+            )),
+        );
+        wait_until(timeout, Duration::from_secs(1), || {
+            let api = api.clone();
+            async move {
+                api.list(&ListParams::default())
+                    .await
+                    .map(|list| list.items.is_empty())
+                    .unwrap_or(false)
+            }
+        })
+        .await
+        .context("stale BlueGreenDeployment resources were not deleted")
     }
 
     pub async fn force_delete_bgd(&self, name: &str, namespace: &str) -> Result<()> {

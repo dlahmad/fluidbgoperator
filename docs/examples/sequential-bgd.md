@@ -137,6 +137,10 @@ This demo uses local RabbitMQ credentials because it creates a disposable broker
 in the demo namespace. Credentials are plugin installation/runtime config, not
 BGD config. The chart renders local values into Secrets first and injects them
 via `secretKeyRef`; production installs should reference existing Secrets.
+The usual RabbitMQ management plugin exposes plain HTTP on port `15672`, so the
+demo values set `builtinPlugins.rabbitmq.manager.managementAllowInsecure=true`.
+Production installs should prefer HTTPS for the management API; use the
+insecure opt-in only for trusted in-cluster or local RabbitMQ endpoints.
 
 ## Install Operator
 
@@ -154,6 +158,11 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
 kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n fluidbg-demo --timeout=60s
 kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n fluidbg-demo --timeout=60s
 ```
+
+`operator-values.yaml` enables the RabbitMQ manager and explicitly sets
+`managementAllowInsecure: true` because the disposable demo broker exposes
+`http://rabbitmq.fluidbg-demo:15672`. If you point the manager at an HTTPS
+RabbitMQ management endpoint, remove that flag.
 
 ## Run The Demo
 
@@ -269,8 +278,10 @@ examples/sequential-bgd/cleanup.sh
 ```
 
 The script also removes the FluidBG CRDs by default because this demo is
-intended for a disposable kind cluster. On a shared cluster, keep cluster-scoped
-CRDs with:
+intended for a disposable kind cluster. Before deleting those CRDs, it removes
+remaining `BlueGreenDeployment` resources cluster-wide so Kubernetes CRD cleanup
+cannot hang on stale custom resources. On a shared cluster, keep cluster-scoped
+CRDs and unrelated BGD resources with:
 
 ```bash
 DELETE_CRDS=0 examples/sequential-bgd/cleanup.sh

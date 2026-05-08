@@ -113,6 +113,10 @@ This demo uses local RabbitMQ credentials because it creates its own disposable
 broker in `fluidbg-demo`. They are provided to the plugin installation, not to
 the BGD. The chart renders local values into Secrets first and injects them via
 `secretKeyRef`; production installs should reference existing Secrets instead.
+The usual RabbitMQ management plugin exposes plain HTTP on port `15672`, so this
+demo sets `builtinPlugins.rabbitmq.manager.managementAllowInsecure=true`.
+Production installs should prefer HTTPS for the management API; use the
+insecure opt-in only for trusted in-cluster or local RabbitMQ endpoints.
 
 If you run the demo on kind, preload the disposable RabbitMQ infrastructure
 image as a single-platform local image before applying `01-base.yaml`. This
@@ -145,6 +149,11 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
 kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq -n fluidbg-demo --timeout=60s
 kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http -n fluidbg-demo --timeout=60s
 ```
+
+`operator-values.yaml` enables the RabbitMQ manager and explicitly sets
+`managementAllowInsecure: true` because the disposable demo broker exposes
+`http://rabbitmq.fluidbg-demo:15672`. If you point the manager at an HTTPS
+RabbitMQ management endpoint, remove that flag.
 
 Apply the initial version. This manifest also installs the demo infrastructure
 containers into the cluster: the `fluidbg-demo` namespace, the disposable
@@ -247,8 +256,10 @@ examples/sequential-bgd/cleanup.sh
 ```
 
 By default the cleanup script also removes the FluidBG CRDs because this demo is
-intended for a disposable kind cluster. On a shared cluster, keep cluster-scoped
-CRDs with:
+intended for a disposable kind cluster. Before deleting those CRDs, it removes
+remaining `BlueGreenDeployment` resources cluster-wide so Kubernetes CRD cleanup
+cannot hang on stale custom resources. On a shared cluster, keep cluster-scoped
+CRDs and unrelated BGD resources with:
 
 ```sh
 DELETE_CRDS=0 examples/sequential-bgd/cleanup.sh
