@@ -39,6 +39,9 @@ impl StateStore for MemoryStore {
                 if existing.verify_url.is_empty() && !run.verify_url.is_empty() {
                     existing.verify_url = run.verify_url;
                 }
+                if existing.verifier_auth_token.is_empty() && !run.verifier_auth_token.is_empty() {
+                    existing.verifier_auth_token = run.verifier_auth_token;
+                }
                 if run.triggered_at < existing.triggered_at {
                     existing.triggered_at = run.triggered_at;
                 }
@@ -203,6 +206,7 @@ mod tests {
             verdict: None,
             verification_mode: VerificationMode::Data,
             verify_url: "http://test/result".to_string(),
+            verifier_auth_token: "token".to_string(),
             retries_remaining: 0,
             failure_message: None,
         }

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use k8s_openapi::api::core::v1::EnvVar;
 use kube::api::Api;
 
@@ -52,6 +54,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
     let mut plans = Vec::new();
     let mut test_assignments = Vec::new();
     let mut pre_activation_assignments = Vec::new();
+    let mut verifier_auth_tokens = BTreeMap::new();
 
     for ip in &bgd.spec.inception_points {
         let plugin = plugins.get(&ip.plugin_ref.name).await?;
@@ -83,6 +86,7 @@ pub(in crate::controller) async fn ensure_inception_resources(
             &plugin,
         )
         .await?;
+        verifier_auth_tokens.insert(ip.name.clone(), auth_token.clone());
         ensure_inception_point_owned_resources(client, namespace, ip).await?;
         let resources = reconcile_inception_point(
             &plugin,
@@ -178,6 +182,18 @@ pub(in crate::controller) async fn ensure_inception_resources(
             )?;
             pre_activation_assignments.append(&mut lifecycle_assignments.assignments);
         }
+    }
+
+    if bgd.spec.test.is_some() {
+        test_assignments.push(PropertyAssignment {
+            target: AssignmentTarget::Test,
+            kind: AssignmentKind::Env,
+            name: "FLUIDBG_VERIFIER_AUTH_TOKENS_JSON".to_string(),
+            value: serde_json::to_string(&verifier_auth_tokens).map_err(|err| {
+                ReconcileError::Auth(format!("failed to serialize verifier auth tokens: {err}"))
+            })?,
+            container_name: None,
+        });
     }
 
     ensure_declared_deployments(bgd, client, namespace, &pre_activation_assignments).await?;

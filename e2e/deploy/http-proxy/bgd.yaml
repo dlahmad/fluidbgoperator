@@ -65,6 +65,7 @@ spec:
         name: http
       roles:
         - observer
+        - mock
       drain:
         maxWaitSeconds: 15
       config:
@@ -83,6 +84,15 @@ spec:
                 jsonPath: $.action
                 matches: ^http-proxy-check$
             notifyPath: /observe/{testId}/http-upstream
+            payload: request
+          - match:
+              - field: http.path
+                equals: /mocked
+              - field: http.body
+                jsonPath: $.action
+                matches: ^http-mock-check$
+            notifyPath: /observe/{testId}/http-upstream
+            mockPath: /mock/{testId}/http-upstream
             payload: request
     - name: outgoing-results
       pluginRef:

@@ -49,6 +49,7 @@ flowchart LR
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| RI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| AI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| HI
+    OP -->|"injects verifier token map"| TEST
     RI --> EXT
     AI --> EXT
     HI --> EXT
@@ -59,6 +60,7 @@ flowchart LR
     RI --> TEST
     AI --> TEST
     HI --> TEST
+    TEST -->|"authorized /write calls"| HI
 ```
 
 ## Trust Boundary
@@ -110,6 +112,10 @@ Inceptor rules:
 
 - Receive `FLUIDBG_PLUGIN_AUTH_TOKEN`, not the signing key.
 - Require incoming operator calls to use the same bearer token value.
+- Require incoming verifier/application calls to inceptor APIs, such as HTTP
+  `/write`, to use the same bearer token value.
+- Send that bearer token to the verifier on observer notifications and HTTP
+  mock calls.
 - Start idle and do not move traffic until the operator calls `activatePath`.
 - Treat `preparePath` as setup and assignment discovery only. It must not
   consume from base queues, proxy HTTP calls, notify verifiers, register cases,
@@ -132,10 +138,10 @@ sequenceDiagram
 
     O->>K: read signing key from operator namespace
     O->>O: sign per-inception JWT
-    O->>O: derive secured temp resource names
     loop each inception point
         O->>M: POST /manager/prepare + Bearer JWT
         M->>M: verify JWT signature
+        M->>M: derive secured temp resource names
         M->>T: create derived temporary resources
         M-->>O: inceptorEnv with scoped runtime access
         O->>I: create ConfigMap/Deployment/Service with token + inceptorEnv
@@ -145,7 +151,7 @@ sequenceDiagram
         I-->>O: assignments for app containers
     end
     O->>A: create candidate with blue assignments in initial pod template
-    O->>O: create verifier with final test env and wait for readiness
+    O->>O: create verifier with final test env + token map and wait for readiness
     O->>A: patch all env assignments in one batch
     O->>O: wait for app rollouts
     loop each inception point
@@ -179,8 +185,8 @@ flowchart LR
     GREEN --> OUT
     BLUE --> OUT
     INC -->|"register testCase<br/>Bearer token"| OP
-    INC -->|"notify observation<br/>route metadata"| TEST
-    OP -->|"poll verifyPath"| TEST
+    INC -->|"notify/mock<br/>Bearer token + route metadata"| TEST
+    OP -->|"poll verifyPath<br/>same Bearer token"| TEST
 ```
 
 Route metadata is plugin-owned. Applications do not need to put route fields in

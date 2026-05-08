@@ -13,9 +13,10 @@ pub fn resolve_http_field<F>(
 where
     F: FnMut(&str) -> Option<String>,
 {
+    let (path_only, query_str) = split_path_query(path);
     match condition.field.as_str() {
         "http.method" => Some(method.to_string()),
-        "http.path" => Some(path.to_string()),
+        "http.path" => Some(path_only.to_string()),
         "http.body" => {
             if let Some(json_path) = &condition.json_path {
                 extract_json_path(body, json_path)
@@ -29,7 +30,6 @@ where
         }
         field if field.starts_with("http.query.") => {
             let key = field.strip_prefix("http.query.")?;
-            let query_str = path.split('?').nth(1).unwrap_or("");
             for pair in query_str.split('&') {
                 let mut kv = pair.splitn(2, '=');
                 if kv.next() == Some(key)
@@ -53,6 +53,7 @@ pub fn extract_http_test_id<F>(
 where
     F: FnMut(&str) -> Option<String>,
 {
+    let (path_only, _) = split_path_query(path);
     if let Some(value) = &selector.value {
         return Some(value.clone());
     }
@@ -67,12 +68,13 @@ where
         }
         "http.path" => {
             if let Some(segment) = selector.path_segment {
-                path.split('/')
+                path_only
+                    .split('/')
                     .filter(|part| !part.is_empty())
                     .nth((segment - 1) as usize)
                     .map(|part| part.to_string())
             } else {
-                Some(path.to_string())
+                Some(path_only.to_string())
             }
         }
         field if field.starts_with("http.header.") => {
@@ -81,4 +83,10 @@ where
         }
         _ => None,
     }
+}
+
+fn split_path_query(path_and_query: &str) -> (&str, &str) {
+    path_and_query
+        .split_once('?')
+        .unwrap_or((path_and_query, ""))
 }

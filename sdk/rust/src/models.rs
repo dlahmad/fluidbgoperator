@@ -105,6 +105,8 @@ pub struct NotificationFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mock_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<PayloadSelection>,
 }
 

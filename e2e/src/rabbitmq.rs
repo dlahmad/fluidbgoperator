@@ -39,6 +39,7 @@ impl RabbitMq {
                         method: "POST",
                         path: "/api/exchanges/%2F/amq.default/publish",
                         basic_auth: Some(("fluidbg", "fluidbg")),
+                        headers: Vec::new(),
                         body: Some(request.clone()),
                     },
                 )
@@ -93,6 +94,7 @@ impl RabbitMq {
                 method: "POST",
                 path: &format!("/api/queues/%2F/{queue}/get"),
                 basic_auth: Some(("fluidbg", "fluidbg")),
+                headers: Vec::new(),
                 body: Some(serde_json::json!({
                     "count": count,
                     "ackmode": "ack_requeue_true",
@@ -183,6 +185,7 @@ impl RabbitMq {
                     method: "GET",
                     path: &format!("/api/queues/%2F/{queue}"),
                     basic_auth: Some(("fluidbg", "fluidbg")),
+                    headers: Vec::new(),
                     body: None,
                 },
             )

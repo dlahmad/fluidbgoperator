@@ -12,7 +12,7 @@ truth; the architecture and plugin-interface docs describe that implementation.
 
 ```text
 operator/              Operator crate, CRDs, controller, state stores, HTTP API
-plugins/http/          Combined HTTP observe/mock/write plugin
+plugins/http/          Combined HTTP proxy/splitter/observer/mock/writer plugin
 plugins/rabbitmq/      Combined RabbitMQ plugin roles
 sdk/                   Plugin SDK models and language-neutral API specs
 crds/                  Generated Kubernetes CRDs
@@ -36,7 +36,7 @@ controller/status.rs           BlueGreenDeployment status patches
 
 | Area | Status |
 |---|---|
-| Rust workspace | Operator, Rust plugin SDK, combined HTTP plugin, and RabbitMQ plugin crates |
+| Rust workspace | Operator, Rust plugin SDK, combined HTTP, RabbitMQ, and Azure Service Bus plugin crates |
 | CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment` and `InceptionPlugin` |
 | State stores | In-memory, PostgreSQL, and Azure Cosmos DB backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |

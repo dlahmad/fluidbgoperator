@@ -48,7 +48,14 @@ impl InceptionTracker {
     async fn poll_pending(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pending = self.store.list_pending().await?;
         for run in &pending {
-            match reqwest::get(&run.verify_url).await {
+            let mut request = reqwest::Client::new().get(&run.verify_url);
+            if !run.verifier_auth_token.is_empty() {
+                request = request.header(
+                    fluidbg_plugin_sdk::AUTHORIZATION_HEADER,
+                    fluidbg_plugin_sdk::bearer_value(&run.verifier_auth_token),
+                );
+            }
+            match request.send().await {
                 Ok(resp) => {
                     if let Ok(body) = resp.json::<TestResultResponse>().await {
                         if let Some(passed) = body.passed {

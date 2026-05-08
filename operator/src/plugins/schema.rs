@@ -32,13 +32,13 @@ mod tests {
     fn valid_config_passes() {
         let schema = json!({
             "type": "object",
-            "required": ["proxyPort"],
+            "required": ["port"],
             "properties": {
-                "proxyPort": { "type": "integer" },
+                "port": { "type": "integer" },
                 "realEndpoint": { "type": "string" }
             }
         });
-        let config = json!({"proxyPort": 8080, "realEndpoint": "http://upstream"});
+        let config = json!({"port": 8080, "realEndpoint": "http://upstream"});
         assert!(validate_config_against_schema(&config, &schema).is_ok());
     }
 
@@ -46,9 +46,9 @@ mod tests {
     fn missing_required_field_fails() {
         let schema = json!({
             "type": "object",
-            "required": ["proxyPort"],
+            "required": ["port"],
             "properties": {
-                "proxyPort": { "type": "integer" }
+                "port": { "type": "integer" }
             }
         });
         let config = json!({"realEndpoint": "http://upstream"});
@@ -59,12 +59,12 @@ mod tests {
     fn wrong_type_fails() {
         let schema = json!({
             "type": "object",
-            "required": ["proxyPort"],
+            "required": ["port"],
             "properties": {
-                "proxyPort": { "type": "integer" }
+                "port": { "type": "integer" }
             }
         });
-        let config = json!({"proxyPort": "not-a-number"});
+        let config = json!({"port": "not-a-number"});
         assert!(validate_config_against_schema(&config, &schema).is_err());
     }
 }

@@ -48,6 +48,7 @@ pub struct TestCaseRecord {
     pub verdict: Option<bool>,
     pub verification_mode: VerificationMode,
     pub verify_url: String,
+    pub verifier_auth_token: String,
     pub retries_remaining: i32,
     pub failure_message: Option<String>,
 }

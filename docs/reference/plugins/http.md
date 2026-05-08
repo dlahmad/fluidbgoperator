@@ -18,6 +18,9 @@ title: HTTP Plugin
 The HTTP plugin is a single standalone inceptor service. It does not need an
 external infrastructure manager because it does not create broker resources.
 
+For a compact matrix of supported modes, TLS behavior, and proxy limitations,
+see [HTTP Plugin Capabilities](http-capabilities.md).
+
 ```mermaid
 flowchart LR
     CLIENT["caller or application"]
@@ -32,9 +35,9 @@ flowchart LR
     HP -->|"route green"| GREEN
     HP -->|"route blue"| BLUE
     HP -->|"fallback"| UP
-    HP -->|"notify first"| TEST
-    HP -->|"register after notify"| OP
-    TEST -->|"POST /write"| HP
+    HP -->|"notify/mock<br/>Bearer token"| TEST
+    HP -->|"register after notify<br/>Bearer token"| OP
+    TEST -->|"POST /write<br/>Bearer token"| HP
     HP --> BLUE
 ```
 
@@ -44,19 +47,32 @@ flowchart LR
 |---|---|---|---|
 | `port` | no | all roles | Inceptor listen port. Defaults to `9090`. |
 | `realEndpoint` | proxy/write fallback | splitter, observer, mock, writer | Default upstream target. Supports `{testContainerUrl}` template replacement. |
+| `proxyProtocol` | no | operator assignments | `http` or `https` scheme injected into the application env var. |
+| `writeProtocol` | no | operator assignments | `http` or `https` scheme injected into the verifier `/write` env var. |
 | `greenEndpoint` | splitter | splitter | Explicit green route target. Falls back to `realEndpoint`. |
 | `blueEndpoint` | splitter | splitter | Explicit blue route target. Falls back to `realEndpoint`. |
 | `targetUrl` | writer | writer | Explicit `/write` target. Falls back to `realEndpoint`. |
+| `verifierEndpoint` | no | observer, mock | Optional verifier base URL override. Defaults to the operator-created test service URL. |
+| `mockPath` | mock | mock | Default verifier endpoint used to produce mock responses. |
 | `envVarName` | no | operator assignments | Application env var patched to route calls through the plugin service. |
 | `writeEnvVar` | no | operator assignments | Test-container env var patched with the plugin `/write` URL. |
 | `testId` | observer/mock registration | observer, mock | Selector used to extract a test id from body, path, header, or static value. |
 | `match` | no | observer, mock | Root filter set. All conditions must match. |
 | `filters` | no | observer, mock | Filter-specific `notifyPath` and payload selection. |
-| `ingress` / `egress` | no | future-compatible config | Directional filter grouping. |
+| `filters[].mockPath` | no | mock | Filter-specific verifier endpoint used for mock responses. |
+| `tls.inbound` | no | app/verifier to plugin | Optional HTTPS traffic listener configuration. |
+| `clientTls` | no | plugin to upstream/verifier | Optional outbound TLS trust configuration. |
+| `ingress` / `egress` | no | observer, mock | Directional filter grouping. Current behavior is equivalent to additional filters. |
 
 `realEndpoint`, `greenEndpoint`, `blueEndpoint`, and `targetUrl` can reference
 `{testContainerUrl}` or `{{testContainerUrl}}` when the endpoint should point at
 the test container created for the rollout.
+
+If the configured endpoint already includes a path and the incoming request path
+is `/`, the plugin preserves the configured path and only appends the incoming
+query string. This supports application env vars that point directly at a real
+endpoint such as `http://service/post` and are temporarily replaced with the
+plugin service root during a rollout.
 
 ## Role Behavior
 
@@ -64,7 +80,7 @@ the test container created for the rollout.
 |---|---|---|
 | `splitter` | Proxies requests and routes to green or blue based on current traffic percentage. | Patches `envVarName` so the application calls the plugin service. |
 | `observer` | Filters requests, extracts `testId`, posts `notifyPath`, then registers blue/both/unknown cases with the operator. | None. |
-| `mock` | For matched requests, can return `200 mocked by fluidbg` instead of forwarding upstream. | None. |
+| `mock` | For matched requests that have a filter-specific or top-level `mockPath`, forwards the call to the verifier mock endpoint and returns that verifier response to the original caller. Observer-only filters continue to the real upstream. | None. |
 | `writer` | Exposes `/write` and forwards verifier-initiated HTTP calls to `targetUrl` or fallback endpoint. | Patches `writeEnvVar` for the verifier container. |
 
 HTTP roles are additive. The fallback proxy is active only when `splitter`,
@@ -74,6 +90,11 @@ selecting proxy roles does not expose `/write`.
 
 Progressive shifting uses `POST /traffic`; `FLUIDBG_TRAFFIC_PERCENT` is only the
 startup default. Normal step changes do not restart the plugin pod.
+
+The plugin can stream pure proxy/mock request bodies and streams upstream
+responses back to the caller. It uses bounded buffering when body inspection is
+required for observer filters, body-based `testId` extraction, or splitter
+routing.
 
 ## Runtime State Machine
 
@@ -119,9 +140,30 @@ continue to the configured upstream because HTTP has no broker-level redelivery.
 | Verifier notification fails after retry | The operator case is not registered, preventing false pass counts. The HTTP request continues according to proxy/mock configuration. |
 | Operator registration fails after verifier notification | The plugin logs the error; the case is not counted by the operator. |
 | Upstream call fails | The plugin returns `502 upstream error`. |
+| Mock verifier call fails | The plugin returns `502 upstream error`; the real upstream is not called for matched mock requests. |
+| Mixed observer/mock filters and the matched filter has no `mockPath` | The request is observed, then proxied to the real upstream. |
 | `realEndpoint`/route target is missing | The plugin returns `502 realEndpoint not configured` for proxy paths, or `400 targetUrl not configured` for `/write`. |
+| `mockPath` is missing for a matched mock request | The plugin returns `502 mockPath not configured for HTTP mock role`. |
 | Drain has started | New proxy and `/write` calls are rejected with `503`. Already admitted calls are allowed to finish. |
 | Drain timeout | The operator records `TimedOutMaybeSuccessful` and proceeds with cleanup. |
+
+## TLS Configuration
+
+TLS is optional and independent for each side:
+
+| Side | How to configure |
+|---|---|
+| Application or verifier to plugin | Keep HTTP by default, or set `tls.inbound.enabled: true` and inject `https://...` with `proxyProtocol: https` and/or `writeProtocol: https`. |
+| Plugin to real upstream | Use `https://...` in `realEndpoint`, `greenEndpoint`, `blueEndpoint`, or `targetUrl`. |
+| Plugin to verifier/mock endpoint | Use `https://...` in `verifierEndpoint` or rely on an HTTPS operator-provided test service URL if configured externally. |
+
+For private/internal CAs, mount the server certificate/key Secret and CA bundle
+into the generated inceptor pod through the `InceptionPlugin` `inceptor.volumes`
+and `inceptor.volumeMounts` fields. With the Helm chart, use
+`builtinPlugins.http.inceptorVolumes` and
+`builtinPlugins.http.inceptorVolumeMounts`. Then point
+`tls.inbound.certPath`, `tls.inbound.keyPath`, and `clientTls.caCertPath` at the
+mounted files. `clientTls.insecureSkipVerify` exists for local testing only.
 
 ## Drain And Cleanup
 
@@ -139,6 +181,13 @@ waiting for admitted calls before cleanup.
 
 ## Security Boundary
 
-The HTTP inceptor verifies the per-inception token on lifecycle endpoints. It
-does not receive infrastructure management credentials. The same token is used
-for plugin-to-operator calls and for operator lifecycle calls to the plugin.
+The HTTP inceptor verifies the per-inception token on lifecycle endpoints and
+`/write`. It does not receive infrastructure management credentials. The same
+token is used for plugin-to-operator test-case registration, operator lifecycle
+calls to the plugin, plugin-to-verifier observer callbacks, plugin-to-verifier
+mock calls, and operator polling of verifier results.
+
+Verifier containers receive `FLUIDBG_VERIFIER_AUTH_TOKENS_JSON`, a map from
+inception point name to token. They can use it to reject callbacks, mock calls,
+result polling, or `/write` calls that do not come from the matching FluidBG
+inception point. The verifier never receives the operator signing key.

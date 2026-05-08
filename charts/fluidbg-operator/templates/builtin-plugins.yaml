@@ -137,43 +137,68 @@ spec:
     additionalProperties: false
     properties:
       port: { type: integer }
-      proxyPort: { type: integer }
+      proxyProtocol: { type: string, enum: [http, https] }
+      writeProtocol: { type: string, enum: [http, https] }
       realEndpoint: { type: string }
       targetUrl: { type: string }
       greenEndpoint: { type: string }
       blueEndpoint: { type: string }
       envVarName: { type: string }
       writeEnvVar: { type: string }
-      ingressPort: { type: integer }
-      egressPort: { type: integer }
+      verifierEndpoint: { type: string }
+      mockPath: { type: string }
       testId: { type: object }
       match: { type: array }
       filters: { type: array }
       ingress: { type: object }
       egress: { type: object }
+      tls:
+        type: object
+        properties:
+          inbound:
+            type: object
+            properties:
+              enabled: { type: boolean }
+              port: { type: integer }
+              certPath: { type: string }
+              keyPath: { type: string }
+      clientTls:
+        type: object
+        properties:
+          caCertPath: { type: string }
+          insecureSkipVerify: { type: boolean }
   inceptor:
     {{- with $root.Values.builtinPlugins.http.rustLog }}
     env:
       - name: RUST_LOG
         value: {{ . | quote }}
     {{- end }}
+    {{- with $root.Values.builtinPlugins.http.inceptorVolumes }}
+    volumes:
+{{ toYaml . | nindent 6 }}
+    {{- end }}
     ports:
       - name: http
         containerPort: 9090
+      - name: https
+        containerPort: 9443
     volumeMounts:
       - name: plugin-config
         mountPath: /etc/fluidbg
         readOnly: true
+      {{- with $root.Values.builtinPlugins.http.inceptorVolumeMounts }}
+{{ toYaml . | nindent 6 }}
+      {{- end }}
   injects:
     blueContainer:
       env:
         - nameFromConfig: envVarName
-          valueTemplate: "http://{{`{{pluginServiceName}}`}}:9090"
+          valueTemplate: "{{`{{proxyUrl}}`}}"
           restoreValueTemplate: "{{`{{realEndpoint}}`}}"
     testContainer:
       env:
         - nameFromConfig: writeEnvVar
-          valueTemplate: "http://{{`{{pluginServiceName}}`}}:9090"
+          valueTemplate: "{{`{{writeUrl}}`}}"
 {{- end }}
 {{- if $root.Values.builtinPlugins.azureServiceBus.enabled }}
 ---

@@ -124,6 +124,7 @@ pub async fn wait_http_case_verified(
                     method: "GET",
                     path: "/cases",
                     basic_auth: None,
+                    headers: Vec::new(),
                     body: None,
                 },
             )

@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use chrono::{Duration, Utc};
-use fluidbg_plugin_sdk::{AUTHORIZATION_HEADER, RegisterTestCaseRequest};
+use fluidbg_plugin_sdk::{AUTHORIZATION_HEADER, RegisterTestCaseRequest, bearer_token};
 use kube::api::Api;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -150,6 +150,7 @@ pub async fn register_test_case(
         verdict: None,
         verification_mode: VerificationMode::Data,
         verify_url: req.verify_url.unwrap_or_default(),
+        verifier_auth_token: auth_header.and_then(bearer_token).unwrap_or("").to_string(),
         retries_remaining: 0,
         failure_message: None,
     };

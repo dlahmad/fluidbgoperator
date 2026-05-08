@@ -18,7 +18,7 @@ The repository is structured as a production-ready Rust workspace:
 
 ```text
 operator/              Rust operator crate and CRD generator
-plugins/http/             Built-in HTTP observe/mock/write plugin
+plugins/http/             Built-in HTTP proxy/splitter/observer/mock/writer plugin
 plugins/rabbitmq/         Built-in RabbitMQ multi-role plugin
 plugins/azure_servicebus/ Built-in Azure Service Bus multi-role plugin
 sdk/                   Versioned plugin SDK models and language-neutral OpenAPI spec

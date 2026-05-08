@@ -84,6 +84,8 @@ pub fn testcase_flags(document: &Value, test_id: &str) -> Result<TestcaseFlags> 
         status: string(case, "status"),
         output_message_seen: bool_value(case, "output_message_seen"),
         http_call_seen: bool_value(case, "http_call_seen"),
+        mock_call_seen: bool_value(case, "mock_call_seen"),
+        observation_seen: bool_value(case, "observation_seen"),
     })
 }
 
@@ -92,6 +94,8 @@ pub struct TestcaseFlags {
     pub status: String,
     pub output_message_seen: bool,
     pub http_call_seen: bool,
+    pub mock_call_seen: bool,
+    pub observation_seen: bool,
 }
 
 pub fn number(document: &Value, key: &str) -> u64 {

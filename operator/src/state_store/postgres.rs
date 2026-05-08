@@ -79,6 +79,7 @@ impl PostgresStore {
                 verdict BOOLEAN,
                 verification_mode TEXT NOT NULL DEFAULT 'Data',
                 verify_url TEXT NOT NULL DEFAULT '',
+                verifier_auth_token TEXT NOT NULL DEFAULT '',
                 retries_remaining INTEGER NOT NULL DEFAULT 0,
                 failure_message TEXT,
                 expires_at TIMESTAMPTZ NOT NULL,
@@ -96,6 +97,10 @@ impl PostgresStore {
         );
         let create_bg_index = format!(
             r#"CREATE INDEX IF NOT EXISTS idx_{table}_blue_green_ref ON {table} (blue_green_ref)"#,
+            table = self.table_name
+        );
+        let add_verifier_auth_token = format!(
+            r#"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS verifier_auth_token TEXT NOT NULL DEFAULT ''"#,
             table = self.table_name
         );
         let drop_legacy_test_id_index = format!(
@@ -116,6 +121,10 @@ impl PostgresStore {
             .await
             .map_err(StoreError::Postgres)?;
         sqlx::query(&add_composite_pk)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::Postgres)?;
+        sqlx::query(&add_verifier_auth_token)
             .execute(&self.pool)
             .await
             .map_err(StoreError::Postgres)?;
@@ -159,6 +168,7 @@ fn row_to_test(row: &sqlx::postgres::PgRow) -> TestCaseRecord {
             _ => VerificationMode::Data,
         },
         verify_url: row.get("verify_url"),
+        verifier_auth_token: row.get("verifier_auth_token"),
         retries_remaining: row.get::<i32, _>("retries_remaining"),
         failure_message: row.get("failure_message"),
     }
@@ -175,8 +185,8 @@ impl StateStore for PostgresStore {
             TestStatus::TimedOut => "TimedOut",
         };
         let query = format!(
-            r#"INSERT INTO {table} (test_id, blue_green_ref, triggered_at, trigger_inception_point, timeout_seconds, status, verdict, verification_mode, verify_url, retries_remaining, failure_message, expires_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            r#"INSERT INTO {table} (test_id, blue_green_ref, triggered_at, trigger_inception_point, timeout_seconds, status, verdict, verification_mode, verify_url, verifier_auth_token, retries_remaining, failure_message, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT (blue_green_ref, test_id) DO UPDATE SET
                  triggered_at = LEAST({table}.triggered_at, EXCLUDED.triggered_at),
                  timeout_seconds = GREATEST({table}.timeout_seconds, EXCLUDED.timeout_seconds),
@@ -187,6 +197,10 @@ impl StateStore for PostgresStore {
                  verify_url = CASE
                    WHEN {table}.verify_url = '' THEN EXCLUDED.verify_url
                    ELSE {table}.verify_url
+                 END,
+                 verifier_auth_token = CASE
+                   WHEN {table}.verifier_auth_token = '' THEN EXCLUDED.verifier_auth_token
+                   ELSE {table}.verifier_auth_token
                  END,
                  expires_at = GREATEST({table}.expires_at, EXCLUDED.expires_at)
                WHERE {table}.status IN ('Triggered', 'Observing')"#,
@@ -205,6 +219,7 @@ impl StateStore for PostgresStore {
                 VerificationMode::Custom => "Custom",
             })
             .bind(&run.verify_url)
+            .bind(&run.verifier_auth_token)
             .bind(run.retries_remaining)
             .bind(&run.failure_message)
             .bind(run.expires_at())

@@ -26,8 +26,8 @@ mod tests {
 
     #[test]
     fn simple_template() {
-        let template = "http://localhost:{{proxyPort}}";
-        let config = json!({"proxyPort": 8080, "realEndpoint": "http://upstream"});
+        let template = "http://localhost:{{port}}";
+        let config = json!({"port": 8080, "realEndpoint": "http://upstream"});
         let result = render_config_template(template, &config).unwrap();
         assert_eq!(result, "http://localhost:8080");
     }

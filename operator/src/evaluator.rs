@@ -75,6 +75,7 @@ mod tests {
             verdict: None,
             verification_mode: VerificationMode::Data,
             verify_url: "http://verify".to_string(),
+            verifier_auth_token: "token".to_string(),
             retries_remaining: 0,
             failure_message: None,
         }

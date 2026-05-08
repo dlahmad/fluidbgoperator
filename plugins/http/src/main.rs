@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU8, AtomicUsize},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fluidbg_plugin_sdk::{PluginInceptorRuntime, traffic_percent_from_env};
 use tracing::info;
 
@@ -31,14 +31,15 @@ async fn main() -> Result<()> {
         .init();
 
     let config = load_config()?;
+    config.validate()?;
+    let client = config.http_client()?;
     let runtime = PluginInceptorRuntime::from_env();
     let port = config.listen_port();
 
     info!(
-        "http plugin starting on port {}: roles={:?}, mode={}, real={:?}, target={:?}, envVar={:?}, writeEnvVar={:?}",
+        "http plugin starting on port {}: roles={:?}, real={:?}, target={:?}, envVar={:?}, writeEnvVar={:?}",
         port,
         runtime.roles(),
-        runtime.mode(),
         config.real_endpoint,
         config.target_url,
         config.env_var_name,
@@ -48,12 +49,58 @@ async fn main() -> Result<()> {
     let state = AppState {
         config,
         runtime,
+        client,
         mode: Arc::new(AtomicU8::new(RuntimeMode::Idle as u8)),
         active_requests: Arc::new(AtomicUsize::new(0)),
         traffic_percent: Arc::new(AtomicUsize::new(traffic_percent_from_env() as usize)),
     };
 
-    let app = axum::Router::new()
+    let app = router(state.clone());
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+
+    if state.config.tls.inbound.enabled {
+        let https_port = state.config.inbound_https_port();
+        let https_addr = std::net::SocketAddr::from(([0, 0, 0, 0], https_port));
+        let cert = state
+            .config
+            .tls
+            .inbound
+            .cert_path
+            .as_deref()
+            .context("tls.inbound.certPath missing")?;
+        let key = state
+            .config
+            .tls
+            .inbound
+            .key_path
+            .as_deref()
+            .context("tls.inbound.keyPath missing")?;
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+            .await
+            .with_context(|| {
+                format!("failed to load inbound TLS certificate {cert} and key {key}")
+            })?;
+        let https_app = router(state.clone());
+        tokio::spawn(async move {
+            info!("http plugin HTTPS traffic listener on {}", https_addr);
+            if let Err(err) = axum_server::bind_rustls(https_addr, tls_config)
+                .serve(https_app.into_make_service())
+                .await
+            {
+                tracing::error!("http plugin HTTPS listener failed: {}", err);
+            }
+        });
+    }
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!("http plugin HTTP control/traffic listener on {}", addr);
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn router(state: AppState) -> axum::Router {
+    axum::Router::new()
         .route("/health", axum::routing::get(health))
         .route("/prepare", axum::routing::post(prepare_handler))
         .route("/activate", axum::routing::post(activate_handler))
@@ -63,14 +110,7 @@ async fn main() -> Result<()> {
         .route("/traffic", axum::routing::post(traffic_shift_handler))
         .route("/write", axum::routing::post(write_handler))
         .fallback(proxy_handler)
-        .with_state(state);
-
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("http plugin listening on {}", addr);
-    axum::serve(listener, app).await?;
-
-    Ok(())
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -78,7 +118,7 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
     use fluidbg_plugin_sdk::{FilterCondition, NotificationFilter, TestIdSelector, TrafficRoute};
 
-    use crate::config::{Config, resolve_runtime_endpoint_with};
+    use crate::config::{ClientTlsConfig, Config, TlsConfig, resolve_runtime_endpoint_with};
     use crate::filters::{extract_test_id, matching_filter};
 
     #[test]
@@ -104,16 +144,17 @@ mod tests {
     #[test]
     fn matching_filter_uses_filter_specific_conditions() {
         let config = Config {
-            proxy_port: None,
             port: None,
+            proxy_protocol: None,
+            write_protocol: None,
             real_endpoint: Some("http://upstream".to_string()),
             target_url: None,
             green_endpoint: None,
             blue_endpoint: None,
             env_var_name: None,
             write_env_var: None,
-            ingress_port: None,
-            egress_port: None,
+            verifier_endpoint: None,
+            mock_path: None,
             test_id: None,
             r#match: Vec::new(),
             filters: vec![
@@ -125,6 +166,7 @@ mod tests {
                         json_path: None,
                     }],
                     notify_path: Some("/ignored/{testId}".to_string()),
+                    mock_path: None,
                     payload: None,
                 },
                 NotificationFilter {
@@ -135,11 +177,14 @@ mod tests {
                         json_path: None,
                     }],
                     notify_path: Some("/observe/{testId}/orders".to_string()),
+                    mock_path: None,
                     payload: None,
                 },
             ],
             ingress: None,
             egress: None,
+            tls: TlsConfig::default(),
+            client_tls: ClientTlsConfig::default(),
         };
         let mut headers = HeaderMap::new();
         headers.insert("X-Event", HeaderValue::from_static("order-created"));
@@ -177,21 +222,24 @@ mod tests {
     #[test]
     fn write_target_defaults_to_proxy_target() {
         let config = Config {
-            proxy_port: None,
             port: None,
+            proxy_protocol: None,
+            write_protocol: None,
             real_endpoint: Some("http://blue".to_string()),
             target_url: None,
             green_endpoint: None,
             blue_endpoint: None,
             env_var_name: None,
             write_env_var: None,
-            ingress_port: None,
-            egress_port: None,
+            verifier_endpoint: None,
+            mock_path: None,
             test_id: None,
             r#match: Vec::new(),
             filters: Vec::new(),
             ingress: None,
             egress: None,
+            tls: TlsConfig::default(),
+            client_tls: ClientTlsConfig::default(),
         };
 
         assert_eq!(config.write_target(), Some("http://blue".to_string()));
@@ -200,21 +248,24 @@ mod tests {
     #[test]
     fn splitter_route_selects_specific_target() {
         let config = Config {
-            proxy_port: None,
             port: None,
+            proxy_protocol: None,
+            write_protocol: None,
             real_endpoint: Some("http://fallback".to_string()),
             target_url: None,
             green_endpoint: Some("http://green".to_string()),
             blue_endpoint: Some("http://blue".to_string()),
             env_var_name: None,
             write_env_var: None,
-            ingress_port: None,
-            egress_port: None,
+            verifier_endpoint: None,
+            mock_path: None,
             test_id: None,
             r#match: Vec::new(),
             filters: Vec::new(),
             ingress: None,
             egress: None,
+            tls: TlsConfig::default(),
+            client_tls: ClientTlsConfig::default(),
         };
 
         assert_eq!(

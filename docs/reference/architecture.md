@@ -118,6 +118,12 @@ The token is the shared credential for that inception point:
   message payload, for caller identity. Registration is rejected if the request
   body identity does not match the verified `blue_green_ref` and
   `inception_point` claims.
+- Inceptor to verifier observer/mock calls use the same bearer token.
+- Operator polling of verifier `verifyPath` uses the bearer token captured when
+  the inceptor registered that `testCase`.
+- Verifier pods receive `FLUIDBG_VERIFIER_AUTH_TOKENS_JSON`, a JSON object that
+  maps inception point names to accepted bearer tokens. Verifiers receive
+  tokens only, never the signing key.
 - Tokens also carry the BGD UID. Any operator replica may receive a plugin
   callback, but it must read current Kubernetes state and reject registrations
   if the UID no longer exists, no longer matches, or the BGD is deleting or
@@ -128,8 +134,9 @@ Rollout cleanup removes temporary inception resources and waits for Deployments,
 Services, ConfigMaps, Secrets, and Pods carrying inception labels to disappear.
 
 Older docs described `mode`, `direction`, and transport-specific orchestration
-kinds. The current CRD model is role-based. `FLUIDBG_MODE` remains only as a
-backward-compatible SDK fallback; the operator injects `FLUIDBG_ACTIVE_ROLES`.
+kinds. The current CRD model is role-based. Plugins should use
+`FLUIDBG_ACTIVE_ROLES`; `FLUIDBG_MODE` is not part of the current plugin
+contract.
 
 ## CRD Model
 
@@ -458,6 +465,11 @@ Standalone inceptor containers receive these operator-managed env vars:
 | `FLUIDBG_CONFIG_PATH` | Mounted plugin config file path, currently `/etc/fluidbg/config.yaml`. |
 | `FLUIDBG_PLUGIN_AUTH_TOKEN` | Per-inception JWT used for operator, manager, and inceptor calls. |
 | `FLUIDBG_INCEPTOR_INFRA_DISABLED` | `true` when a manager owns privileged resource setup and cleanup. |
+
+Verifier containers receive `FLUIDBG_VERIFIER_AUTH_TOKENS_JSON` when
+`spec.test` is configured. They should use it to authorize observer callbacks,
+HTTP mock calls, operator result polling, and verifier-initiated inceptor calls
+such as HTTP `/write`.
 
 Plugins should import shared Rust types from `sdk/rust` or generate clients from
 `sdk/spec/plugin-api-v1alpha1.openapi.yaml`. The SDK defines lifecycle payloads,

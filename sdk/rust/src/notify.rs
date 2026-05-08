@@ -34,6 +34,7 @@ pub async fn notify_observer(
     inception_point: &str,
     payload: &Value,
     route: TrafficRoute,
+    auth_token: Option<&str>,
 ) -> Result<()> {
     let path = render_path(notify_path, test_id, inception_point);
     let notification = ObservationNotification {
@@ -43,7 +44,14 @@ pub async fn notify_observer(
         payload,
     };
     let url = format!("{}{}", test_container_url.trim_end_matches('/'), path);
-    retry_status_request(|| client.post(&url).json(&notification)).await
+    retry_status_request(|| {
+        let mut builder = client.post(&url).json(&notification);
+        if let Some(auth_token) = auth_token {
+            builder = builder.header(AUTHORIZATION_HEADER, bearer_value(auth_token));
+        }
+        builder
+    })
+    .await
 }
 
 pub async fn register_test_case(

@@ -109,6 +109,10 @@ builtinPlugins:
     # Optional RUST_LOG for generated HTTP inceptor pods. Empty uses the binary
     # default: warn,fluidbg_http=info.
     rustLog: ""
+    # Optional volumes and mounts added to every generated HTTP inceptor pod.
+    # Use these to mount TLS cert/key Secrets and private CA ConfigMaps/Secrets.
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
     image:
       repository: ghcr.io/dlahmad/fbg-plugin-http
       tag: ""

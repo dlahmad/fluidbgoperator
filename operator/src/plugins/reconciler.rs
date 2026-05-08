@@ -282,14 +282,8 @@ pub fn reconcile_inception_point(
         ..Default::default()
     };
 
-    let volumes = vec![Volume {
-        name: "plugin-config".to_string(),
-        config_map: Some(ConfigMapVolumeSource {
-            name: config_name.clone(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }];
+    let mut volumes = plugin.spec.inceptor.volumes.clone();
+    upsert_config_volume(&mut volumes, &config_name);
 
     let deployment_name = inception_instance_base_name(context.blue_green_ref, &ip.name);
     let service_name = inception_service_name(context.blue_green_ref, &ip.name);
@@ -389,6 +383,20 @@ pub fn reconcile_inception_point(
         blue_env_injections: env_injections.blue,
         test_env_injections: env_injections.test,
     })
+}
+
+fn upsert_config_volume(volumes: &mut Vec<Volume>, config_name: &str) {
+    if volumes.iter().any(|volume| volume.name == "plugin-config") {
+        return;
+    }
+    volumes.push(Volume {
+        name: "plugin-config".to_string(),
+        config_map: Some(ConfigMapVolumeSource {
+            name: config_name.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
 }
 
 pub fn validate_inception_point(
@@ -502,7 +510,61 @@ pub fn plugin_template_context(
         "pluginServiceName".to_string(),
         serde_json::Value::String(inception_service_name(blue_green_ref, &ip.name)),
     );
+    insert_http_plugin_urls(map, blue_green_ref, &ip.name);
     context
+}
+
+fn insert_http_plugin_urls(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    blue_green_ref: &str,
+    inception_point: &str,
+) {
+    let service_name = inception_service_name(blue_green_ref, inception_point);
+    let http_port = map
+        .get("port")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(9090);
+    let https_port = map
+        .get("tls")
+        .and_then(|tls| tls.get("inbound"))
+        .and_then(|inbound| inbound.get("port"))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(9443);
+    let inbound_tls_enabled = map
+        .get("tls")
+        .and_then(|tls| tls.get("inbound"))
+        .and_then(|inbound| inbound.get("enabled"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let default_protocol = if inbound_tls_enabled { "https" } else { "http" };
+    let proxy_protocol = map
+        .get("proxyProtocol")
+        .and_then(|value| value.as_str())
+        .unwrap_or(default_protocol)
+        .to_string();
+    let write_protocol = map
+        .get("writeProtocol")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&proxy_protocol)
+        .to_string();
+    let proxy_port = if proxy_protocol.as_str() == "https" {
+        https_port
+    } else {
+        http_port
+    };
+    let write_port = if write_protocol.as_str() == "https" {
+        https_port
+    } else {
+        http_port
+    };
+    map.insert(
+        "proxyUrl".to_string(),
+        serde_json::Value::String(format!("{proxy_protocol}://{service_name}:{proxy_port}")),
+    );
+    map.insert(
+        "writeUrl".to_string(),
+        serde_json::Value::String(format!("{write_protocol}://{service_name}:{write_port}")),
+    );
 }
 
 fn render_env_injection_set(
@@ -563,12 +625,13 @@ mod tests {
                 field_namespaces: vec!["http".to_string()],
                 config_schema: serde_json::json!({
                     "type": "object",
-                    "properties": {
-                        "port": { "type": "integer" },
-                        "proxyPort": { "type": "integer" },
-                        "realEndpoint": { "type": "string" },
-                        "targetUrl": { "type": "string" },
-                        "envVarName": { "type": "string" },
+                        "properties": {
+                            "port": { "type": "integer" },
+                            "proxyProtocol": { "type": "string" },
+                            "writeProtocol": { "type": "string" },
+                            "realEndpoint": { "type": "string" },
+                            "targetUrl": { "type": "string" },
+                            "envVarName": { "type": "string" },
                         "writeEnvVar": { "type": "string" },
                         "testId": { "type": "object" },
                         "match": { "type": "array" },
@@ -595,14 +658,14 @@ mod tests {
                     blue_container: Some(crate::crd::inception_plugin::ContainerInjection {
                         env: vec![crate::crd::inception_plugin::EnvInjection {
                             name_from_config: "envVarName".to_string(),
-                            value_template: "http://{{pluginServiceName}}:9090".to_string(),
+                            value_template: "{{proxyUrl}}".to_string(),
                             restore_value_template: None,
                         }],
                     }),
                     test_container: Some(crate::crd::inception_plugin::ContainerInjection {
                         env: vec![crate::crd::inception_plugin::EnvInjection {
                             name_from_config: "writeEnvVar".to_string(),
-                            value_template: "http://{{pluginServiceName}}:9090".to_string(),
+                            value_template: "{{writeUrl}}".to_string(),
                             restore_value_template: None,
                         }],
                     }),
@@ -1197,7 +1260,7 @@ mod tests {
             "bad-point",
             vec![PluginRole::Duplicator],
             serde_json::json!({
-                "proxyPort": 8082,
+                "port": 8082,
                 "realEndpoint": "http://upstream",
                 "envVarName": "UPSTREAM_URL"
             }),

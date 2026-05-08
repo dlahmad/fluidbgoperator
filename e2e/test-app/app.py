@@ -16,9 +16,27 @@ OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://localhost:8081")
 PORT = int(os.environ.get("PORT", "8080"))
 STARTUP_DELAY_SECONDS = int(os.environ.get("STARTUP_DELAY_SECONDS", "0"))
+VERIFIER_AUTH_TOKENS = json.loads(os.environ.get("FLUIDBG_VERIFIER_AUTH_TOKENS_JSON", "{}") or "{}")
 
 cases = {}
 cases_lock = threading.Lock()
+
+
+def bearer_token():
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        return header[len("Bearer "):]
+    return None
+
+
+def authorized_for_inception(inception_point):
+    expected = VERIFIER_AUTH_TOKENS.get(inception_point)
+    return bool(expected) and bearer_token() == expected
+
+
+def authorized_for_any_inception():
+    token = bearer_token()
+    return bool(token) and token in set(VERIFIER_AUTH_TOKENS.values())
 
 
 def complete_http_proxy_case_if_ready(case):
@@ -27,6 +45,22 @@ def complete_http_proxy_case_if_ready(case):
         case["error_message"] = None
     else:
         case["status"] = "observing"
+
+
+def complete_http_plugin_case_if_ready(case, test_id):
+    if test_id.startswith("http-direct-proxy-") and case.get("http_call_seen"):
+        case["status"] = "passed"
+        case["error_message"] = None
+        return True
+    if (
+        test_id.startswith("http-mock-")
+        and case.get("observation_seen")
+        and case.get("mock_call_seen")
+    ):
+        case["status"] = "passed"
+        case["error_message"] = None
+        return True
+    return False
 
 
 def complete_delayed_case_if_ready(case):
@@ -92,6 +126,8 @@ def trigger():
 
 @app.route("/observe/<test_id>/<inception_point>", methods=["POST"])
 def observe(test_id, inception_point):
+    if not authorized_for_inception(inception_point):
+        return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     with cases_lock:
         if test_id not in cases:
@@ -101,6 +137,7 @@ def observe(test_id, inception_point):
             return jsonify({"testId": test_id, "status": current_status})
         case = cases[test_id]
         case["observation"] = data
+        case["observation_seen"] = True
         if inception_point == "outgoing-results":
             payload = data.get("payload") or {}
             original = payload.get("originalMessage") or {}
@@ -136,7 +173,9 @@ def observe(test_id, inception_point):
                 and payload.get("orderId") == test_id
             )
             result_message = case.get("result_message") or {}
-            if case["http_call_seen"] and is_http_proxy_message(result_message):
+            if complete_http_plugin_case_if_ready(case, test_id):
+                pass
+            elif case["http_call_seen"] and is_http_proxy_message(result_message):
                 complete_http_proxy_case_if_ready(case)
             else:
                 case["status"] = "observing"
@@ -145,8 +184,35 @@ def observe(test_id, inception_point):
     return jsonify({"testId": test_id, "status": "observing"})
 
 
+@app.route("/mock/<test_id>/<inception_point>", methods=["POST", "PUT", "PATCH", "GET"])
+def mock_response(test_id, inception_point):
+    if not authorized_for_inception(inception_point):
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    with cases_lock:
+        if test_id not in cases:
+            cases[test_id] = {"status": "observing"}
+        case = cases[test_id]
+        case["mock_call_seen"] = True
+        case["mock_payload"] = payload
+        case["mock_headers"] = {
+            "x-fluidbg-test-id": request.headers.get("x-fluidbg-test-id"),
+            "x-fluidbg-inception-point": request.headers.get("x-fluidbg-inception-point"),
+            "x-fluidbg-route": request.headers.get("x-fluidbg-route"),
+        }
+        complete_http_plugin_case_if_ready(case, test_id)
+    return jsonify({
+        "mocked": True,
+        "testId": test_id,
+        "inceptionPoint": inception_point,
+        "payload": payload,
+    }), 209, {"X-FluidBG-Mock": "verifier"}
+
+
 @app.route("/result/<test_id>", methods=["GET"])
 def result(test_id):
+    if not authorized_for_any_inception():
+        return jsonify({"error": "unauthorized"}), 401
     with cases_lock:
         case = cases.get(test_id, {})
         if case:

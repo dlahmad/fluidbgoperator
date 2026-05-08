@@ -87,6 +87,43 @@ mod tests {
     }
 
     #[test]
+    fn http_query_matching_uses_path_and_query_without_changing_path() {
+        let query_condition = FilterCondition {
+            field: "http.query.source".to_string(),
+            equals: Some("proxy".to_string()),
+            matches: None,
+            json_path: None,
+        };
+        assert_eq!(
+            resolve_http_field(
+                &query_condition,
+                "POST",
+                "/audit?source=proxy",
+                &json!({}),
+                |_| None,
+            ),
+            Some("proxy".to_string())
+        );
+
+        let path_condition = FilterCondition {
+            field: "http.path".to_string(),
+            equals: None,
+            matches: None,
+            json_path: None,
+        };
+        assert_eq!(
+            resolve_http_field(
+                &path_condition,
+                "POST",
+                "/audit?source=proxy",
+                &json!({}),
+                |_| None,
+            ),
+            Some("/audit".to_string())
+        );
+    }
+
+    #[test]
     fn sdk_versions_match_manifest() {
         let manifest: Value =
             serde_yaml_ng::from_str(include_str!("../../spec/crd-versions.yaml")).unwrap();

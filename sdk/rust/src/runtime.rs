@@ -10,7 +10,6 @@ use crate::notify::{RegisterTestCaseArgs, notify_observer, register_test_case};
 pub struct PluginInceptorRuntime {
     client: reqwest::Client,
     roles: Vec<PluginRole>,
-    mode: String,
     testcase_registration_url: String,
     test_container_url: String,
     testcase_verify_path_template: Option<String>,
@@ -24,8 +23,6 @@ impl PluginInceptorRuntime {
         Self {
             client: reqwest::Client::new(),
             roles: active_roles(),
-            mode: std::env::var("FLUIDBG_MODE")
-                .unwrap_or_else(|_| "passthrough-duplicate".to_string()),
             testcase_registration_url: std::env::var("FLUIDBG_TESTCASE_REGISTRATION_URL")
                 .unwrap_or_else(|_| "http://localhost:8090/testcases".to_string()),
             test_container_url: std::env::var("FLUIDBG_TEST_CONTAINER_URL")
@@ -48,10 +45,6 @@ impl PluginInceptorRuntime {
         &self.roles
     }
 
-    pub fn mode(&self) -> &str {
-        &self.mode
-    }
-
     pub fn test_container_url(&self) -> &str {
         &self.test_container_url
     }
@@ -70,16 +63,6 @@ impl PluginInceptorRuntime {
 
     pub fn has_role(&self, role: PluginRole) -> bool {
         has_role(&self.roles, role)
-    }
-
-    pub fn observes(&self) -> bool {
-        self.has_role(PluginRole::Observer)
-            || self.mode == "trigger"
-            || self.mode == "passthrough-duplicate"
-    }
-
-    pub fn mocks(&self) -> bool {
-        self.has_role(PluginRole::Mock) || self.mode == "reroute-mock"
     }
 
     pub async fn register_test_case(&self, test_id: &str) -> Result<()> {
@@ -113,6 +96,7 @@ impl PluginInceptorRuntime {
             &self.inception_point,
             payload,
             route,
+            self.auth_token.as_deref(),
         )
         .await
     }

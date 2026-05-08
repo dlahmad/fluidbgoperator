@@ -3,7 +3,8 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 
 use crate::harness::E2eHarness;
-use crate::status::bgd_status;
+use crate::kube::PodHttpRequest;
+use crate::status::{bgd_status, testcase_flags};
 
 use super::support::{unique_token, wait_http_case_verified};
 
@@ -109,6 +110,8 @@ pub async fn http_proxy_observer_promotion(
         .rabbitmq
         .wait_for_consumers(&blue_input_queue, 1, Duration::from_secs(60))
         .await?;
+    verify_http_plugin_proxy_and_mock(harness, &proxy_plugin, &test_deployment).await?;
+
     let verified_test_id = format!("http-proxy-{}", unique_token("case"));
     harness
         .rabbitmq
@@ -199,4 +202,112 @@ pub async fn http_proxy_observer_promotion(
         .wait_deployment_replicas(&deployment, &cfg.namespace, 2)
         .await?;
     Ok(deployment)
+}
+
+async fn verify_http_plugin_proxy_and_mock(
+    harness: &E2eHarness,
+    proxy_plugin: &str,
+    test_deployment: &str,
+) -> Result<()> {
+    let proxy_selector = harness
+        .kube
+        .deployment_pod_selector(proxy_plugin, &harness.config.namespace)
+        .await?;
+    let proxy_case = format!("http-direct-proxy-{}", unique_token("case"));
+    let response = harness
+        .kube
+        .pod_http_by_selector(
+            &harness.config.namespace,
+            &proxy_selector,
+            9090,
+            PodHttpRequest {
+                method: "POST",
+                path: "/?via=fluidbg",
+                basic_auth: None,
+                headers: vec![("X-FluidBG-E2E", "proxy")],
+                body: Some(serde_json::json!({
+                    "orderId": proxy_case,
+                    "action": "http-proxy-check"
+                })),
+            },
+        )
+        .await?;
+    if !(200..300).contains(&response.status) {
+        bail!(
+            "expected direct HTTP proxy call to succeed, got {}",
+            response.status
+        );
+    }
+    let upstream: serde_json::Value =
+        serde_json::from_slice(&response.body).unwrap_or_else(|_| serde_json::Value::Null);
+    if upstream
+        .pointer("/headers/X-Fluidbg-E2E")
+        .and_then(|v| v.as_str())
+        != Some("proxy")
+    {
+        bail!("HTTP proxy did not forward request headers to upstream: {upstream}");
+    }
+    if upstream.pointer("/args/via").and_then(|v| v.as_str()) != Some("fluidbg") {
+        bail!("HTTP proxy did not preserve query string to upstream: {upstream}");
+    }
+
+    let mock_case = format!("http-mock-{}", unique_token("case"));
+    let response = harness
+        .kube
+        .pod_http_by_selector(
+            &harness.config.namespace,
+            &proxy_selector,
+            9090,
+            PodHttpRequest {
+                method: "POST",
+                path: "/mocked",
+                basic_auth: None,
+                headers: vec![("X-FluidBG-E2E", "mock")],
+                body: Some(serde_json::json!({
+                    "orderId": mock_case,
+                    "action": "http-mock-check"
+                })),
+            },
+        )
+        .await?;
+    if response.status != 209 {
+        bail!(
+            "expected HTTP mock verifier response status 209, got {}",
+            response.status
+        );
+    }
+    let mock_body: serde_json::Value = serde_json::from_slice(&response.body)?;
+    if mock_body.get("mocked").and_then(|v| v.as_bool()) != Some(true) {
+        bail!("HTTP mock response was not returned from verifier: {mock_body}");
+    }
+
+    let test_selector = harness
+        .kube
+        .deployment_pod_selector(test_deployment, &harness.config.namespace)
+        .await?;
+    for _ in 1..=30 {
+        let cases = harness
+            .kube
+            .pod_http_json_by_selector(
+                &harness.config.namespace,
+                &test_selector,
+                8080,
+                PodHttpRequest {
+                    method: "GET",
+                    path: "/cases",
+                    basic_auth: None,
+                    headers: Vec::new(),
+                    body: None,
+                },
+            )
+            .await?;
+        if let Ok(flags) = testcase_flags(&cases, &mock_case)
+            && flags.mock_call_seen
+            && flags.observation_seen
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    bail!("expected HTTP mock call and observer notification to be visible in verifier")
 }

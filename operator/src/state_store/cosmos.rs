@@ -44,6 +44,8 @@ struct CosmosTestCase {
     verdict: Option<bool>,
     verification_mode: String,
     verify_url: String,
+    #[serde(default)]
+    verifier_auth_token: String,
     retries_remaining: i32,
     failure_message: Option<String>,
     expires_at: DateTime<Utc>,
@@ -513,6 +515,7 @@ impl From<TestCaseRecord> for CosmosTestCase {
             verdict: run.verdict,
             verification_mode,
             verify_url: run.verify_url,
+            verifier_auth_token: run.verifier_auth_token,
             retries_remaining: run.retries_remaining,
             failure_message: run.failure_message,
             expires_at,
@@ -551,6 +554,7 @@ impl From<CosmosTestCase> for TestCaseRecord {
                 _ => VerificationMode::Data,
             },
             verify_url: doc.verify_url,
+            verifier_auth_token: doc.verifier_auth_token,
             retries_remaining: doc.retries_remaining,
             failure_message: doc.failure_message,
         }

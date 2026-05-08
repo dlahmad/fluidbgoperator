@@ -30,6 +30,9 @@ failure diagnostics are exposed through `status.conditions`; see
 The state store is operator-global runtime configuration, not a CRD selected
 per `BlueGreenDeployment`.
 `InceptionPlugin.spec.inceptor` describes the per-inception traffic component.
+It supports the container image, ports, env, volume mounts, volumes,
+ServiceAccount, labels, and annotations needed by that plugin. The operator
+adds its own runtime ConfigMap volume for the rendered plugin config.
 `InceptionPlugin.spec.manager` optionally references a privileged manager
 Service in the operator namespace for resource create/delete operations.
 `InceptionPlugin.spec.roleConstraints` declares plugin-specific role

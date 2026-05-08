@@ -39,6 +39,11 @@ such as RabbitMQ queue names or HTTP upstream URLs remain plugin configuration,
 but manager lifecycle, inceptor lifecycle, observation, and test registration
 payloads should stay aligned with this spec.
 
+All manager and inceptor APIs use the OpenAPI `pluginAuth` bearer scheme. The
+token is per inception point. SDKs should expose helpers for attaching it to
+operator, manager, inceptor, verifier notification, verifier mock, and verifier
+result-polling requests without exposing the operator signing key.
+
 Reference tooling:
 
 - OpenAPI Generator generator list: https://openapi-generator.tech/docs/generators/

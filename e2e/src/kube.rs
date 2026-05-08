@@ -45,6 +45,7 @@ pub struct PodHttpRequest<'a> {
     pub method: &'a str,
     pub path: &'a str,
     pub basic_auth: Option<(&'a str, &'a str)>,
+    pub headers: Vec<(&'a str, &'a str)>,
     pub body: Option<Value>,
 }
 
@@ -1183,6 +1184,9 @@ fn render_http_request(request: PodHttpRequest<'_>) -> Result<String> {
         let encoded =
             base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
         rendered.push_str(&format!("Authorization: Basic {encoded}\r\n"));
+    }
+    for (name, value) in request.headers {
+        rendered.push_str(&format!("{name}: {value}\r\n"));
     }
     if !body.is_empty() {
         rendered.push_str("Content-Type: application/json\r\n");

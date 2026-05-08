@@ -4,6 +4,21 @@ title: Changelog
 
 # Changelog
 
+## 0.4.0 - 2026-05-08
+
+- Reworked the HTTP plugin into a role-driven proxy without legacy
+  `FLUIDBG_MODE` behavior or old `proxyPort`/ingress/egress port fields.
+- Added verifier-backed HTTP mock mode: matched requests are forwarded to the
+  verifier mock endpoint and the verifier response is returned to the caller.
+- Added independent HTTP plugin TLS controls for inbound app/verifier traffic
+  and outbound upstream/verifier trust, including chart-supported Secret and
+  ConfigMap mounts for TLS material.
+- Added per-inception verifier boundary auth. Verifiers receive only a token
+  map, while inceptor-to-verifier callbacks, mock calls, operator verify polling,
+  and verifier-to-inceptor API calls can all use bearer-token authorization.
+- Extended the e2e HTTP scenario to verify real proxy forwarding, verifier mock
+  responses, and authenticated verifier observation/result flows.
+
 ## 0.3.0 - 2026-05-08
 
 - Changed `InceptionPlugin` from namespaced to cluster-scoped. Built-in plugins

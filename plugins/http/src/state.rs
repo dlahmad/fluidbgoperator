@@ -11,6 +11,7 @@ use crate::config::Config;
 pub(crate) struct AppState {
     pub(crate) config: Config,
     pub(crate) runtime: PluginInceptorRuntime,
+    pub(crate) client: reqwest::Client,
     pub(crate) mode: Arc<AtomicU8>,
     pub(crate) active_requests: Arc<AtomicUsize>,
     pub(crate) traffic_percent: Arc<AtomicUsize>,

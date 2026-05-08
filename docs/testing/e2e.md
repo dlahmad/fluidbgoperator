@@ -40,6 +40,12 @@ flowchart TD
 - Progressive traffic shifting through a splitter plugin without restarting the plugin pod.
 - Rejection of progressive strategy when the splitter plugin does not advertise `supportsProgressiveShifting`.
 - Combined HTTP plugin proxy, observer, mock, and writer behavior.
+- HTTP proxy forwarding of method, path, query, response status, and response
+  headers.
+- HTTP mock mode forwarding to the verifier and returning the verifier response
+  to the original caller.
+- Verifier boundary auth for observer callbacks, HTTP mock calls, and operator
+  `verifyPath` polling with per-inception bearer tokens.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.
 - Test verifier readiness and app rollout readiness before plugin activation,
   so inceptors cannot send observations to a test Service without ready
@@ -179,6 +185,7 @@ test case has been seen. For combined queue/HTTP cases this means:
 
 - The expected output message was emitted.
 - The expected REST call was observed by the HTTP plugin.
+- HTTP mock responses came from the verifier, not from a static plugin stub.
 - The observed events use plugin-supplied route metadata, not application-owned payload fields.
 - Queue plugins notify the verifier before registering the case with the
   operator. The HTTP scenario holds promotion open until the harness has

@@ -122,6 +122,14 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
+        "inceptorVolumes": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "inceptorVolumeMounts": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
         "inceptorWorkloadIdentity": {
           "type": "object",
           "properties": {
