@@ -4,6 +4,18 @@ title: Changelog
 
 # Changelog
 
+## 0.2.4 - 2026-05-08
+
+- Updated CI/CD GitHub Actions to current Node 24-compatible major versions
+  where available.
+- Updated example, e2e, and runtime container bases to current rolling major
+  base tags: distroless Debian 13, Python 3.14 current Alpine/Slim variants,
+  RabbitMQ 4 current management Alpine, and Rust current Trixie.
+- Defaulted RabbitMQ temporary queue declarations to durable queues so the
+  plugin works with RabbitMQ 4.3+, which rejects transient non-exclusive queues
+  by default.
+- Documented cosign v3 verification for release image signatures.
+
 ## 0.2.3 - 2026-05-08
 
 - Added Cargo-aware CycloneDX SBOM generation for every released Rust binary

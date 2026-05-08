@@ -126,9 +126,9 @@ keeps the demo independent from Docker Hub pulls inside the kind node:
 KIND_CLUSTER="$(kind get clusters | head -n 1)"
 KIND_ARCH="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')"
 tmpdir="$(mktemp -d)"
-printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
-docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4.2-management-alpine "$tmpdir"
-kind load docker-image rabbitmq:4.2-management-alpine --name "$KIND_CLUSTER"
+printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
+docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4-management-alpine "$tmpdir"
+kind load docker-image rabbitmq:4-management-alpine --name "$KIND_CLUSTER"
 rm -rf "$tmpdir"
 ```
 

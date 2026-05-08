@@ -68,9 +68,12 @@ Top-level fields:
 | `observer` | when role active | `observer` | Test id selector, match filters, and verifier callback path. |
 
 `queueDeclaration` supports `durable`, `exclusive`, `autoDelete`, and AMQP
-`arguments`. The plugin does not infer dead-letter configuration. If a temporary
-queue should dead-letter into a shadow queue, configure RabbitMQ arguments such
-as `x-dead-letter-exchange` and `x-dead-letter-routing-key` explicitly.
+`arguments`. Temporary queues default to `durable: true` because RabbitMQ 4.3+
+rejects transient non-exclusive queues by default. You can explicitly set
+`durable: false` only for brokers configured to permit that deprecated mode.
+The plugin does not infer dead-letter configuration. If a temporary queue should
+dead-letter into a shadow queue, configure RabbitMQ arguments such as
+`x-dead-letter-exchange` and `x-dead-letter-routing-key` explicitly.
 
 `duplicator`, `splitter`, and `combiner` may set
 `temporaryQueueIdentifier` to a semantic value up to 40 characters using

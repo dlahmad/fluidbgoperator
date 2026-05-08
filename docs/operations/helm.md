@@ -81,7 +81,7 @@ Typical pinned install:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.3
+  --set global.imageTag=0.2.4
 ```
 
 Pin one plugin differently while the operator and other plugins use the shared
@@ -91,7 +91,7 @@ version:
 helm upgrade --install fluidbg ./charts/fluidbg-operator \
   --namespace fluidbg-system \
   --create-namespace \
-  --set global.imageTag=0.2.3 \
+  --set global.imageTag=0.2.4 \
   --set builtinPlugins.rabbitmq.image.tag=my-rabbitmq-plugin-tag
 ```
 
@@ -147,10 +147,15 @@ Release image manifests are also signed with keyless Sigstore/cosign from the
 GitHub Actions release workflow identity:
 
 ```sh
-cosign verify ghcr.io/dlahmad/fbg-operator:0.2.3 \
+docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify \
+  ghcr.io/dlahmad/fbg-operator:0.2.4 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 ```
+
+Use cosign `v3.x` or newer. Older clients can report `no signatures found`
+against the current registry referrer format even when verification succeeds
+with the release workflow's cosign major version.
 
 This split is intentional. A scanner such as `syft ghcr.io/...` scans the image
 filesystem and may not recover Rust crate dependencies from stripped static
@@ -160,28 +165,46 @@ dependency list.
 Inspect the BuildKit-attached image SBOM:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.2.3 \
+docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:0.2.4 \
   --format '{{ range (index .SBOM "linux/amd64").SPDX.packages }}{{ .name }} {{ .versionInfo }}{{ println }}{{ end }}'
 ```
 
 Download the release SBOMs and list Rust crate dependencies:
 
 ```sh
-gh release download v0.2.3 \
+gh release download v0.2.4 \
   --repo dlahmad/fluidbgoperator \
-  --pattern 'fbg-operator-0.2.3-linux-amd64.cyclonedx.json'
+  --pattern 'fbg-operator-0.2.4-linux-amd64.cyclonedx.json'
 
 jq -r '.components[] | select(.type == "library") | [.name, .version] | @tsv' \
-  fbg-operator-0.2.3-linux-amd64.cyclonedx.json
+  fbg-operator-0.2.4-linux-amd64.cyclonedx.json
 ```
 
 Verify and inspect the image SBOM attestation with GitHub CLI:
 
 ```sh
-gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.2.3 \
+gh attestation download oci://ghcr.io/dlahmad/fbg-operator:0.2.4 \
   --repo dlahmad/fluidbgoperator
 
 jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicateType' sha256:*.jsonl
+```
+
+Security scanners differ in how much attached SBOM metadata they use
+automatically. `trivy image ghcr.io/dlahmad/fbg-operator:<version>` scans the
+container filesystem and may still miss Rust crate dependencies in stripped
+static binaries. Trivy can scan CycloneDX SBOM attestations, but the documented
+flow is explicit: verify/download the attestation and pass it to `trivy sbom`.
+Do not assume Trivy Operator automatically uses these attached Cargo-aware SBOMs
+as its dependency source.
+
+```sh
+docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify-attestation \
+  --type cyclonedx \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  ghcr.io/dlahmad/fbg-operator:0.2.4 > sbom.intoto.jsonl
+
+trivy sbom sbom.intoto.jsonl
 ```
 
 Local `--load` builds do not preserve OCI attestations in the Docker image

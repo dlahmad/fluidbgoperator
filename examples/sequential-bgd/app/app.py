@@ -15,8 +15,8 @@ HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "")
 def channel():
     connection = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
     ch = connection.channel()
-    ch.queue_declare(queue=INPUT_QUEUE, durable=False)
-    ch.queue_declare(queue=OUTPUT_QUEUE, durable=False)
+    ch.queue_declare(queue=INPUT_QUEUE, durable=True)
+    ch.queue_declare(queue=OUTPUT_QUEUE, durable=True)
     return connection, ch
 
 

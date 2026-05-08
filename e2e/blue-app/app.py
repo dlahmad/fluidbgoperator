@@ -18,7 +18,7 @@ TEMP_QUEUE_ARGUMENTS = json.loads(os.environ.get("AMQP_TEMP_QUEUE_ARGUMENTS_JSON
 def queue_declaration(queue):
     if queue.startswith("fluidbg-"):
         return {"durable": TEMP_QUEUE_DURABLE, "arguments": TEMP_QUEUE_ARGUMENTS}
-    return {"durable": False, "arguments": None}
+    return {"durable": True, "arguments": None}
 
 
 def get_channel():

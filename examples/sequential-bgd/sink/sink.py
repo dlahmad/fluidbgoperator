@@ -209,7 +209,7 @@ def consume_results():
         try:
             connection = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
             ch = connection.channel()
-            ch.queue_declare(queue=INPUT_QUEUE, durable=False)
+            ch.queue_declare(queue=INPUT_QUEUE, durable=True)
             ch.basic_qos(prefetch_count=1)
             print(
                 "sink acts as normal downstream demo service: "

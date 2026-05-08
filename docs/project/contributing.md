@@ -11,7 +11,7 @@ Run the local gate before opening a PR:
 ```sh
 just check
 bash -n e2e/run-test.sh
-python -m py_compile e2e/blue-app/app.py e2e/green-app/app.py e2e/test-app/app.py
+python3 -m py_compile e2e/blue-app/app.py e2e/green-app/app.py e2e/test-app/app.py
 helm lint ./charts/fluidbg-operator
 ```
 

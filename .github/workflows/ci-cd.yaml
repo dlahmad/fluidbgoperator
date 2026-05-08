@@ -91,7 +91,7 @@ jobs:
         run: cargo test --workspace --locked
       - name: Compile e2e Python apps
         run: |
-          python -m py_compile \
+          python3 -m py_compile \
             e2e/blue-app/app.py \
             e2e/green-app/app.py \
             e2e/test-app/app.py \
@@ -129,7 +129,7 @@ jobs:
             | sort -z \
             | xargs -0 sha256sum > dist/sbom/SHA256SUMS.sbom
       - name: Upload Rust SBOMs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fluidbg-rust-sboms
           path: dist/sbom/*
@@ -193,7 +193,7 @@ jobs:
           sha256sum "dist/release/fluidbg-${{ needs.resolve.outputs.version }}-linux-${{ matrix.arch }}.tar.gz" \
             > "dist/release/fluidbg-${{ needs.resolve.outputs.version }}-linux-${{ matrix.arch }}.tar.gz.sha256"
       - name: Upload raw executable artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fluidbg-dist-${{ matrix.arch }}
           path: |
@@ -202,7 +202,7 @@ jobs:
             dist/fluidbg-rabbitmq
             dist/fluidbg-azure-servicebus
       - name: Upload release executable archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fluidbg-release-linux-${{ matrix.arch }}
           path: |
@@ -215,7 +215,7 @@ jobs:
     if: github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - name: Assemble docs source
         run: |
           mkdir -p docs/reference
@@ -238,7 +238,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   kind-e2e:
     name: Kind end-to-end
@@ -253,11 +253,11 @@ jobs:
         with:
           cluster_name: fluidbg-dev
           config: testenv/kind-config.yaml
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-host
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: fluidbg-dist-amd64
           path: dist
@@ -270,8 +270,8 @@ jobs:
           docker build -t fluidbg/green-app:dev e2e/green-app
           docker build -t fluidbg/test-app:dev e2e/test-app
           tmpdir="$(mktemp -d)"
-          printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
-          docker build --platform linux/amd64 -t rabbitmq:4.2-management-alpine "$tmpdir"
+          printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
+          docker build --platform linux/amd64 -t rabbitmq:4-management-alpine "$tmpdir"
           rm -rf "$tmpdir"
           kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
@@ -280,7 +280,7 @@ jobs:
           kind load docker-image fluidbg/blue-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/green-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/test-app:dev --name fluidbg-dev
-          kind load docker-image rabbitmq:4.2-management-alpine --name fluidbg-dev
+          kind load docker-image rabbitmq:4-management-alpine --name fluidbg-dev
       - name: Run full e2e
         env:
           KIND_CLUSTER: fluidbg-dev
@@ -310,8 +310,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/download-artifact@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/download-artifact@v8
         with:
           name: fluidbg-dist-${{ matrix.arch }}
           path: dist
@@ -322,7 +322,7 @@ jobs:
         run: echo "value=${{ needs.resolve.outputs.image_namespace }}" >> "$GITHUB_OUTPUT"
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -360,7 +360,7 @@ jobs:
     if: needs.resolve.outputs.is_release == 'true'
     steps:
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -386,10 +386,10 @@ jobs:
     needs: [resolve, publish-manifests]
     if: needs.resolve.outputs.is_release == 'true'
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: sigstore/cosign-installer@v4.1.0
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -417,14 +417,14 @@ jobs:
           - image: fbg-plugin-rabbitmq
           - image: fbg-plugin-azure-servicebus
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Download Rust SBOMs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fluidbg-rust-sboms
           path: dist/sbom
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -478,7 +478,7 @@ jobs:
       - name: Publish chart to GHCR OCI
         run: helm push dist/charts/*.tgz "oci://${REGISTRY}/${{ needs.resolve.outputs.image_namespace }}/charts"
       - name: Upload chart artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fluidbg-operator-chart
           path: dist/charts/*.tgz
@@ -490,18 +490,18 @@ jobs:
     if: needs.resolve.outputs.is_release == 'true'
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: "fluidbg-release-linux-*"
           path: dist/release
           merge-multiple: true
       - name: Download Helm chart artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fluidbg-operator-chart
           path: dist/release
       - name: Download Rust SBOM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fluidbg-rust-sboms
           path: dist/release

@@ -51,10 +51,10 @@ def get_channel():
     params = pika.URLParameters(AMQP_URL)
     connection = pika.BlockingConnection(params)
     channel = connection.channel()
-    channel.queue_declare(queue=INPUT_QUEUE, durable=False)
-    channel.queue_declare(queue=OUTPUT_QUEUE, durable=False)
-    channel.queue_declare(queue="orders-green", durable=False)
-    channel.queue_declare(queue="orders-blue", durable=False)
+    channel.queue_declare(queue=INPUT_QUEUE, durable=True)
+    channel.queue_declare(queue=OUTPUT_QUEUE, durable=True)
+    channel.queue_declare(queue="orders-green", durable=True)
+    channel.queue_declare(queue="orders-blue", durable=True)
     return connection, channel
 
 

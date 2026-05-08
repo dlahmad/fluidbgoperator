@@ -143,11 +143,7 @@ fn push_temp_queue_declaration_assignments(
     assignments: &mut Vec<PropertyAssignment>,
     config: &Config,
 ) {
-    let durable = config
-        .queue_declaration
-        .durable
-        .unwrap_or(false)
-        .to_string();
+    let durable = config.queue_declaration.durable_or_default().to_string();
     let arguments = serde_json::to_string(&config.queue_declaration.arguments)
         .unwrap_or_else(|_| "{}".to_string());
 

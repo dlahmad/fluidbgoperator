@@ -120,9 +120,9 @@ kind load docker-image fluidbg/fluidbg-example-verifier:dev --name "$KIND_CLUSTE
 
 KIND_ARCH="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')"
 tmpdir="$(mktemp -d)"
-printf 'FROM rabbitmq:4.2-management-alpine\n' > "$tmpdir/Dockerfile"
-docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4.2-management-alpine "$tmpdir"
-kind load docker-image rabbitmq:4.2-management-alpine --name "$KIND_CLUSTER"
+printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
+docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4-management-alpine "$tmpdir"
+kind load docker-image rabbitmq:4-management-alpine --name "$KIND_CLUSTER"
 rm -rf "$tmpdir"
 ```
 

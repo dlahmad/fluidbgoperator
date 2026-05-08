@@ -1,4 +1,4 @@
-FROM python:3.14-slim-trixie
+FROM python:3.14-slim
 RUN pip install pika requests
 COPY app.py /app/app.py
 WORKDIR /app

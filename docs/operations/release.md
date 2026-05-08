@@ -67,10 +67,15 @@ Images:
 Verify an image signature:
 
 ```sh
-cosign verify ghcr.io/dlahmad/fbg-operator:X.Y.Z \
+docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify \
+  ghcr.io/dlahmad/fbg-operator:X.Y.Z \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 ```
+
+Use cosign `v3.x` or newer for these signatures. Older cosign clients can miss
+the registry referrer layout used by current keyless signatures and
+attestations.
 
 Example/test application images are intentionally not release artifacts. Build
 them locally for kind demos or publish them to your own registry if needed.
@@ -98,6 +103,22 @@ Inspect the registry-attached BuildKit SBOM:
 docker buildx imagetools inspect ghcr.io/dlahmad/fbg-operator:X.Y.Z \
   --format '{{ range (index .SBOM "linux/amd64").SPDX.packages }}{{ .name }} {{ .versionInfo }}{{ println }}{{ end }}'
 ```
+
+Scan the attached Cargo-aware CycloneDX attestation with Trivy:
+
+```sh
+docker run --rm gcr.io/projectsigstore/cosign:v3.0.3 verify-attestation \
+  --type cyclonedx \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/dlahmad/fluidbgoperator/.github/workflows/ci-cd.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  ghcr.io/dlahmad/fbg-operator:X.Y.Z > sbom.intoto.jsonl
+
+trivy sbom sbom.intoto.jsonl
+```
+
+`trivy image` and Trivy Operator scan the image/workload. They should not be
+treated as automatically using the attached Cargo-aware SBOM as the source of
+truth for Rust crates in static binaries.
 
 Helm chart:
 

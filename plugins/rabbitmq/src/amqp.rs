@@ -21,7 +21,7 @@ pub(crate) async fn declare_queue(
             queue.into(),
             QueueDeclareOptions {
                 passive: false,
-                durable: declaration.durable.unwrap_or(false),
+                durable: declaration.durable_or_default(),
                 exclusive: declaration.exclusive.unwrap_or(false),
                 auto_delete: declaration.auto_delete.unwrap_or(false),
                 nowait: false,
@@ -176,6 +176,23 @@ pub(crate) async fn connect_with_retry(amqp_url: &str) -> Result<Connection> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn queue_declaration_defaults_to_durable_for_rabbitmq_4_3() {
+        let declaration = QueueDeclarationConfig::default();
+
+        assert!(declaration.durable_or_default());
+    }
+
+    #[test]
+    fn queue_declaration_allows_explicit_transient_for_compatible_brokers() {
+        let declaration: QueueDeclarationConfig = serde_json::from_value(json!({
+            "durable": false
+        }))
+        .unwrap();
+
+        assert!(!declaration.durable_or_default());
+    }
 
     #[test]
     fn queue_arguments_include_user_properties() {

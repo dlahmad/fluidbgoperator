@@ -15,7 +15,7 @@ def publish(counter):
     connection = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
     try:
         ch = connection.channel()
-        ch.queue_declare(queue=OUTPUT_QUEUE, durable=False)
+        ch.queue_declare(queue=OUTPUT_QUEUE, durable=True)
         ch.confirm_delivery()
         order_id = f"demo-{INSTANCE}-{counter}"
         payload = {

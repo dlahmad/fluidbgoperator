@@ -44,6 +44,12 @@ pub(crate) struct QueueDeclarationConfig {
     pub(crate) arguments: BTreeMap<String, Value>,
 }
 
+impl QueueDeclarationConfig {
+    pub(crate) fn durable_or_default(&self) -> bool {
+        self.durable.unwrap_or(true)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ShadowQueueConfig {

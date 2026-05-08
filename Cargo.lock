@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-azure-servicebus"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-e2e-tests"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-http"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-operator"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-plugin-sdk"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "fluidbg-rabbitmq"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",

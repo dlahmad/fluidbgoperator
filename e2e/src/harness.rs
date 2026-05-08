@@ -47,7 +47,7 @@ async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
     let operator_image = format!("fluidbg/fbg-operator:{}", config.image_tag);
     let http_plugin_image = format!("fluidbg/fbg-plugin-http:{}", config.image_tag);
     let rabbitmq_plugin_image = format!("fluidbg/fbg-plugin-rabbitmq:{}", config.image_tag);
-    let rabbitmq_infra_image = "rabbitmq:4.2-management-alpine";
+    let rabbitmq_infra_image = "rabbitmq:4-management-alpine";
     prefetch_linux_rust_dependencies(config, &arch)?;
     command::run(
         &config
@@ -386,7 +386,7 @@ fn prefetch_linux_rust_dependencies(config: &E2eConfig, arch: &str) -> Result<()
             "CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse",
             "-w",
             "/work",
-            "rust:bookworm",
+            "rust:trixie",
             "bash",
             "-lc",
             "set -euo pipefail; export PATH=/usr/local/cargo/bin:$PATH; cargo fetch --locked",
