@@ -278,8 +278,8 @@ jobs:
           tmpdir="$(mktemp -d)"
           printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
           docker build --platform linux/amd64 -t rabbitmq:4-management-alpine "$tmpdir"
-          printf 'FROM nats:2.14-alpine\n' > "$tmpdir/Dockerfile"
-          docker build --platform linux/amd64 -t nats:2.14-alpine "$tmpdir"
+          printf 'FROM nats:2.14.1-alpine\n' > "$tmpdir/Dockerfile"
+          docker build --platform linux/amd64 -t nats:2.14.1-alpine "$tmpdir"
           rm -rf "$tmpdir"
           kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
@@ -290,7 +290,7 @@ jobs:
           kind load docker-image fluidbg/green-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/test-app:dev --name fluidbg-dev
           kind load docker-image rabbitmq:4-management-alpine --name fluidbg-dev
-          kind load docker-image nats:2.14-alpine --name fluidbg-dev
+          kind load docker-image nats:2.14.1-alpine --name fluidbg-dev
       - name: Run full e2e
         env:
           KIND_CLUSTER: fluidbg-dev

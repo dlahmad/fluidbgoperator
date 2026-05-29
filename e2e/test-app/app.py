@@ -158,7 +158,7 @@ def observe(test_id, inception_point):
         case = cases[test_id]
         case["observation"] = data
         case["observation_seen"] = True
-        if inception_point == "outgoing-results":
+        if inception_point in ("outgoing-results", "outgoing-nats-results"):
             payload = data.get("payload") or {}
             original = payload.get("originalMessage") or {}
             route = data.get("route")

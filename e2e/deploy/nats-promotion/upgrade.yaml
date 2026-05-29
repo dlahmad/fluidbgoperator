@@ -81,7 +81,7 @@ spec:
             - field: nats.body
               jsonPath: $.originalMessage.type
               matches: ^order$
-          notifyPath: /observe/{testId}/outgoing-results
+          notifyPath: /observe/{testId}/outgoing-nats-results
   test:
     name: test-container
     deployment:
