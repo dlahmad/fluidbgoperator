@@ -212,7 +212,8 @@ jobs:
   docs:
     name: Build GitHub Pages docs
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/')
+    needs: resolve
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/configure-pages@v6
@@ -225,14 +226,15 @@ jobs:
           source: docs
           destination: _site
       - uses: actions/upload-pages-artifact@v5
+        if: needs.resolve.outputs.is_release == 'true'
         with:
           path: _site
 
   deploy-docs:
     name: Deploy GitHub Pages
     runs-on: ubuntu-latest
-    needs: docs
-    if: github.ref == 'refs/heads/main'
+    needs: [resolve, docs]
+    if: needs.resolve.outputs.is_release == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

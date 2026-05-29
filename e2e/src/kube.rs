@@ -1030,7 +1030,12 @@ where
 {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if predicate().await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt_timeout = remaining.min(Duration::from_secs(10));
+        if tokio::time::timeout(attempt_timeout, predicate())
+            .await
+            .unwrap_or(false)
+        {
             return Ok(());
         }
         tokio::time::sleep(interval).await;
@@ -1049,7 +1054,13 @@ where
 {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Some(value) = provider().await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt_timeout = remaining.min(Duration::from_secs(10));
+        if let Some(value) = tokio::time::timeout(attempt_timeout, provider())
+            .await
+            .ok()
+            .flatten()
+        {
             return Ok(value);
         }
         tokio::time::sleep(interval).await;
@@ -1485,5 +1496,29 @@ queueDeclaration:
             yaml_value_at_path(yaml, "queueDeclaration.durable").unwrap(),
             "true"
         );
+    }
+
+    #[tokio::test]
+    async fn wait_until_times_out_when_poll_future_hangs() {
+        let started = Instant::now();
+        let result = wait_until(Duration::from_millis(30), Duration::from_millis(5), || {
+            std::future::pending::<bool>()
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn wait_for_value_times_out_when_poll_future_hangs() {
+        let started = Instant::now();
+        let result = wait_for_value(Duration::from_millis(30), Duration::from_millis(5), || {
+            std::future::pending::<Option<String>>()
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
