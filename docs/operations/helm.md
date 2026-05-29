@@ -36,6 +36,11 @@ operator will create, update, patch, or delete. See
 [Security Model](../reference/security-model.md) for the exact permission
 matrix and the effect of disabling `admissionPolicy.enabled`.
 
+This default requires Kubernetes v1.30 or newer because
+`ValidatingAdmissionPolicy` is stable as `admissionregistration.k8s.io/v1` from
+that version onward. Older clusters must either disable `admissionPolicy.enabled`
+or provide equivalent external admission control before installing the chart.
+
 ## Production Image Values
 
 The checked-in chart defaults point at this repository's GHCR packages. For a
