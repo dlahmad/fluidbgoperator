@@ -237,6 +237,9 @@ jobs:
     if: |
       needs.resolve.outputs.is_release == 'true' &&
       needs.kind-e2e.result == 'success'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
