@@ -199,6 +199,47 @@ builtinPlugins:
         certPath: ""
         keyPath: ""
         port: 9090
+  nats:
+    enabled: true
+    # Optional RUST_LOG for NATS manager and generated inceptor pods. Empty
+    # uses the binary default: warn,fluidbg_nats=info.
+    rustLog: ""
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      caCertPath: ""
+      insecureSkipVerify: false
+      certPath: ""
+      keyPath: ""
+      port: 9090
+    image:
+      repository: ghcr.io/dlahmad/fbg-plugin-nats
+      tag: ""
+    manager:
+      enabled: false
+      url: ""
+      urlSecretName: ""
+      urlSecretKey: nats-url
+      requireTls: false
+      caCertPath: ""
+      # Optional runtime URL passed to generated inceptor pods. Use this when
+      # the manager has an administrative NATS credential and inceptors should
+      # receive a more restricted credential.
+      inceptorUrl: ""
+      inceptorUrlSecretKey: nats-inceptor-url
+      volumes: []
+      volumeMounts: []
+      podAnnotations: {}
+      podLabels: {}
+      resources: {}
+      controlPlaneTls:
+        enabled: false
+        caCertPath: ""
+        insecureSkipVerify: false
+        certPath: ""
+        keyPath: ""
+        port: 9090
   azureServiceBus:
     enabled: true
     # Optional RUST_LOG for Azure Service Bus manager and generated inceptor

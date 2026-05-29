@@ -30,6 +30,7 @@ pages, then move into CRDs, plugins, or SDKs depending on what you are changing.
 |---|---|
 | [Built-In Plugins](plugins/index.md) | Plugin reference index and common page template. |
 | [RabbitMQ](plugins/rabbitmq.md) | Queue roles, RabbitMQ manager auth, queue declaration, drain, and cleanup behavior. |
+| [NATS JetStream](plugins/nats.md) | Subject/stream roles, NATS manager auth, stream configuration, drain, and cleanup behavior. |
 | [Azure Service Bus](plugins/azure-servicebus.md) | Service Bus roles, connection-string/workload-identity auth, queue declaration, drain, and cleanup behavior. |
 | [HTTP](plugins/http.md) | HTTP proxy/splitter/observer/mock/writer behavior, TLS, drain, and security boundaries. |
 | [HTTP Capabilities](plugins/http-capabilities.md) | Compact matrix of HTTP proxy modes, TLS support, and proxy limitations. |

@@ -1,0 +1,107 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: nats
+spec:
+  description: "NATS JetStream transport plugin"
+  image: ghcr.io/dlahmad/fbg-plugin-nats:latest
+  supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
+  roleConstraints:
+    mutuallyExclusive:
+      - roles: [duplicator, splitter, combiner, consumer]
+        reason: "Only one transport movement role can own the NATS polling loop for an inceptor. Observer and writer are additive."
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    activatePath: /activate
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+    trafficShiftPath: /traffic
+  features:
+    supportsProgressiveShifting: true
+  manager:
+    serviceName: fluidbg-nats-manager
+    namespace: fluidbg-system
+    port: 9090
+    preparePath: /manager/prepare
+    cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
+  fieldNamespaces: [nats]
+  configSchema:
+    type: object
+    additionalProperties: false
+    properties:
+      stream:
+        type: object
+        properties:
+          subjects: { type: array, items: { type: string } }
+          storage: { type: string, enum: [memory, file] }
+          retention: { type: string, enum: [limits, interest, workQueue] }
+          replicas: { type: integer, minimum: 1 }
+          maxMessages: { type: integer }
+          maxBytes: { type: integer }
+          maxAgeSeconds: { type: integer }
+          discard: { type: string, enum: [old, new] }
+          allowRollup: { type: boolean }
+          denyDelete: { type: boolean }
+          denyPurge: { type: boolean }
+          placement: { type: object }
+          persistenceMode: { type: string }
+          subjectTransform: { type: object }
+          metadata: { type: object }
+      duplicator:
+        type: object
+        properties:
+          inputSubject: { type: string }
+          queueGroup: { type: string }
+          greenInputSubject: { type: string }
+          blueInputSubject: { type: string }
+          greenInputSubjectEnvVar: { type: string }
+          blueInputSubjectEnvVar: { type: string }
+          greenQueueGroup: { type: string }
+          blueQueueGroup: { type: string }
+          greenQueueGroupEnvVar: { type: string }
+          blueQueueGroupEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      splitter:
+        type: object
+        properties:
+          inputSubject: { type: string }
+          queueGroup: { type: string }
+          greenInputSubject: { type: string }
+          blueInputSubject: { type: string }
+          greenInputSubjectEnvVar: { type: string }
+          blueInputSubjectEnvVar: { type: string }
+          greenQueueGroup: { type: string }
+          blueQueueGroup: { type: string }
+          greenQueueGroupEnvVar: { type: string }
+          blueQueueGroupEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      combiner:
+        type: object
+        properties:
+          outputSubject: { type: string }
+          greenOutputSubject: { type: string }
+          blueOutputSubject: { type: string }
+          greenOutputSubjectEnvVar: { type: string }
+          blueOutputSubjectEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      writer:
+        type: object
+        properties:
+          targetSubject: { type: string }
+      consumer:
+        type: object
+        properties:
+          inputSubject: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  inceptor:
+    ports:
+      - name: health
+        containerPort: 9090

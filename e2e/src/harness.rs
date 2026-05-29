@@ -56,7 +56,9 @@ async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
     let operator_image = format!("fluidbg/fbg-operator:{}", config.image_tag);
     let http_plugin_image = format!("fluidbg/fbg-plugin-http:{}", config.image_tag);
     let rabbitmq_plugin_image = format!("fluidbg/fbg-plugin-rabbitmq:{}", config.image_tag);
+    let nats_plugin_image = format!("fluidbg/fbg-plugin-nats:{}", config.image_tag);
     let rabbitmq_infra_image = "rabbitmq:4-management-alpine";
+    let nats_infra_image = "nats:2.14.1-alpine";
     prefetch_linux_rust_dependencies(config, &arch)?;
     command::run(
         &config
@@ -75,6 +77,22 @@ async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
             &format!("linux/{arch}"),
             "-t",
             &operator_image,
+            &root,
+        ],
+    )?;
+    command::run(
+        "docker",
+        [
+            "build",
+            "--platform",
+            &format!("linux/{arch}"),
+            "-f",
+            &config
+                .root_dir
+                .join("plugins/nats/Dockerfile")
+                .to_string_lossy(),
+            "-t",
+            &nats_plugin_image,
             &root,
         ],
     )?;
@@ -138,6 +156,7 @@ async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
         ],
     )?;
     build_single_platform_alias(rabbitmq_infra_image, rabbitmq_infra_image, &arch)?;
+    build_single_platform_alias(nats_infra_image, nats_infra_image, &arch)?;
     if config.state_store == StateStore::Postgres {
         command::run(
             "docker",
@@ -155,10 +174,12 @@ async fn build_and_load_images(config: &E2eConfig, kube: &Kube) -> Result<()> {
             operator_image.as_str(),
             http_plugin_image.as_str(),
             rabbitmq_plugin_image.as_str(),
+            nats_plugin_image.as_str(),
             "fluidbg/blue-app:dev",
             "fluidbg/green-app:dev",
             "fluidbg/test-app:dev",
             rabbitmq_infra_image,
+            nats_infra_image,
         ] {
             command::run("kind", ["load", "docker-image", image, "--name", &cluster])?;
         }
@@ -214,6 +235,8 @@ async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
         .await?;
     kube.apply_file(&config.deploy_file("infra/rabbitmq.yaml"))
         .await?;
+    kube.apply_file(&config.deploy_file("infra/nats.yaml"))
+        .await?;
     if config.state_store == StateStore::Postgres {
         kube.apply_file(&config.deploy_file("infra/postgres.yaml"))
             .await?;
@@ -233,6 +256,8 @@ async fn deploy_infrastructure(config: &E2eConfig, kube: &Kube) -> Result<()> {
         Duration::from_secs(120),
     )
     .await?;
+    kube.rollout_status("nats", &config.system_namespace, Duration::from_secs(120))
+        .await?;
     if config.state_store == StateStore::Postgres {
         kube.rollout_status(
             "postgres",
@@ -251,8 +276,12 @@ async fn apply_tls_fixture(config: &E2eConfig, kube: &Kube) -> Result<()> {
         format!("fluidbg-operator.{}.svc", config.system_namespace),
         format!("fluidbg-rabbitmq-manager.{}", config.system_namespace),
         format!("fluidbg-rabbitmq-manager.{}.svc", config.system_namespace),
+        format!("fluidbg-nats-manager.{}", config.system_namespace),
+        format!("fluidbg-nats-manager.{}.svc", config.system_namespace),
         format!("rabbitmq.{}", config.system_namespace),
         format!("rabbitmq.{}.svc", config.system_namespace),
+        format!("nats.{}", config.system_namespace),
+        format!("nats.{}.svc", config.system_namespace),
         format!("httpbin.{}", config.system_namespace),
         format!("httpbin.{}.svc", config.system_namespace),
         format!("*.{}", config.system_namespace),
@@ -353,6 +382,8 @@ async fn reset_previous_resources(config: &E2eConfig, kube: &Kube) -> Result<()>
     .await?;
     kube.delete_labeled_resources(&config.namespace, "fluidbg.io/name=order-processor")
         .await?;
+    kube.delete_labeled_resources(&config.namespace, "fluidbg.io/name=nats-processor")
+        .await?;
     kube.delete_named(
         "configmap",
         "fluidbg-config-incoming-orders",
@@ -413,9 +444,17 @@ async fn install_operator(config: &E2eConfig, kube: &Kube) -> Result<()> {
         Duration::from_secs(120),
     )
     .await?;
+    kube.rollout_status(
+        "fluidbg-nats-manager",
+        &config.system_namespace,
+        Duration::from_secs(120),
+    )
+    .await?;
     kube.wait_exists("inceptionplugin", "http", "", Duration::from_secs(60))
         .await?;
     kube.wait_exists("inceptionplugin", "rabbitmq", "", Duration::from_secs(60))
+        .await?;
+    kube.wait_exists("inceptionplugin", "nats", "", Duration::from_secs(60))
         .await
 }
 

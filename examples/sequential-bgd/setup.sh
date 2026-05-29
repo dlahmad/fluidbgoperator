@@ -14,6 +14,7 @@ OPERATOR_IMAGE_TAG="${OPERATOR_IMAGE_TAG:-dev}"
 BUILD_EXAMPLE_IMAGES="${BUILD_EXAMPLE_IMAGES:-1}"
 BUILD_OPERATOR_IMAGES="${BUILD_OPERATOR_IMAGES:-1}"
 RABBITMQ_IMAGE="${RABBITMQ_IMAGE:-rabbitmq:4-management-alpine}"
+NATS_IMAGE="${NATS_IMAGE:-nats:2.14.1-alpine}"
 if [ -z "${OPERATOR_IMAGE_PULL_POLICY:-}" ]; then
     if [ "$BUILD_OPERATOR_IMAGES" = "1" ] || [ "$OPERATOR_IMAGE_REGISTRY" != "ghcr.io/dlahmad" ]; then
         OPERATOR_IMAGE_PULL_POLICY="Never"
@@ -56,6 +57,9 @@ trap 'rm -rf "$tmpdir"' EXIT
 printf 'FROM %s\n' "$RABBITMQ_IMAGE" > "$tmpdir/Dockerfile"
 docker build --platform "$PLATFORM" -t "$RABBITMQ_IMAGE" "$tmpdir"
 kind load docker-image "$RABBITMQ_IMAGE" --name "$KIND_CLUSTER"
+printf 'FROM %s\n' "$NATS_IMAGE" > "$tmpdir/Dockerfile"
+docker build --platform "$PLATFORM" -t "$NATS_IMAGE" "$tmpdir"
+kind load docker-image "$NATS_IMAGE" --name "$KIND_CLUSTER"
 
 if [ "$BUILD_OPERATOR_IMAGES" = "1" ]; then
     "$ROOT_DIR/scripts/build-linux-binaries.sh" --arch "$KIND_ARCH"
@@ -68,6 +72,7 @@ if [ "$BUILD_OPERATOR_IMAGES" = "1" ]; then
         "$OPERATOR_IMAGE_REGISTRY/fbg-operator:$OPERATOR_IMAGE_TAG" \
         "$OPERATOR_IMAGE_REGISTRY/fbg-plugin-http:$OPERATOR_IMAGE_TAG" \
         "$OPERATOR_IMAGE_REGISTRY/fbg-plugin-rabbitmq:$OPERATOR_IMAGE_TAG" \
+        "$OPERATOR_IMAGE_REGISTRY/fbg-plugin-nats:$OPERATOR_IMAGE_TAG" \
         "$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus:$OPERATOR_IMAGE_TAG"; do
         kind load docker-image "$image" --name "$KIND_CLUSTER"
     done
@@ -85,10 +90,13 @@ helm_args=(
     --set "operator.image.pullPolicy=$OPERATOR_IMAGE_PULL_POLICY"
     --set "builtinPlugins.http.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-http"
     --set "builtinPlugins.rabbitmq.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-rabbitmq"
+    --set "builtinPlugins.nats.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-nats"
     --set "builtinPlugins.azureServiceBus.image.repository=$OPERATOR_IMAGE_REGISTRY/fbg-plugin-azure-servicebus"
     --set "builtinPlugins.rabbitmq.manager.amqpUrl=amqp://fluidbg:fluidbg@rabbitmq.$NAMESPACE:5672/%2f"
     --set "builtinPlugins.rabbitmq.manager.managementUrl=http://rabbitmq.$NAMESPACE:15672"
     --set "builtinPlugins.rabbitmq.manager.managementAllowInsecure=true"
+    --set "builtinPlugins.nats.manager.enabled=true"
+    --set "builtinPlugins.nats.manager.url=nats://nats.$NAMESPACE:4222"
     --set "builtinPlugins.namespaces[0]=$NAMESPACE"
 )
 
@@ -96,7 +104,9 @@ helm "${helm_args[@]}"
 
 kubectl rollout status "deploy/fluidbg-fluidbg-operator" -n "$SYSTEM_NAMESPACE" --timeout=180s
 kubectl rollout status "deploy/fluidbg-rabbitmq-manager" -n "$SYSTEM_NAMESPACE" --timeout=180s
+kubectl rollout status "deploy/fluidbg-nats-manager" -n "$SYSTEM_NAMESPACE" --timeout=180s
 kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=nats inceptionplugin/nats --timeout=60s
 kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http --timeout=60s
 
 cat <<EOF

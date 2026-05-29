@@ -32,7 +32,7 @@ env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: ghcr.io
-  IMAGE_NAMES: fbg-operator fbg-plugin-http fbg-plugin-rabbitmq fbg-plugin-azure-servicebus
+  IMAGE_NAMES: fbg-operator fbg-plugin-http fbg-plugin-rabbitmq fbg-plugin-azure-servicebus fbg-plugin-nats
 
 jobs:
   resolve:
@@ -189,7 +189,8 @@ jobs:
             fluidbg-operator \
             fluidbg-http \
             fluidbg-rabbitmq \
-            fluidbg-azure-servicebus
+            fluidbg-azure-servicebus \
+            fluidbg-nats
           sha256sum "dist/release/fluidbg-${{ needs.resolve.outputs.version }}-linux-${{ matrix.arch }}.tar.gz" \
             > "dist/release/fluidbg-${{ needs.resolve.outputs.version }}-linux-${{ matrix.arch }}.tar.gz.sha256"
       - name: Upload raw executable artifacts
@@ -201,6 +202,7 @@ jobs:
             dist/fluidbg-http
             dist/fluidbg-rabbitmq
             dist/fluidbg-azure-servicebus
+            dist/fluidbg-nats
       - name: Upload release executable archive
         uses: actions/upload-artifact@v7
         with:
@@ -268,7 +270,7 @@ jobs:
       - name: Build and load e2e images
         run: |
           set -euo pipefail
-          chmod +x dist/fluidbg-operator dist/fluidbg-http dist/fluidbg-rabbitmq dist/fluidbg-azure-servicebus
+          chmod +x dist/fluidbg-operator dist/fluidbg-http dist/fluidbg-rabbitmq dist/fluidbg-azure-servicebus dist/fluidbg-nats
           ./scripts/build-images.sh --tag dev --platform linux/amd64
           docker build -t fluidbg/blue-app:dev e2e/blue-app
           docker build -t fluidbg/green-app:dev e2e/green-app
@@ -276,15 +278,19 @@ jobs:
           tmpdir="$(mktemp -d)"
           printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
           docker build --platform linux/amd64 -t rabbitmq:4-management-alpine "$tmpdir"
+          printf 'FROM nats:2.14-alpine\n' > "$tmpdir/Dockerfile"
+          docker build --platform linux/amd64 -t nats:2.14-alpine "$tmpdir"
           rm -rf "$tmpdir"
           kind load docker-image fluidbg/fbg-operator:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-http:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-rabbitmq:dev --name fluidbg-dev
           kind load docker-image fluidbg/fbg-plugin-azure-servicebus:dev --name fluidbg-dev
+          kind load docker-image fluidbg/fbg-plugin-nats:dev --name fluidbg-dev
           kind load docker-image fluidbg/blue-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/green-app:dev --name fluidbg-dev
           kind load docker-image fluidbg/test-app:dev --name fluidbg-dev
           kind load docker-image rabbitmq:4-management-alpine --name fluidbg-dev
+          kind load docker-image nats:2.14-alpine --name fluidbg-dev
       - name: Run full e2e
         env:
           KIND_CLUSTER: fluidbg-dev
@@ -320,7 +326,7 @@ jobs:
           name: fluidbg-dist-${{ matrix.arch }}
           path: dist
       - name: Prepare executable artifacts
-        run: chmod +x dist/fluidbg-operator dist/fluidbg-http dist/fluidbg-rabbitmq dist/fluidbg-azure-servicebus
+        run: chmod +x dist/fluidbg-operator dist/fluidbg-http dist/fluidbg-rabbitmq dist/fluidbg-azure-servicebus dist/fluidbg-nats
       - name: Resolve image namespace
         id: image_namespace
         run: echo "value=${{ needs.resolve.outputs.image_namespace }}" >> "$GITHUB_OUTPUT"
@@ -420,6 +426,7 @@ jobs:
           - image: fbg-plugin-http
           - image: fbg-plugin-rabbitmq
           - image: fbg-plugin-azure-servicebus
+          - image: fbg-plugin-nats
     steps:
       - uses: docker/setup-buildx-action@v4
       - name: Download Rust SBOMs

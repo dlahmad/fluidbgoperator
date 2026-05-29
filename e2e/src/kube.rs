@@ -1355,6 +1355,14 @@ fn install_operator_chart(config: &E2eConfig) -> Result<()> {
         "--set".to_string(),
         "builtinPlugins.rabbitmq.manager.managementVhost=/".to_string(),
         "--set".to_string(),
+        "builtinPlugins.nats.image.repository=fluidbg/fbg-plugin-nats".to_string(),
+        "--set".to_string(),
+        format!("builtinPlugins.nats.image.tag={}", config.image_tag),
+        "--set".to_string(),
+        "builtinPlugins.nats.manager.enabled=true".to_string(),
+        "--set".to_string(),
+        "builtinPlugins.nats.manager.url=nats://nats.fluidbg-system:4222".to_string(),
+        "--set".to_string(),
         "builtinPlugins.azureServiceBus.enabled=false".to_string(),
     ];
     let tls_values_file = if config.full_tls {
@@ -1455,6 +1463,36 @@ builtinPlugins:
     manager:
       amqpCaCertPath: /tls/ca.crt
       managementCaCertPath: /tls/ca.crt
+      controlPlaneTls:
+        enabled: true
+        certPath: /tls/tls.crt
+        keyPath: /tls/tls.key
+        caCertPath: /tls/ca.crt
+        port: 9090
+      volumes:
+        - name: fluidbg-e2e-tls
+          secret:
+            secretName: fluidbg-e2e-tls
+      volumeMounts:
+        - name: fluidbg-e2e-tls
+          mountPath: /tls
+          readOnly: true
+  nats:
+    controlPlaneTls:
+      enabled: true
+      certPath: /tls/tls.crt
+      keyPath: /tls/tls.key
+      caCertPath: /tls/ca.crt
+      port: 9090
+    inceptorVolumes:
+      - name: fluidbg-e2e-tls
+        secret:
+          secretName: fluidbg-e2e-tls
+    inceptorVolumeMounts:
+      - name: fluidbg-e2e-tls
+        mountPath: /tls
+        readOnly: true
+    manager:
       controlPlaneTls:
         enabled: true
         certPath: /tls/tls.crt

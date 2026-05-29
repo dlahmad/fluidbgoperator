@@ -52,3 +52,7 @@ app.kubernetes.io/component: operator
 {{- define "fluidbg.rabbitmqManagerSecretName" -}}
 {{- default (printf "%s-rabbitmq-manager" (include "fluidbg.fullname" .)) .Values.builtinPlugins.rabbitmq.manager.amqpUrlSecretName -}}
 {{- end -}}
+
+{{- define "fluidbg.natsManagerSecretName" -}}
+{{- default (printf "%s-nats-manager" (include "fluidbg.fullname" .)) .Values.builtinPlugins.nats.manager.urlSecretName -}}
+{{- end -}}

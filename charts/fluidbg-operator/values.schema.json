@@ -89,6 +89,7 @@
         "install": { "type": "boolean" },
         "http": { "$ref": "#/$defs/builtinPlugin" },
         "rabbitmq": { "$ref": "#/$defs/builtinPlugin" },
+        "nats": { "$ref": "#/$defs/builtinPlugin" },
         "azureServiceBus": { "$ref": "#/$defs/builtinPlugin" }
       }
     },
@@ -206,6 +207,13 @@
             "amqpCaCertPath": { "type": "string" },
             "managementCaCertPath": { "type": "string" },
             "managementInsecureSkipVerify": { "type": "boolean" },
+            "url": { "type": "string" },
+            "urlSecretName": { "type": "string" },
+            "urlSecretKey": { "type": "string" },
+            "requireTls": { "type": "boolean" },
+            "caCertPath": { "type": "string" },
+            "inceptorUrl": { "type": "string" },
+            "inceptorUrlSecretKey": { "type": "string" },
             "controlPlaneTls": { "$ref": "#/$defs/controlPlaneTls" },
             "volumes": {
               "type": "array",

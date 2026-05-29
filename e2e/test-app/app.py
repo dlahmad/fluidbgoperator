@@ -3,16 +3,21 @@ import os
 import threading
 import time
 import uuid
+import asyncio
 
+import nats
 import pika
 import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+TRANSPORT = os.environ.get("TRANSPORT", "rabbitmq")
 AMQP_URL = os.environ.get("AMQP_URL", "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/")
+NATS_URL = os.environ.get("NATS_URL", "nats://nats.fluidbg-system:4222")
 INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
+INPUT_SUBJECT = os.environ.get("INPUT_SUBJECT", INPUT_QUEUE)
 HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://localhost:8081")
 PORT = int(os.environ.get("PORT", "8080"))
 STARTUP_DELAY_SECONDS = int(os.environ.get("STARTUP_DELAY_SECONDS", "0"))
@@ -101,6 +106,21 @@ def publish_json(queue, payload):
         connection.close()
 
 
+def publish_transport(payload):
+    if TRANSPORT == "nats":
+        async def publish():
+            nc = await nats.connect(NATS_URL)
+            try:
+                await nc.publish(INPUT_SUBJECT, json.dumps(payload).encode())
+                await nc.flush()
+            finally:
+                await nc.close()
+
+        asyncio.run(publish())
+    else:
+        publish_json(INPUT_QUEUE, payload)
+
+
 # ── Flask endpoints ──────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -117,7 +137,7 @@ def trigger():
     # publish a test message to the input queue so the blue app processes it
     msg = {"orderId": test_id, "type": "order", "action": "process"}
     try:
-        publish_json(INPUT_QUEUE, msg)
+        publish_transport(msg)
     except Exception:
         app.logger.exception("failed to publish trigger message")
         return jsonify({"testId": test_id, "status": "triggered", "publish_error": "publish failed"}), 502

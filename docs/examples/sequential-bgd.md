@@ -8,7 +8,8 @@ The `examples/sequential-bgd` folder contains a small end-to-end order flow
 demo. It is intentionally shaped like a normal service topology instead of a
 test-only toy:
 
-- a producer publishes incrementing order messages to RabbitMQ
+- a producer publishes incrementing order messages to RabbitMQ by default; the
+  same images also support NATS with `TRANSPORT=nats`
 - the input inceptor progressively routes each order to either the current app
   or the candidate app
 - the selected application instance consumes the order
@@ -89,7 +90,7 @@ inspecting resources.
 ## One-Time Setup
 
 For a local kind demo, run the setup helper. It builds and loads the example
-images, preloads the disposable RabbitMQ image, installs the operator and
+images, preloads the disposable RabbitMQ and NATS images, installs the operator and
 built-in plugins with Helm, and creates `fluidbg-demo`. It does not apply the
 BGD manifests, so you can apply the base and upgrade YAMLs manually at will.
 
@@ -123,6 +124,9 @@ tmpdir="$(mktemp -d)"
 printf 'FROM rabbitmq:4-management-alpine\n' > "$tmpdir/Dockerfile"
 docker build --platform "linux/$KIND_ARCH" -t rabbitmq:4-management-alpine "$tmpdir"
 kind load docker-image rabbitmq:4-management-alpine --name "$KIND_CLUSTER"
+printf 'FROM nats:2.14.1-alpine\n' > "$tmpdir/Dockerfile"
+docker build --platform "linux/$KIND_ARCH" -t nats:2.14.1-alpine "$tmpdir"
+kind load docker-image nats:2.14.1-alpine --name "$KIND_CLUSTER"
 rm -rf "$tmpdir"
 ```
 
@@ -156,19 +160,20 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
   -f examples/sequential-bgd/operator-values.yaml
 
 kubectl wait --for=jsonpath='{.metadata.name}'=rabbitmq inceptionplugin/rabbitmq --timeout=60s
+kubectl wait --for=jsonpath='{.metadata.name}'=nats inceptionplugin/nats --timeout=60s
 kubectl wait --for=jsonpath='{.metadata.name}'=http inceptionplugin/http --timeout=60s
 ```
 
-`operator-values.yaml` enables the RabbitMQ manager and explicitly sets
-`managementAllowInsecure: true` because the disposable demo broker exposes
-`http://rabbitmq.fluidbg-demo:15672`. If you point the manager at an HTTPS
-RabbitMQ management endpoint, remove that flag.
+`operator-values.yaml` enables the RabbitMQ and NATS managers. It explicitly
+sets `managementAllowInsecure: true` because the disposable demo RabbitMQ broker
+exposes `http://rabbitmq.fluidbg-demo:15672`. If you point the manager at an
+HTTPS RabbitMQ management endpoint, remove that flag.
 
 ## Run The Demo
 
 Apply the initial version. This manifest also installs the demo infrastructure
 containers into the cluster: the `fluidbg-demo` namespace, the disposable
-RabbitMQ broker, the downstream sink, the producer, and the initial
+RabbitMQ broker, NATS server, the downstream sink, the producer, and the initial
 BlueGreenDeployment.
 
 ```bash

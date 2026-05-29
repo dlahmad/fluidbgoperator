@@ -31,7 +31,7 @@ mkdir -p "$OUTPUT_DIR"
 
 cleanup_generated() {
     local dir
-    for dir in "$ROOT_DIR/operator" "$ROOT_DIR/plugins/http" "$ROOT_DIR/plugins/rabbitmq" "$ROOT_DIR/plugins/azure_servicebus"; do
+    for dir in "$ROOT_DIR/operator" "$ROOT_DIR/plugins/http" "$ROOT_DIR/plugins/rabbitmq" "$ROOT_DIR/plugins/azure_servicebus" "$ROOT_DIR/plugins/nats"; do
         find "$dir" -maxdepth 1 -type f -name '*_bin_*-unknown-linux-musl.cdx.json' -delete
     done
 }
@@ -59,6 +59,8 @@ generate_for_target() {
         "fbg-plugin-rabbitmq-${VERSION}-linux-${arch}.cyclonedx.json"
     move_bom "plugins/azure_servicebus/fluidbg-azure-servicebus_bin_${target}.cdx.json" \
         "fbg-plugin-azure-servicebus-${VERSION}-linux-${arch}.cyclonedx.json"
+    move_bom "plugins/nats/fluidbg-nats_bin_${target}.cdx.json" \
+        "fbg-plugin-nats-${VERSION}-linux-${arch}.cyclonedx.json"
 }
 
 move_bom() {

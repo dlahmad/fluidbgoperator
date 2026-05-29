@@ -21,7 +21,7 @@ flowchart TD
     START["Run e2e/run-test.sh"]
     IMG["Optional BUILD_IMAGES=1<br/>build musl binaries and images"]
     LOAD["Load images into kind"]
-    INFRA["Apply RabbitMQ/httpbin<br/>optional Postgres<br/>install CRDs, operator, plugins with Helm"]
+    INFRA["Apply RabbitMQ/NATS/httpbin<br/>optional Postgres<br/>install CRDs, operator, plugins with Helm"]
     BOOT["Bootstrap BGD<br/>first green deployment"]
     PASS["Apply upgrade BGD<br/>send messages and HTTP calls"]
     VERIFY["Test container observes<br/>messages and REST calls"]
@@ -46,7 +46,10 @@ flowchart TD
   to the original caller.
 - Verifier boundary auth for observer callbacks, HTTP mock calls, and operator
   `verifyPath` polling with per-inception bearer tokens.
-- Full TLS mode for the built-in RabbitMQ path: operator API HTTPS,
+- NATS JetStream promotion through the same app/verifier flow used by RabbitMQ,
+  proving the NATS plugin manager, inceptors, stream creation, observation, and
+  cleanup path.
+- Full TLS mode for the built-in plugin control-plane path: operator API HTTPS,
   operator-to-manager HTTPS, operator-to-inceptor HTTPS, RabbitMQ management
   HTTPS, and RabbitMQ AMQPS with a generated private CA.
 - Multiple inception points in one test case, where both expected HTTP calls and expected output messages must be observed before success.

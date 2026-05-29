@@ -121,6 +121,27 @@ builtinPlugins:
       certPath: ""
       keyPath: ""
       caCertPath: ""
+  nats:
+    image:
+      repository: ghcr.io/dlahmad/fbg-plugin-nats
+      tag: ""
+    inceptorVolumes: []
+    inceptorVolumeMounts: []
+    manager:
+      enabled: false
+      urlSecretName: ""
+      urlSecretKey: nats-url
+      inceptorUrl: ""
+      inceptorUrlSecretKey: nats-inceptor-url
+      requireTls: false
+      caCertPath: ""
+      volumes: []
+      volumeMounts: []
+    controlPlaneTls:
+      enabled: false
+      certPath: ""
+      keyPath: ""
+      caCertPath: ""
   azureServiceBus:
     inceptorWorkloadIdentity:
       enabled: false

@@ -2,14 +2,20 @@ import json
 import os
 import threading
 import time
+import asyncio
 
+import nats
 import pika
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
 AMQP_URL = os.environ.get("AMQP_URL", "amqp://fluidbg:fluidbg@rabbitmq:5672/")
+TRANSPORT = os.environ.get("TRANSPORT", "rabbitmq")
+NATS_URL = os.environ.get("NATS_URL", "nats://nats:4222")
 INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "results")
+INPUT_SUBJECT = os.environ.get("INPUT_SUBJECT", INPUT_QUEUE)
+NATS_QUEUE_GROUP = os.environ.get("NATS_QUEUE_GROUP", "order-flow-sink")
 PORT = int(os.environ.get("PORT", "8080"))
 
 cases = {}
@@ -247,7 +253,55 @@ def consume_results():
             time.sleep(3)
 
 
-threading.Thread(target=consume_results, daemon=True).start()
+def record_output(payload):
+    order_id = payload.get("orderId", "unknown")
+    prefix = str(payload.get("result", "")).split("-", 1)[0]
+    with lock:
+        record = case(order_id)
+        record["sequence"] = payload.get("sequence", record.get("sequence"))
+        record["output"] = payload
+        record["outputEvents"].append(payload)
+        record["outputByPrefix"][prefix] = payload
+        recompute(record)
+        print(
+            f"OUTPUT sequence={record['sequence']} order={order_id} result={payload.get('result')} complete={complete_for_prefix(record, prefix)}",
+            flush=True,
+        )
+        print_gap_summary(prefix)
+
+
+async def consume_nats_results():
+    while True:
+        try:
+            nc = await nats.connect(NATS_URL)
+
+            async def callback(msg):
+                try:
+                    record_output(json.loads(msg.data.decode()))
+                except Exception as exc:
+                    print(f"sink nats output consume failed: {exc}", flush=True)
+
+            await nc.subscribe(INPUT_SUBJECT, queue=NATS_QUEUE_GROUP, cb=callback)
+            print(
+                "sink acts as normal downstream demo service: "
+                f"HTTP /audit plus NATS consumer for {INPUT_SUBJECT}",
+                flush=True,
+            )
+            while True:
+                await asyncio.sleep(3600)
+        except Exception as exc:
+            print(f"sink nats consumer error: {exc}; retrying", flush=True)
+            await asyncio.sleep(3)
+
+
+def start_consumer():
+    if TRANSPORT == "nats":
+        threading.Thread(target=lambda: asyncio.run(consume_nats_results()), daemon=True).start()
+    else:
+        threading.Thread(target=consume_results, daemon=True).start()
+
+
+start_consumer()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)

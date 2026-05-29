@@ -28,5 +28,6 @@ Each plugin page uses the same structure:
 | Plugin | Purpose | Reference |
 |---|---|---|
 | `rabbitmq` | Queue fanout, weighted splitting, output combining, observation, writing, and consumption for RabbitMQ. | [RabbitMQ Plugin](rabbitmq.md) |
+| `nats` | JetStream subject fanout, weighted splitting, output combining, observation, writing, and consumption for NATS. | [NATS JetStream Plugin](nats.md) |
 | `azure-servicebus` | Queue fanout, weighted splitting, output combining, observation, writing, and consumption for Azure Service Bus. | [Azure Service Bus Plugin](azure-servicebus.md) |
 | `http` | HTTP proxy/splitter, observer/mock, and writer behavior. | [HTTP Plugin](http.md) |

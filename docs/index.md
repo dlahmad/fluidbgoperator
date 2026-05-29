@@ -45,7 +45,7 @@ Kubernetes v1.30 onward.
 ## What Ships
 
 - A Rust Kubernetes operator.
-- Built-in RabbitMQ, Azure Service Bus, and HTTP inception plugins.
+- Built-in RabbitMQ, NATS JetStream, Azure Service Bus, and HTTP inception plugins.
 - Versioned CRDs under `fluidbg.io/v1alpha1`.
 - A versioned plugin API under `fluidbg.plugin/v1alpha1`.
 - A Rust plugin SDK plus OpenAPI specs for generated SDKs in other languages.

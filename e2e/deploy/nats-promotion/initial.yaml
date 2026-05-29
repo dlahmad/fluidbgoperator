@@ -1,0 +1,45 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-nats
+  namespace: fluidbg-test
+spec:
+  selector:
+    matchLabels:
+      fluidbg.io/name: nats-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: nats-processor-green
+      template:
+        metadata:
+          labels:
+            app: nats-processor-green
+            fluidbg.io/name: nats-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/green-app:dev
+              imagePullPolicy: Never
+              env:
+                - name: TRANSPORT
+                  value: nats
+                - name: NATS_URL
+                  value: nats://nats.fluidbg-system:4222
+                - name: INPUT_SUBJECT
+                  value: orders-nats
+                - name: OUTPUT_SUBJECT
+                  value: results-nats
+                - name: HTTP_UPSTREAM
+                  value: http://httpbin.fluidbg-system/post
+  inceptionPoints: []
+  promotion:
+    data:
+      minTestCases: 1
+      successRate: 1.0
+      timeoutSeconds: 120
+    strategy:
+      type: hard-switch

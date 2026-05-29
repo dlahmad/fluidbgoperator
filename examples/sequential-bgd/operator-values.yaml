@@ -14,3 +14,7 @@ builtinPlugins:
       managementUsername: fluidbg
       managementPassword: fluidbg
       managementVhost: /
+  nats:
+    manager:
+      enabled: true
+      url: nats://nats.fluidbg-demo:4222

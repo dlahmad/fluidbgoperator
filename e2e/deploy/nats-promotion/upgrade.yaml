@@ -1,0 +1,134 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-nats
+  namespace: fluidbg-test
+spec:
+  selector:
+    matchLabels:
+      fluidbg.io/name: nats-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: nats-processor-blue
+      template:
+        metadata:
+          labels:
+            app: nats-processor-blue
+            fluidbg.io/name: nats-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/blue-app:dev
+              imagePullPolicy: Never
+              env:
+                - name: TRANSPORT
+                  value: nats
+                - name: NATS_URL
+                  value: nats://nats.fluidbg-system:4222
+                - name: INPUT_SUBJECT
+                  value: orders-nats
+                - name: OUTPUT_SUBJECT
+                  value: results-nats
+                - name: HTTP_UPSTREAM
+                  value: http://httpbin.fluidbg-system/post
+  inceptionPoints:
+    - name: incoming-nats-orders
+      pluginRef:
+        name: nats
+      roles:
+        - duplicator
+        - observer
+      drain:
+        maxWaitSeconds: 20
+      config:
+        duplicator:
+          inputSubject: orders-nats
+          greenInputSubjectEnvVar: INPUT_SUBJECT
+          blueInputSubjectEnvVar: INPUT_SUBJECT
+          temporarySubjectIdentifier: incoming-nats-orders
+        observer:
+          testId:
+            field: nats.body
+            jsonPath: $.orderId
+          match:
+            - field: nats.body
+              jsonPath: $.type
+              matches: ^order$
+          notifyPath: /observe/{testId}/incoming-nats-orders
+    - name: outgoing-nats-results
+      pluginRef:
+        name: nats
+      roles:
+        - combiner
+        - observer
+      drain:
+        maxWaitSeconds: 20
+      config:
+        combiner:
+          outputSubject: results-nats
+          greenOutputSubjectEnvVar: OUTPUT_SUBJECT
+          blueOutputSubjectEnvVar: OUTPUT_SUBJECT
+          temporarySubjectIdentifier: outgoing-nats-results
+        observer:
+          testId:
+            field: nats.body
+            jsonPath: $.orderId
+          match:
+            - field: nats.body
+              jsonPath: $.originalMessage.type
+              matches: ^order$
+          notifyPath: /observe/{testId}/outgoing-results
+  test:
+    name: test-container
+    deployment:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: nats-test-container
+      template:
+        metadata:
+          labels:
+            app: nats-test-container
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: test-container
+              image: fluidbg/test-app:dev
+              imagePullPolicy: Never
+              ports:
+                - containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                periodSeconds: 1
+                failureThreshold: 60
+              env:
+                - name: PORT
+                  value: "8080"
+                - name: TRANSPORT
+                  value: nats
+                - name: NATS_URL
+                  value: nats://nats.fluidbg-system:4222
+                - name: INPUT_SUBJECT
+                  value: orders-nats
+    service:
+      selector:
+        app: nats-test-container
+      ports:
+        - port: 8080
+          targetPort: 8080
+    dataVerification:
+      verifyPath: /result/{testId}
+      timeoutSeconds: 120
+  promotion:
+    data:
+      minTestCases: 3
+      successRate: 1.0
+      timeoutSeconds: 180
+    strategy:
+      type: hard-switch

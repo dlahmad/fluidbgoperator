@@ -280,6 +280,192 @@ spec:
         - nameFromConfig: writeEnvVar
           valueTemplate: "{{`{{writeUrl}}`}}"
 {{- end }}
+{{- if $root.Values.builtinPlugins.nats.enabled }}
+---
+apiVersion: fluidbg.io/v1alpha1
+kind: InceptionPlugin
+metadata:
+  name: nats
+  labels:
+    {{- include "fluidbg.labels" $root | nindent 4 }}
+spec:
+  description: "NATS JetStream transport plugin"
+  image: "{{ $root.Values.builtinPlugins.nats.image.repository }}:{{ $root.Values.builtinPlugins.nats.image.tag | default $root.Values.global.imageTag | default $root.Chart.AppVersion }}"
+  supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
+  roleConstraints:
+    mutuallyExclusive:
+      - roles: [duplicator, splitter, combiner, consumer]
+        reason: "Only one transport movement role can own the NATS JetStream polling loop for an inceptor. Observer and writer are additive."
+  topology: standalone
+  lifecycle:
+    preparePath: /prepare
+    activatePath: /activate
+    drainPath: /drain
+    drainStatusPath: /drain-status
+    cleanupPath: /cleanup
+    trafficShiftPath: /traffic
+  features:
+    supportsProgressiveShifting: true
+  {{- if $root.Values.builtinPlugins.nats.manager.enabled }}
+  manager:
+    serviceName: fluidbg-nats-manager
+    namespace: {{ $root.Release.Namespace }}
+    port: 9090
+    preparePath: /manager/prepare
+    cleanupPath: /manager/cleanup
+    syncPath: /manager/sync
+    {{- if $root.Values.builtinPlugins.nats.manager.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.nats.manager.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.nats.manager.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.nats.manager.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
+  {{- end }}
+  fieldNamespaces: [nats]
+  configSchema:
+    type: object
+    additionalProperties: false
+    properties:
+      stream:
+        type: object
+        properties:
+          subjects: { type: array, items: { type: string } }
+          storage: { type: string, enum: [file, memory] }
+          retention: { type: string, enum: [limits, interest, workqueue, workQueue] }
+          replicas: { type: integer, minimum: 1, maximum: 5 }
+          maxMessages: { type: integer }
+          maxBytes: { type: integer }
+          maxAgeSeconds: { type: integer }
+          discard: { type: string, enum: [old, new] }
+          allowRollup: { type: boolean }
+          denyDelete: { type: boolean }
+          denyPurge: { type: boolean }
+          placement:
+            type: object
+            properties:
+              cluster: { type: string }
+              tags: { type: array, items: { type: string } }
+          persistenceMode: { type: string, enum: [default, async] }
+          subjectTransform:
+            type: object
+            properties:
+              source: { type: string }
+              destination: { type: string }
+          metadata:
+            type: object
+            additionalProperties: { type: string }
+      duplicator:
+        type: object
+        properties:
+          inputSubject: { type: string }
+          queueGroup: { type: string }
+          greenInputSubject: { type: string }
+          blueInputSubject: { type: string }
+          greenInputSubjectEnvVar: { type: string }
+          blueInputSubjectEnvVar: { type: string }
+          greenQueueGroup: { type: string }
+          blueQueueGroup: { type: string }
+          greenQueueGroupEnvVar: { type: string }
+          blueQueueGroupEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      splitter:
+        type: object
+        properties:
+          inputSubject: { type: string }
+          queueGroup: { type: string }
+          greenInputSubject: { type: string }
+          blueInputSubject: { type: string }
+          greenInputSubjectEnvVar: { type: string }
+          blueInputSubjectEnvVar: { type: string }
+          greenQueueGroup: { type: string }
+          blueQueueGroup: { type: string }
+          greenQueueGroupEnvVar: { type: string }
+          blueQueueGroupEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      combiner:
+        type: object
+        properties:
+          outputSubject: { type: string }
+          greenOutputSubject: { type: string }
+          blueOutputSubject: { type: string }
+          greenOutputSubjectEnvVar: { type: string }
+          blueOutputSubjectEnvVar: { type: string }
+          temporarySubjectIdentifier: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      writer:
+        type: object
+        properties:
+          targetSubject: { type: string }
+      consumer:
+        type: object
+        properties:
+          inputSubject: { type: string }
+      observer:
+        type: object
+        properties:
+          testId: { type: object }
+          match: { type: array }
+          notifyPath: { type: string }
+  inceptor:
+    {{- if or $root.Values.builtinPlugins.nats.rustLog $root.Values.builtinPlugins.nats.controlPlaneTls.enabled $root.Values.operator.api.tls.enabled }}
+    env:
+      {{- with $root.Values.builtinPlugins.nats.rustLog }}
+      - name: RUST_LOG
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.builtinPlugins.nats.controlPlaneTls.enabled }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+        value: "true"
+      - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+        value: {{ required "builtinPlugins.nats.controlPlaneTls.certPath is required when NATS control-plane TLS is enabled" $root.Values.builtinPlugins.nats.controlPlaneTls.certPath | quote }}
+      - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+        value: {{ required "builtinPlugins.nats.controlPlaneTls.keyPath is required when NATS control-plane TLS is enabled" $root.Values.builtinPlugins.nats.controlPlaneTls.keyPath | quote }}
+      {{- end }}
+      {{- if $root.Values.builtinPlugins.nats.manager.requireTls }}
+      - name: FLUIDBG_NATS_REQUIRE_TLS
+        value: "true"
+      {{- end }}
+      {{- with $root.Values.builtinPlugins.nats.manager.caCertPath }}
+      - name: FLUIDBG_NATS_CA_CERT_PATH
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.enabled }}
+      {{- with $root.Values.operator.api.tls.caCertPath }}
+      - name: FLUIDBG_OPERATOR_CA_CERT_PATH
+        value: {{ . | quote }}
+      {{- end }}
+      {{- if $root.Values.operator.api.tls.insecureSkipVerify }}
+      - name: FLUIDBG_OPERATOR_INSECURE_SKIP_VERIFY
+        value: "true"
+      {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $root.Values.builtinPlugins.nats.controlPlaneTls.enabled }}
+    controlPlaneTls:
+      enabled: true
+      port: {{ $root.Values.builtinPlugins.nats.controlPlaneTls.port | default 9090 }}
+      {{- with $root.Values.builtinPlugins.nats.controlPlaneTls.caCertPath }}
+      caCertPath: {{ . | quote }}
+      {{- end }}
+      insecureSkipVerify: {{ $root.Values.builtinPlugins.nats.controlPlaneTls.insecureSkipVerify | default false }}
+    {{- end }}
+    {{- with $root.Values.builtinPlugins.nats.inceptorVolumes }}
+    volumes:
+{{ toYaml . | nindent 6 }}
+    {{- end }}
+    ports:
+      - name: health
+        containerPort: 9090
+    {{- with $root.Values.builtinPlugins.nats.inceptorVolumeMounts }}
+    volumeMounts:
+      - name: plugin-config
+        mountPath: /etc/fluidbg
+        readOnly: true
+{{ toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}
 {{- if $root.Values.builtinPlugins.azureServiceBus.enabled }}
 ---
 apiVersion: fluidbg.io/v1alpha1

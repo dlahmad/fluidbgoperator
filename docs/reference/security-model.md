@@ -93,12 +93,12 @@ operator calls before creating/deleting external resources.
 
 ## Transport Credentials
 
-RabbitMQ and Azure Service Bus BGD config must not contain base broker or cloud
-credentials. Those credentials belong to the plugin manager installation. The
-manager receives the BGD context over an authenticated lifecycle call and
-returns only per-inception inceptor environment values. Queue names and scoped
-credentials are derived from token claims and active BGD context, not trusted
-from user-supplied temporary names.
+RabbitMQ, NATS JetStream, and Azure Service Bus BGD config must not contain base
+broker or cloud credentials. Those credentials belong to the plugin manager
+installation. The manager receives the BGD context over an authenticated
+lifecycle call and returns only per-inception inceptor environment values.
+Temporary resource names and scoped credentials are derived from token claims
+and active BGD context, not trusted from user-supplied temporary names.
 
 The HTTP plugin has no external infrastructure manager. Its inceptor endpoints
 still require the per-inception bearer token on lifecycle, writer, and verifier

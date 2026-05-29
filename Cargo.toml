@@ -5,12 +5,13 @@ members = [
     "plugins/http",
     "plugins/rabbitmq",
     "plugins/azure_servicebus",
+    "plugins/nats",
     "e2e",
 ]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 
@@ -27,6 +28,8 @@ serde_yaml = "0.9"
 thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+async-nats = "0.49"
+bytes = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
 async-trait = "0.1"
 axum = "0.8"

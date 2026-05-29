@@ -4,6 +4,15 @@ title: Changelog
 
 # Changelog
 
+## 0.6.0 - 2026-05-29
+
+- Added the built-in NATS JetStream plugin with manager/inceptor split,
+  JetStream stream management, duplicator/splitter/combiner/observer/writer
+  roles, progressive shifting, drain, cleanup, TLS CA configuration, Helm
+  registration, and e2e coverage.
+- Updated the demo/test application images so they can run against either
+  RabbitMQ or NATS.
+
 ## 0.5.0 - 2026-05-08
 
 - Added chart-managed `ValidatingAdmissionPolicy` enforcement so a BGD author

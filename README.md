@@ -20,6 +20,7 @@ The repository is structured as a production-ready Rust workspace:
 operator/              Rust operator crate and CRD generator
 plugins/http/             Built-in HTTP proxy/splitter/observer/mock/writer plugin
 plugins/rabbitmq/         Built-in RabbitMQ multi-role plugin
+plugins/nats/             Built-in NATS JetStream multi-role plugin
 plugins/azure_servicebus/ Built-in Azure Service Bus multi-role plugin
 sdk/                   Versioned plugin SDK models and language-neutral OpenAPI spec
 charts/                Helm chart for CRDs, operator, and built-in plugin CRs
@@ -123,6 +124,7 @@ Published release image names are:
 - `ghcr.io/dlahmad/fbg-operator`
 - `ghcr.io/dlahmad/fbg-plugin-http`
 - `ghcr.io/dlahmad/fbg-plugin-rabbitmq`
+- `ghcr.io/dlahmad/fbg-plugin-nats`
 - `ghcr.io/dlahmad/fbg-plugin-azure-servicebus`
 
 Release builds use musl static linking, `strip`, thin LTO, single codegen unit, and `panic=abort`. Runtime containers contain only the compiled executable on a distroless static non-root base. Release amd64 and arm64 binaries are built on native GitHub-hosted Linux runners instead of compiling under emulation.
@@ -134,6 +136,7 @@ Observed release image sizes, measured as compressed registry transfer size:
 | `ghcr.io/dlahmad/fbg-operator` | 6.0 MB | 5.7 MB |
 | `ghcr.io/dlahmad/fbg-plugin-http` | 3.5 MB | 3.3 MB |
 | `ghcr.io/dlahmad/fbg-plugin-rabbitmq` | 4.2 MB | 4.0 MB |
+| `ghcr.io/dlahmad/fbg-plugin-nats` | first published in `v0.6.0`; measure from registry after release | first published in `v0.6.0`; measure from registry after release |
 | `ghcr.io/dlahmad/fbg-plugin-azure-servicebus` | 3.6 MB | 3.4 MB |
 
 ## Documentation
@@ -143,7 +146,7 @@ Observed release image sizes, measured as compressed registry transfer size:
 - [docs/getting-started.md](docs/getting-started.md) covers local setup, image builds, and e2e execution.
 - [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.
 - [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and the verifier container.
-- [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, and Azure Service Bus.
+- [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, NATS JetStream, and Azure Service Bus.
 - [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
 - [docs/operations/helm.md](docs/operations/helm.md) includes CLI commands for

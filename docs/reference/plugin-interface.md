@@ -68,7 +68,8 @@ An `InceptionPlugin` is cluster-scoped and declares:
 - `fieldNamespaces`
 - `features`
 
-For the built-in RabbitMQ and Azure Service Bus plugins the important roles are:
+For the built-in RabbitMQ, NATS JetStream, and Azure Service Bus plugins the
+important roles are:
 
 - `duplicator`
 - `splitter`
@@ -441,7 +442,10 @@ Notification shape:
 | `both` | The resource was duplicated to both green and blue. This is the queue `duplicator` behavior. |
 | `unknown` | The plugin cannot determine the route for this observation. |
 
-For RabbitMQ and Azure Service Bus, input routes come from the duplicator/splitter decision. Output routes come from the combiner source queue: `blueOutputQueue` maps to `blue`, and `greenOutputQueue` maps to `green`.
+For RabbitMQ, Azure Service Bus, and NATS, input routes come from the
+duplicator/splitter decision. Output routes come from the combiner source
+transport: `blueOutputQueue` / `blueOutputSubject` maps to `blue`, and
+`greenOutputQueue` / `greenOutputSubject` maps to `green`.
 
 Queue plugin operator registration semantics:
 
@@ -621,6 +625,7 @@ and drain semantics live in the built-in plugin reference pages:
 | Plugin | Reference |
 |---|---|
 | `rabbitmq` | [RabbitMQ Plugin](plugins/rabbitmq.md) |
+| `nats` | [NATS JetStream Plugin](plugins/nats.md) |
 | `azure-servicebus` | [Azure Service Bus Plugin](plugins/azure-servicebus.md) |
 | `http` | [HTTP Plugin](plugins/http.md) |
 

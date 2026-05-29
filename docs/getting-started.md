@@ -60,7 +60,7 @@ helm upgrade --install fluidbg ./charts/fluidbg-operator \
 ```
 
 Built-in plugin registrations are cluster-scoped. Install the chart once, then
-reference `rabbitmq`, `http`, or `azure-servicebus` from
+reference `rabbitmq`, `nats`, `http`, or `azure-servicebus` from
 `BlueGreenDeployment` resources in any namespace the operator is allowed to
 watch.
 

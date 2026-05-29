@@ -159,6 +159,130 @@ spec:
       port: 9090
       targetPort: http
 {{- end }}
+{{- if and .Values.builtinPlugins.install .Values.builtinPlugins.nats.enabled .Values.builtinPlugins.nats.manager.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluidbg-nats-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluidbg-nats-manager
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluidbg-nats-manager
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: nats-manager
+        {{- with .Values.builtinPlugins.nats.manager.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- toYaml .Values.builtinPlugins.nats.manager.podAnnotations | nindent 8 }}
+    spec:
+      {{- with .Values.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.builtinPlugins.nats.image.repository }}:{{ .Values.builtinPlugins.nats.image.tag | default .Values.global.imageTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 9090
+          env:
+            - name: FLUIDBG_PLUGIN_MANAGER
+              value: "true"
+            {{- with .Values.builtinPlugins.nats.rustLog }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
+            - name: FLUIDBG_MANAGER_AUTH_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.operator.auth.signingSecretName | quote }}
+                  key: {{ .Values.operator.auth.signingSecretKey | quote }}
+            - name: FLUIDBG_NATS_MANAGER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.natsManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.nats.manager.urlSecretKey | quote }}
+            {{- if .Values.builtinPlugins.nats.manager.requireTls }}
+            - name: FLUIDBG_NATS_REQUIRE_TLS
+              value: "true"
+            {{- end }}
+            {{- with .Values.builtinPlugins.nats.manager.caCertPath }}
+            - name: FLUIDBG_NATS_CA_CERT_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.builtinPlugins.nats.manager.inceptorUrl }}
+            - name: FLUIDBG_NATS_INCEPTOR_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fluidbg.natsManagerSecretName" . | quote }}
+                  key: {{ .Values.builtinPlugins.nats.manager.inceptorUrlSecretKey | quote }}
+            {{- end }}
+            {{- if .Values.builtinPlugins.nats.manager.controlPlaneTls.enabled }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_ENABLED
+              value: "true"
+            - name: FLUIDBG_CONTROL_PLANE_TLS_CERT_PATH
+              value: {{ required "builtinPlugins.nats.manager.controlPlaneTls.certPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.nats.manager.controlPlaneTls.certPath | quote }}
+            - name: FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH
+              value: {{ required "builtinPlugins.nats.manager.controlPlaneTls.keyPath is required when manager control-plane TLS is enabled" .Values.builtinPlugins.nats.manager.controlPlaneTls.keyPath | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+              {{- if .Values.builtinPlugins.nats.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              {{- if .Values.builtinPlugins.nats.manager.controlPlaneTls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+          {{- with .Values.builtinPlugins.nats.manager.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.builtinPlugins.nats.manager.resources | nindent 12 }}
+      {{- with .Values.builtinPlugins.nats.manager.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluidbg-nats-manager
+  labels:
+    {{- include "fluidbg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fluidbg-nats-manager
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}
 {{- if and .Values.builtinPlugins.install .Values.builtinPlugins.azureServiceBus.enabled .Values.builtinPlugins.azureServiceBus.manager.enabled }}
 ---
 apiVersion: apps/v1

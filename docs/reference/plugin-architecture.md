@@ -11,8 +11,9 @@ is required:
 - **Inceptor:** per-inception traffic process in the application namespace.
 
 HTTP does not currently need a manager because it does not create privileged
-external infrastructure. RabbitMQ and Azure Service Bus can use managers because
-queue create/delete credentials must not be handed to application namespaces.
+external infrastructure. RabbitMQ, NATS JetStream, and Azure Service Bus can use
+managers because queue/stream create/delete credentials must not be handed to
+application namespaces.
 
 ## Component Model
 
@@ -22,6 +23,7 @@ flowchart LR
         OP["fbg-operator"]
         KEY["operator signing Secret"]
         RM["RabbitMQ manager"]
+        NM["NATS manager"]
         AM["Azure Service Bus manager"]
     end
 
@@ -29,6 +31,7 @@ flowchart LR
         BGD["BlueGreenDeployment"]
         IPC["InceptionPlugin CR"]
         RI["RabbitMQ inceptor"]
+        NI["NATS inceptor"]
         AI["Azure Service Bus inceptor"]
         HI["HTTP inceptor"]
         GREEN["green app"]
@@ -36,28 +39,35 @@ flowchart LR
         TEST["test container"]
     end
 
-    EXT["external transport<br/>RabbitMQ / Service Bus / HTTP"]
+    EXT["external transport<br/>RabbitMQ / NATS / Service Bus / HTTP"]
 
     BGD --> OP
     IPC --> OP
     OP -->|"reads signing key"| KEY
     OP -->|"creates ConfigMap/Deployment/Service"| RI
+    OP -->|"creates ConfigMap/Deployment/Service"| NI
     OP -->|"creates ConfigMap/Deployment/Service"| AI
     OP -->|"creates ConfigMap/Deployment/Service"| HI
     OP -->|"manager prepare/cleanup/sync<br/>Bearer JWT"| RM
+    OP -->|"manager prepare/cleanup/sync<br/>Bearer JWT"| NM
     OP -->|"manager prepare/cleanup/sync<br/>Bearer JWT"| AM
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| RI
+    OP -->|"inceptor lifecycle<br/>Bearer same JWT"| NI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| AI
     OP -->|"inceptor lifecycle<br/>Bearer same JWT"| HI
     OP -->|"injects verifier token map"| TEST
     RI --> EXT
+    NI --> EXT
     AI --> EXT
     HI --> EXT
     RI --> GREEN
     RI --> BLUE
+    NI --> GREEN
+    NI --> BLUE
     HI --> GREEN
     HI --> BLUE
     RI --> TEST
+    NI --> TEST
     AI --> TEST
     HI --> TEST
     TEST -->|"authorized /write calls"| HI

@@ -78,11 +78,13 @@ if [ "$LOCAL" = true ]; then
     cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-http
     cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-rabbitmq
     cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-azure-servicebus
+    cargo build --release --locked --target "$TARGET_TRIPLE" -p fluidbg-nats
     TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
     cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-operator" "$DIST_DIR/fluidbg-operator"
     cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-http" "$DIST_DIR/fluidbg-http"
     cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-rabbitmq" "$DIST_DIR/fluidbg-rabbitmq"
     cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-azure-servicebus" "$DIST_DIR/fluidbg-azure-servicebus"
+    cp "$TARGET_DIR/$TARGET_TRIPLE/release/fluidbg-nats" "$DIST_DIR/fluidbg-nats"
 else
     mkdir -p "$ROOT_DIR/.docker-target" "$ROOT_DIR/.docker-cargo-home/registry" "$ROOT_DIR/.docker-cargo-home/git"
     docker run --rm --platform "$DOCKER_PLATFORM" \
@@ -103,10 +105,12 @@ else
             cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-http
             cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-rabbitmq
             cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-azure-servicebus
+            cargo build --release --locked --target '$TARGET_TRIPLE' -p fluidbg-nats
             cp '/cargo-target/$TARGET_TRIPLE/release/fluidbg-operator' /work/dist/fluidbg-operator
             cp '/cargo-target/$TARGET_TRIPLE/release/fluidbg-http' /work/dist/fluidbg-http
             cp '/cargo-target/$TARGET_TRIPLE/release/fluidbg-rabbitmq' /work/dist/fluidbg-rabbitmq
             cp '/cargo-target/$TARGET_TRIPLE/release/fluidbg-azure-servicebus' /work/dist/fluidbg-azure-servicebus
+            cp '/cargo-target/$TARGET_TRIPLE/release/fluidbg-nats' /work/dist/fluidbg-nats
         "
 fi
 
