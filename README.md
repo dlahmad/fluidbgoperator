@@ -43,6 +43,16 @@ operator/src/controller/status.rs           Status patch helpers
 
 ## Build And Test
 
+## Requirements
+
+- Kubernetes v1.30 or newer for the Helm chart defaults. The chart installs
+  `ValidatingAdmissionPolicy` resources by default to enforce BGD author
+  privilege parity, and those resources require
+  `admissionregistration.k8s.io/v1`.
+- Helm for installation.
+- Docker and kind for local e2e/example runs.
+- `kubectl` for the manual commands shown in the docs and examples.
+
 ```sh
 just check
 ```

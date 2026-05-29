@@ -7,6 +7,10 @@ title: Security Model
 FluidBG separates cluster-level installation authority from per-rollout author
 authority.
 
+The default Helm installation requires Kubernetes v1.30 or newer because it
+installs `ValidatingAdmissionPolicy` resources in
+`admissionregistration.k8s.io/v1`.
+
 The operator and plugin managers run with elevated permissions because they
 must watch BGDs cluster-wide, create temporary rollout resources, and, for
 managed transport plugins, create/delete broker infrastructure. A BGD author

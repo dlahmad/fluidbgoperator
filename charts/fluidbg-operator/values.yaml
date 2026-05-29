@@ -76,7 +76,7 @@ admissionPolicy:
   # a user may create/update BlueGreenDeployment only if the same principal has
   # the namespace permissions needed for the generated Deployments, Services,
   # ConfigMaps, Secrets, and FluidBG-labeled Pod cleanup.
-  # Requires Kubernetes v1.30+ when enabled.
+  # The chart default requires Kubernetes v1.30+.
   enabled: true
 
 serviceAccount:

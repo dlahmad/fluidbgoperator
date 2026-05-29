@@ -4,6 +4,7 @@ description: FluidBG Kubernetes operator and built-in inception plugin definitio
 type: application
 version: 0.5.0
 appVersion: 0.5.0
+kubeVersion: ">=1.30.0-0"
 keywords:
   - blue-green
   - kubernetes-operator

@@ -7,6 +7,13 @@ FluidBG is a Kubernetes operator for blue-green and progressive delivery where
 candidate applications are validated with live queue or HTTP traffic before they
 are promoted.
 
+## Minimum Kubernetes Version
+
+FluidBG's Helm chart requires Kubernetes v1.30 or newer by default. The chart
+installs `ValidatingAdmissionPolicy` resources to enforce BGD author privilege
+parity, and that API is stable as `admissionregistration.k8s.io/v1` from
+Kubernetes v1.30 onward.
+
 ## Start Here
 
 | Goal | Start Here |

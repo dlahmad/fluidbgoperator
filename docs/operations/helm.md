@@ -4,6 +4,16 @@ title: Helm Installation
 
 # Helm Installation
 
+## Kubernetes Version
+
+The Helm chart requires Kubernetes v1.30 or newer. The chart metadata declares
+`kubeVersion: ">=1.30.0-0"`, so Helm fails before install on older clusters.
+
+The requirement comes from the default admission policy. FluidBG installs
+`ValidatingAdmissionPolicy` resources to enforce BGD author privilege parity,
+and those resources are stable as `admissionregistration.k8s.io/v1` from
+Kubernetes v1.30 onward.
+
 The chart at `charts/fluidbg-operator` installs:
 
 - `fluidbg.io/v1alpha1` CRDs.
@@ -36,10 +46,10 @@ operator will create, update, patch, or delete. See
 [Security Model](../reference/security-model.md) for the exact permission
 matrix and the effect of disabling `admissionPolicy.enabled`.
 
-This default requires Kubernetes v1.30 or newer because
-`ValidatingAdmissionPolicy` is stable as `admissionregistration.k8s.io/v1` from
-that version onward. Older clusters must either disable `admissionPolicy.enabled`
-or provide equivalent external admission control before installing the chart.
+Older clusters are not supported by the default chart. If you intentionally
+fork or render the chart for an older cluster, disable `admissionPolicy.enabled`
+only when equivalent external admission control enforces the same privilege
+parity.
 
 ## Production Image Values
 

@@ -6,7 +6,9 @@ title: Getting Started
 
 ## Prerequisites
 
-- Kubernetes cluster with permission to install CRDs and cluster RBAC.
+- Kubernetes v1.30 or newer with permission to install CRDs and cluster RBAC.
+  This is the minimum supported version for the default Helm installation
+  because FluidBG installs `ValidatingAdmissionPolicy` resources.
 - `helm` for chart installation.
 - `kubectl` for the manual commands shown in the docs and examples.
 - Docker and kind for local e2e/example development and local image loading.
