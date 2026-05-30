@@ -39,7 +39,7 @@ pub use resources::{
 pub use roles::{QueueWorkerRole, queue_worker_role};
 pub use routing::routes_to_blue;
 pub use runtime::{PluginInceptorRuntime, PluginRuntime};
-pub use server::serve_control_plane;
+pub use server::{install_rustls_crypto_provider, serve_control_plane};
 pub use version::{CRD_GROUP, CRD_VERSION, PLUGIN_API_VERSION, SDK_VERSION};
 
 #[cfg(test)]

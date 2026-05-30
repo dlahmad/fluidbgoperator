@@ -52,7 +52,7 @@ async fn run_combine_loop(source: String, target: String, state: AppState) -> Re
                     }
                 }
                 message
-                    .ack()
+                    .double_ack()
                     .await
                     .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             }
@@ -68,12 +68,7 @@ async fn run_combine_loop(source: String, target: String, state: AppState) -> Re
 async fn drain_output_subject(state: &AppState, source: &str, target: &str) -> Result<()> {
     let client = NatsClient::connect(&state.nats_url).await?;
     let moved = client
-        .move_subject_messages(
-            source,
-            target,
-            &durable_name("drain-output", source),
-            10_000,
-        )
+        .move_subject_messages(source, target, &combiner_durable(source), 10_000)
         .await?;
     if moved > 0 {
         info!(
@@ -82,6 +77,10 @@ async fn drain_output_subject(state: &AppState, source: &str, target: &str) -> R
         );
     }
     Ok(())
+}
+
+pub(crate) fn combiner_durable(source: &str) -> String {
+    durable_name("combiner", source)
 }
 
 pub(crate) async fn drain_output_subjects(state: &AppState) -> Result<()> {

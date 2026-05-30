@@ -10,11 +10,11 @@ use fluidbg_plugin_sdk::{
 };
 
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
-use crate::combiner::drain_output_subjects;
+use crate::combiner::{combiner_durable, drain_output_subjects};
 use crate::config::{
     AppState, RuntimeMode, combiner_config, duplicator_config, has_role, required, splitter_config,
 };
-use crate::input::drain_input_subjects;
+use crate::input::{drain_input_subjects, input_drain_targets};
 use crate::nats::NatsClient;
 
 pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusResponse> {
@@ -23,17 +23,22 @@ pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrain
         drain_output_subjects(state).await?;
     }
     let client = NatsClient::connect(&state.nats_url).await?;
-    let subjects = drain_sensitive_subjects(state)?;
+    let targets = drain_backlog_targets(state)?;
     let mut remaining = 0;
-    for subject in &subjects {
-        remaining += client.stream_depth(subject).await?.messages;
+    let mut ack_pending = 0;
+    for (subject, durable) in &targets {
+        let backlog = client.consumer_backlog(subject, durable).await?;
+        remaining += backlog.pending;
+        ack_pending += backlog.ack_pending;
     }
     Ok(PluginDrainStatusResponse {
-        drained: remaining == 0,
-        message: Some(if remaining == 0 {
-            "temporary NATS streams are empty".to_string()
+        drained: remaining == 0 && ack_pending == 0,
+        message: Some(if remaining == 0 && ack_pending == 0 {
+            "temporary NATS consumers have no pending messages".to_string()
         } else {
-            format!("temporary NATS streams still contain {remaining} message(s)")
+            format!(
+                "temporary NATS consumers still have {remaining} pending and {ack_pending} ack-pending message(s)"
+            )
         }),
     })
 }
@@ -190,4 +195,23 @@ fn drain_sensitive_subjects(state: &AppState) -> Result<Vec<String>> {
             .push(required(&config.blue_output_subject, "combiner.blueOutputSubject")?.to_string());
     }
     Ok(subjects)
+}
+
+fn drain_backlog_targets(state: &AppState) -> Result<Vec<(String, String)>> {
+    let mut targets = Vec::new();
+    if has_role(&state.roles, PluginRole::Duplicator)
+        || has_role(&state.roles, PluginRole::Splitter)
+    {
+        let (_base, green, green_durable, blue, blue_durable) = input_drain_targets(state)?;
+        targets.push((green.to_string(), green_durable));
+        targets.push((blue.to_string(), blue_durable));
+    }
+    if has_role(&state.roles, PluginRole::Combiner) {
+        let config = combiner_config(&state.config)?;
+        let green = required(&config.green_output_subject, "combiner.greenOutputSubject")?;
+        let blue = required(&config.blue_output_subject, "combiner.blueOutputSubject")?;
+        targets.push((green.to_string(), combiner_durable(green)));
+        targets.push((blue.to_string(), combiner_durable(blue)));
+    }
+    Ok(targets)
 }

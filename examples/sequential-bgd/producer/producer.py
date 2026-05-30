@@ -5,6 +5,7 @@ import time
 import asyncio
 
 import nats
+from nats.js.errors import NotFoundError, NoStreamResponseError
 import pika
 
 TRANSPORT = os.environ.get("TRANSPORT", "rabbitmq")
@@ -38,6 +39,8 @@ def publish(counter):
 async def publish_nats(counter):
     nc = await nats.connect(NATS_URL)
     try:
+        js = nc.jetstream()
+        await ensure_nats_stream(js, OUTPUT_SUBJECT)
         order_id = f"demo-{INSTANCE}-{counter}"
         payload = {
             "orderId": order_id,
@@ -45,11 +48,32 @@ async def publish_nats(counter):
             "producer": INSTANCE,
             "sequence": counter,
         }
-        await nc.publish(OUTPUT_SUBJECT, json.dumps(payload).encode())
-        await nc.flush()
+        await js.publish(OUTPUT_SUBJECT, json.dumps(payload).encode())
         print(f"published {order_id}", flush=True)
     finally:
         await nc.close()
+
+
+def nats_stream_name(subject):
+    hash_value = 5381
+    for byte in subject.encode():
+        hash_value = ((hash_value * 33) + byte) & 0xFFFFFFFFFFFFFFFF
+    hint = "".join(
+        char for char in subject if char.isascii() and (char.isalnum() or char in "-_")
+    )[:24]
+    return f"fbg_{hint}_{hash_value:016x}"
+
+
+async def ensure_nats_stream(js, subject):
+    name = nats_stream_name(subject)
+    try:
+        await js.stream_info(name)
+    except (NotFoundError, NoStreamResponseError):
+        try:
+            await js.add_stream(name=name, subjects=[subject])
+        except Exception:
+            await js.stream_info(name)
+    return name
 
 
 counter = 0

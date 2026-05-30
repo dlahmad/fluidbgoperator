@@ -118,4 +118,8 @@ Apply the demo resources when ready:
 
 Then apply the upgrade:
   kubectl apply -f examples/sequential-bgd/02-upgrade.yaml
+
+For the NATS JetStream variant use:
+  kubectl apply -f examples/sequential-bgd/01-base-nats.yaml
+  kubectl apply -f examples/sequential-bgd/02-upgrade-nats.yaml
 EOF

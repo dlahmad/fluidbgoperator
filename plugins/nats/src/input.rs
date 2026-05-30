@@ -6,11 +6,11 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::{
-    AppState, RuntimeMode, consumer_config, duplicator_config, has_role, required, routes_to_blue,
-    splitter_config,
+    AppState, Config, RuntimeMode, consumer_config, duplicator_config, has_role, required,
+    routes_to_blue, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
-use crate::nats::{NatsClient, durable_name};
+use crate::nats::{NatsClient, durable_name, queue_group_durable};
 
 async fn process_input_message(
     state: &AppState,
@@ -56,7 +56,7 @@ async fn process_input_message(
     }
 
     message
-        .ack()
+        .double_ack()
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(())
@@ -68,25 +68,11 @@ pub(crate) async fn drain_input_subjects(state: &AppState) -> Result<()> {
     {
         return Ok(());
     }
-    let (base, green, blue) = if has_role(&state.roles, PluginRole::Duplicator) {
-        let config = duplicator_config(&state.config)?;
-        (
-            required(&config.input_subject, "duplicator.inputSubject")?,
-            required(&config.green_input_subject, "duplicator.greenInputSubject")?,
-            required(&config.blue_input_subject, "duplicator.blueInputSubject")?,
-        )
-    } else {
-        let config = splitter_config(&state.config)?;
-        (
-            required(&config.input_subject, "splitter.inputSubject")?,
-            required(&config.green_input_subject, "splitter.greenInputSubject")?,
-            required(&config.blue_input_subject, "splitter.blueInputSubject")?,
-        )
-    };
+    let (base, green, green_durable, blue, blue_durable) = input_drain_targets(state)?;
     let client = NatsClient::connect(&state.nats_url).await?;
-    for source in [green, blue] {
+    for (source, durable) in [(green, green_durable), (blue, blue_durable)] {
         let moved = client
-            .move_subject_messages(source, base, &durable_name("drain", source), 10_000)
+            .move_subject_messages(source, base, &durable, 10_000)
             .await?;
         if moved > 0 {
             info!(
@@ -96,6 +82,58 @@ pub(crate) async fn drain_input_subjects(state: &AppState) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn input_drain_targets(state: &AppState) -> Result<(&str, &str, String, &str, String)> {
+    if has_role(&state.roles, PluginRole::Duplicator) {
+        let config = duplicator_config(&state.config)?;
+        Ok((
+            required(&config.input_subject, "duplicator.inputSubject")?,
+            required(&config.green_input_subject, "duplicator.greenInputSubject")?,
+            input_consumer_durable(
+                config
+                    .green_queue_group
+                    .as_deref()
+                    .or(config.queue_group.as_deref()),
+                required(&config.green_input_subject, "duplicator.greenInputSubject")?,
+            ),
+            required(&config.blue_input_subject, "duplicator.blueInputSubject")?,
+            input_consumer_durable(
+                config
+                    .blue_queue_group
+                    .as_deref()
+                    .or(config.queue_group.as_deref()),
+                required(&config.blue_input_subject, "duplicator.blueInputSubject")?,
+            ),
+        ))
+    } else {
+        let config = splitter_config(&state.config)?;
+        Ok((
+            required(&config.input_subject, "splitter.inputSubject")?,
+            required(&config.green_input_subject, "splitter.greenInputSubject")?,
+            input_consumer_durable(
+                config
+                    .green_queue_group
+                    .as_deref()
+                    .or(config.queue_group.as_deref()),
+                required(&config.green_input_subject, "splitter.greenInputSubject")?,
+            ),
+            required(&config.blue_input_subject, "splitter.blueInputSubject")?,
+            input_consumer_durable(
+                config
+                    .blue_queue_group
+                    .as_deref()
+                    .or(config.queue_group.as_deref()),
+                required(&config.blue_input_subject, "splitter.blueInputSubject")?,
+            ),
+        ))
+    }
+}
+
+fn input_consumer_durable(queue_group: Option<&str>, subject: &str) -> String {
+    queue_group
+        .map(|group| queue_group_durable(group, subject))
+        .unwrap_or_else(|| durable_name("drain", subject))
 }
 
 pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
@@ -147,10 +185,26 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
                 RuntimeMode::Active => {}
             }
 
-            match client
-                .next_message(&input_subject, &durable_name("input", &input_subject))
-                .await
+            let source_durable = input_source_durable(&state.config, &state.roles, &input_subject)?;
+            let next = if has_role(&state.roles, PluginRole::Duplicator)
+                || has_role(&state.roles, PluginRole::Splitter)
             {
+                if source_durable.uses_existing_consumer {
+                    client
+                        .next_message(&input_subject, &source_durable.name)
+                        .await
+                } else {
+                    client
+                        .next_message_new(&input_subject, &source_durable.name)
+                        .await
+                }
+            } else {
+                client
+                    .next_message(&input_subject, &source_durable.name)
+                    .await
+            };
+
+            match next {
                 Ok(Some(message)) => {
                     if let Err(err) = process_input_message(&state, &client, message).await {
                         warn!("nats input processing failed, reconnecting: {}", err);
@@ -165,4 +219,38 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
             }
         }
     }
+}
+
+struct SourceDurable {
+    name: String,
+    uses_existing_consumer: bool,
+}
+
+fn input_source_durable(
+    config: &Config,
+    roles: &[PluginRole],
+    input_subject: &str,
+) -> Result<SourceDurable> {
+    if has_role(roles, PluginRole::Duplicator) {
+        let config = duplicator_config(config)?;
+        if let Some(queue_group) = config.queue_group.as_deref() {
+            return Ok(SourceDurable {
+                name: queue_group_durable(queue_group, input_subject),
+                uses_existing_consumer: true,
+            });
+        }
+    }
+    if has_role(roles, PluginRole::Splitter) {
+        let config = splitter_config(config)?;
+        if let Some(queue_group) = config.queue_group.as_deref() {
+            return Ok(SourceDurable {
+                name: queue_group_durable(queue_group, input_subject),
+                uses_existing_consumer: true,
+            });
+        }
+    }
+    Ok(SourceDurable {
+        name: durable_name("input", input_subject),
+        uses_existing_consumer: false,
+    })
 }

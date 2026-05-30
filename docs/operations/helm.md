@@ -18,8 +18,8 @@ The chart at `charts/fluidbg-operator` installs:
 
 - `fluidbg.io/v1alpha1` CRDs.
 - Operator Deployment, Service, ServiceAccount, ClusterRole, and ClusterRoleBinding.
-- Optional built-in `InceptionPlugin` registrations for HTTP, RabbitMQ, and
-  Azure Service Bus.
+- Optional built-in `InceptionPlugin` registrations for HTTP, RabbitMQ, NATS
+  JetStream, and Azure Service Bus.
 
 ## Basic Install
 
@@ -580,6 +580,8 @@ builtinPlugins:
   rabbitmq:
     enabled: true
   http:
+    enabled: true
+  nats:
     enabled: true
   azureServiceBus:
     enabled: true

@@ -1,61 +1,63 @@
 apiVersion: fluidbg.io/v1alpha1
 kind: BlueGreenDeployment
 metadata:
-  name: order-processor-nats
-  namespace: fluidbg-test
+  name: order-flow-nats
+  namespace: fluidbg-demo
 spec:
   selector:
     matchLabels:
-      fluidbg.io/name: nats-processor
+      fluidbg.io/name: order-flow-nats
   deployment:
     spec:
       replicas: 1
       selector:
         matchLabels:
-          app: nats-processor-blue
+          app: order-flow-nats
       template:
         metadata:
           labels:
-            app: nats-processor-blue
-            fluidbg.io/name: nats-processor
+            app: order-flow-nats
+            fluidbg.io/name: order-flow-nats
         spec:
           terminationGracePeriodSeconds: 1
           containers:
-            - name: order-processor
-              image: fluidbg/blue-app:dev
+            - name: app
+              image: fluidbg/fluidbg-example-order-app:dev
               imagePullPolicy: Never
               env:
                 - name: TRANSPORT
                   value: nats
                 - name: NATS_URL
-                  value: nats://nats.fluidbg-system:4222
+                  value: nats://nats.fluidbg-demo:4222
                 - name: INPUT_SUBJECT
                   value: orders-nats
                 - name: OUTPUT_SUBJECT
                   value: results-nats
                 - name: NATS_QUEUE_GROUP
-                  value: order-processor-nats
+                  value: order-flow-nats
+                - name: OUTPUT_PREFIX
+                  value: v2
                 - name: HTTP_UPSTREAM
-                  value: http://httpbin.fluidbg-system/post
+                  value: http://unused-before-plugin-prepare
   inceptionPoints:
     - name: incoming-nats-orders
       pluginRef:
         name: nats
       roles:
-        - duplicator
+        - splitter
         - observer
       drain:
         maxWaitSeconds: 20
       config:
-        duplicator:
+        splitter:
           inputSubject: orders-nats
-          queueGroup: order-processor-nats
+          queueGroup: order-flow-nats
           greenInputSubjectEnvVar: INPUT_SUBJECT
           blueInputSubjectEnvVar: INPUT_SUBJECT
           greenQueueGroupEnvVar: NATS_QUEUE_GROUP
           blueQueueGroupEnvVar: NATS_QUEUE_GROUP
-          greenQueueGroup: order-processor-nats-green
-          blueQueueGroup: order-processor-nats-blue
+          greenQueueGroup: order-flow-nats-green
+          blueQueueGroup: order-flow-nats-blue
           temporarySubjectIdentifier: incoming-nats-orders
         observer:
           testId:
@@ -64,14 +66,36 @@ spec:
           match:
             - field: nats.body
               jsonPath: $.type
-              matches: ^order$
+              matches: ^demo-order$
           notifyPath: /observe/{testId}/incoming-nats-orders
+    - name: audit-http
+      pluginRef:
+        name: http
+      roles:
+        - observer
+      drain:
+        maxWaitSeconds: 20
+      config:
+        port: 9090
+        realEndpoint: http://order-flow-nats-sink.fluidbg-demo:8080
+        envVarName: HTTP_UPSTREAM
+        testId:
+          field: http.body
+          jsonPath: $.orderId
+        filters:
+          - match:
+              - field: http.path
+                equals: /audit
+              - field: http.body
+                jsonPath: $.type
+                matches: ^demo-order$
+            notifyPath: /observe/{testId}/audit-http
+            payload: request
     - name: outgoing-nats-results
       pluginRef:
         name: nats
       roles:
         - combiner
-        - observer
       drain:
         maxWaitSeconds: 20
       config:
@@ -80,31 +104,22 @@ spec:
           greenOutputSubjectEnvVar: OUTPUT_SUBJECT
           blueOutputSubjectEnvVar: OUTPUT_SUBJECT
           temporarySubjectIdentifier: outgoing-nats-results
-        observer:
-          testId:
-            field: nats.body
-            jsonPath: $.orderId
-          match:
-            - field: nats.body
-              jsonPath: $.originalMessage.type
-              matches: ^order$
-          notifyPath: /observe/{testId}/outgoing-nats-results
   test:
-    name: test-container
+    name: verifier
     deployment:
       replicas: 1
       selector:
         matchLabels:
-          app: nats-test-container
+          app: order-flow-nats-verifier
       template:
         metadata:
           labels:
-            app: nats-test-container
+            app: order-flow-nats-verifier
         spec:
           terminationGracePeriodSeconds: 1
           containers:
-            - name: test-container
-              image: fluidbg/test-app:dev
+            - name: verifier
+              image: fluidbg/fluidbg-example-verifier:dev
               imagePullPolicy: Never
               ports:
                 - containerPort: 8080
@@ -117,15 +132,13 @@ spec:
               env:
                 - name: PORT
                   value: "8080"
-                - name: TRANSPORT
-                  value: nats
-                - name: NATS_URL
-                  value: nats://nats.fluidbg-system:4222
-                - name: INPUT_SUBJECT
-                  value: orders-nats
+                - name: EXPECTED_PREFIX
+                  value: v2
+                - name: SINK_URL
+                  value: http://order-flow-nats-sink.fluidbg-demo:8080
     service:
       selector:
-        app: nats-test-container
+        app: order-flow-nats-verifier
       ports:
         - port: 8080
           targetPort: 8080
@@ -136,6 +149,17 @@ spec:
     data:
       minTestCases: 3
       successRate: 1.0
-      timeoutSeconds: 180
+      timeoutSeconds: 300
     strategy:
-      type: hard-switch
+      type: progressive
+      progressive:
+        steps:
+          - trafficPercent: 10
+            observeCases: 3
+            successRate: 1.0
+          - trafficPercent: 50
+            observeCases: 8
+            successRate: 1.0
+          - trafficPercent: 100
+            observeCases: 12
+            successRate: 1.0

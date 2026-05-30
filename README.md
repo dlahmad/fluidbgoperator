@@ -147,7 +147,7 @@ Observed release image sizes, measured as compressed registry transfer size:
 - [docs/reference/architecture.md](docs/reference/architecture.md) describes the operator model, CRDs, state store, plugin orchestration, and project layout.
 - [docs/reference/plugin-interface.md](docs/reference/plugin-interface.md) defines the runtime contract between the operator, plugins, application deployments, and the verifier container.
 - [docs/reference/plugins/index.md](docs/reference/plugins/index.md) links the formal per-plugin references for HTTP, RabbitMQ, NATS JetStream, and Azure Service Bus.
-- [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and namespaced built-in plugin CRs.
+- [docs/operations/helm.md](docs/operations/helm.md) documents Helm installation and cluster-scoped built-in plugin CRs.
 - [docs/operations/release.md](docs/operations/release.md) documents tag/manual releases, GHCR images, and the OCI Helm chart.
 - [docs/operations/helm.md](docs/operations/helm.md) includes CLI commands for
   inspecting image SBOMs and Rust dependency SBOMs.

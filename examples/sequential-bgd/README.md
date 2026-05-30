@@ -1,8 +1,9 @@
 # Sequential Order Flow Demo
 
 This example shows one blue-green rollout with live queue traffic. The default
-manifests use RabbitMQ; the same demo images also support NATS by setting
-`TRANSPORT=nats`, `NATS_URL`, `INPUT_SUBJECT`, and `OUTPUT_SUBJECT`.
+manifests use RabbitMQ. `01-base-nats.yaml` and `02-upgrade-nats.yaml` run the
+same flow on NATS JetStream with the same producer, app, sink, and verifier
+images.
 
 - a producer publishes orders to RabbitMQ or NATS
 - the input inceptor progressively routes each order to either the current app or the candidate app
@@ -192,6 +193,50 @@ kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bluegreendeploy
 kubectl wait --for=jsonpath='{.status.phase}'=Completed bluegreendeployment/order-flow -n fluidbg-demo --timeout=300s
 ```
 
+### Run The NATS Variant
+
+The setup helper installs both RabbitMQ and NATS plugin managers. To run the
+NATS version instead of the RabbitMQ version, apply the NATS manifests:
+
+```sh
+kubectl apply -f examples/sequential-bgd/01-base-nats.yaml
+
+kubectl wait --for=condition=available deployment/nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-nats-sink -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-nats-producer -n fluidbg-demo --timeout=180s
+
+GEN=$(kubectl get bluegreendeployment order-flow-nats -n fluidbg-demo -o jsonpath='{.metadata.generation}')
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=180s
+
+kubectl apply -f examples/sequential-bgd/02-upgrade-nats.yaml
+GEN=$(kubectl get bluegreendeployment order-flow-nats -n fluidbg-demo -o jsonpath='{.metadata.generation}')
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=300s
+kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=300s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bluegreendeployment/order-flow-nats -n fluidbg-demo --timeout=300s
+```
+
+Inspect the NATS sink logs the same way:
+
+```sh
+kubectl logs -n fluidbg-demo deploy/order-flow-nats-producer
+kubectl logs -n fluidbg-demo deploy/order-flow-nats-sink --tail=300
+kubectl logs -n fluidbg-demo -l fluidbg.io/test-name=verifier --tail=100
+```
+
+The NATS variant uses `incoming-nats-orders` as the NATS splitter/observer and
+`outgoing-nats-results` as the NATS combiner. The HTTP audit inceptor is the
+same proxy/observer pattern as the RabbitMQ demo. The sink still receives the
+real downstream output stream, so the observable no-loss check remains the same:
+combined output sequences must not show gaps.
+
+The demo apps consume NATS through JetStream durable pull consumers, not plain
+core NATS subscriptions. The BGD sets `NATS_QUEUE_GROUP` through the NATS
+inceptor so the base subject and the temporary green/blue subjects each have a
+known durable. That is what lets the plugin drain pending work safely during
+promotion and rollback.
+
 Watch what happened:
 
 ```sh
@@ -233,6 +278,11 @@ the generated queues are recognizable without embedding full deployment or base
 queue names. Input temporary queues include the token derived from
 `incoming-orders`; output temporary queues include the token derived from
 `outgoing-results`.
+
+The NATS variant uses equivalent `temporarySubjectIdentifier` values. Temporary
+JetStream subjects include tokens derived from `incoming-nats-orders` and
+`outgoing-nats-results`, while the generated stream names remain bounded and
+hash-based.
 
 The input inception point uses the RabbitMQ `splitter` role. It registers test
 cases only for candidate-routed messages, while current-routed messages keep

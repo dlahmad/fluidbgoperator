@@ -33,6 +33,8 @@ spec:
                   value: orders-nats
                 - name: OUTPUT_SUBJECT
                   value: results-nats
+                - name: NATS_QUEUE_GROUP
+                  value: order-processor-nats
                 - name: HTTP_UPSTREAM
                   value: http://httpbin.fluidbg-system/post
   inceptionPoints: []

@@ -5,6 +5,8 @@ import time
 import asyncio
 
 import nats
+from nats.errors import TimeoutError
+from nats.js.errors import FetchTimeoutError, NotFoundError, NoStreamResponseError
 import pika
 from flask import Flask, jsonify, request
 
@@ -270,25 +272,61 @@ def record_output(payload):
         print_gap_summary(prefix)
 
 
+def nats_stream_name(subject):
+    hash_value = 5381
+    for byte in subject.encode():
+        hash_value = ((hash_value * 33) + byte) & 0xFFFFFFFFFFFFFFFF
+    hint = "".join(
+        char for char in subject if char.isascii() and (char.isalnum() or char in "-_")
+    )[:24]
+    return f"fbg_{hint}_{hash_value:016x}"
+
+
+def nats_durable_name(queue_group, subject):
+    return nats_stream_name(f"{queue_group}_{subject}")
+
+
+async def ensure_nats_stream(js, subject):
+    name = nats_stream_name(subject)
+    try:
+        await js.stream_info(name)
+    except (NotFoundError, NoStreamResponseError):
+        try:
+            await js.add_stream(name=name, subjects=[subject])
+        except Exception:
+            await js.stream_info(name)
+    return name
+
+
 async def consume_nats_results():
     while True:
         try:
             nc = await nats.connect(NATS_URL)
-
-            async def callback(msg):
-                try:
-                    record_output(json.loads(msg.data.decode()))
-                except Exception as exc:
-                    print(f"sink nats output consume failed: {exc}", flush=True)
-
-            await nc.subscribe(INPUT_SUBJECT, queue=NATS_QUEUE_GROUP, cb=callback)
+            js = nc.jetstream()
+            stream = await ensure_nats_stream(js, INPUT_SUBJECT)
+            durable = nats_durable_name(NATS_QUEUE_GROUP, INPUT_SUBJECT)
+            subscription = await js.pull_subscribe(
+                INPUT_SUBJECT,
+                durable=durable,
+                stream=stream,
+            )
             print(
                 "sink acts as normal downstream demo service: "
                 f"HTTP /audit plus NATS consumer for {INPUT_SUBJECT}",
                 flush=True,
             )
             while True:
-                await asyncio.sleep(3600)
+                try:
+                    messages = await subscription.fetch(1, timeout=1)
+                except (FetchTimeoutError, TimeoutError):
+                    continue
+                for msg in messages:
+                    try:
+                        record_output(json.loads(msg.data.decode()))
+                        await msg.ack()
+                    except Exception as exc:
+                        print(f"sink nats output consume failed: {exc}", flush=True)
+                        await msg.nak()
         except Exception as exc:
             print(f"sink nats consumer error: {exc}; retrying", flush=True)
             await asyncio.sleep(3)

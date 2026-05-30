@@ -6,8 +6,8 @@ import uuid
 import asyncio
 
 import nats
+from nats.js.errors import NotFoundError, NoStreamResponseError
 import pika
-import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -111,14 +111,37 @@ def publish_transport(payload):
         async def publish():
             nc = await nats.connect(NATS_URL)
             try:
-                await nc.publish(INPUT_SUBJECT, json.dumps(payload).encode())
-                await nc.flush()
+                js = nc.jetstream()
+                await ensure_nats_stream(js, INPUT_SUBJECT)
+                await js.publish(INPUT_SUBJECT, json.dumps(payload).encode())
             finally:
                 await nc.close()
 
         asyncio.run(publish())
     else:
         publish_json(INPUT_QUEUE, payload)
+
+
+def nats_stream_name(subject):
+    hash_value = 5381
+    for byte in subject.encode():
+        hash_value = ((hash_value * 33) + byte) & 0xFFFFFFFFFFFFFFFF
+    hint = "".join(
+        char for char in subject if char.isascii() and (char.isalnum() or char in "-_")
+    )[:24]
+    return f"fbg_{hint}_{hash_value:016x}"
+
+
+async def ensure_nats_stream(js, subject):
+    name = nats_stream_name(subject)
+    try:
+        await js.stream_info(name)
+    except (NotFoundError, NoStreamResponseError):
+        try:
+            await js.add_stream(name=name, subjects=[subject])
+        except Exception:
+            await js.stream_info(name)
+    return name
 
 
 # ── Flask endpoints ──────────────────────────────────────────────────

@@ -10,6 +10,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
+rustls = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }
 serde = { workspace = true }

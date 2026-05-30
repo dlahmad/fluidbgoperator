@@ -36,11 +36,11 @@ controller/status.rs           BlueGreenDeployment status patches
 
 | Area | Status |
 |---|---|
-| Rust workspace | Operator, Rust plugin SDK, combined HTTP, RabbitMQ, and Azure Service Bus plugin crates |
+| Rust workspace | Operator, Rust plugin SDK, combined HTTP, RabbitMQ, NATS JetStream, and Azure Service Bus plugin crates |
 | CRDs | Versioned `fluidbg.io/v1alpha1` `BlueGreenDeployment` and `InceptionPlugin` |
 | State stores | In-memory, PostgreSQL, and Azure Cosmos DB backends |
 | Promotion strategies | Hard-switch and progressive strategy implementations |
-| Plugin model | Generic plugin CRD rendering plus built-in combined HTTP, RabbitMQ, and Azure Service Bus manifests |
+| Plugin model | Generic plugin CRD rendering plus built-in combined HTTP, RabbitMQ, NATS JetStream, and Azure Service Bus manifests |
 | Operator API | `/health`, `/testcases`, `/testcase-verdicts`, and `/counts/{bg_ref}` with BGD identity derived from authenticated token claims |
 | Test harness | Unit tests plus a Rust/kube-rs kind-based e2e harness |
 | Packaging | Helm chart, consolidated GitHub Actions CI/CD workflow, docs publishing, optional e2e gate, GHCR release targets, image signatures, SBOMs, and provenance attestations |

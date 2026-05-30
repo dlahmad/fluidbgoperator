@@ -85,8 +85,8 @@ for example `fluidbg-green-in-incomiada9-<hash>`.
 
 | Role | Behavior | Assignments |
 |---|---|---|
-| `duplicator` | Pulls from `duplicator.inputSubject` and publishes every message to green and blue temporary subjects. Route metadata is `both`. | Patches green and blue input subject env vars. |
-| `splitter` | Pulls from `splitter.inputSubject` and publishes each message to green or blue based on current candidate traffic percentage. | Patches green and blue input subject env vars. |
+| `duplicator` | Pulls from `duplicator.inputSubject` and publishes every message to green and blue temporary subjects. Route metadata is `both`. | Patches green and blue input subject and queue-group env vars. |
+| `splitter` | Pulls from `splitter.inputSubject` and publishes each message to green or blue based on current candidate traffic percentage. | Patches green and blue input subject and queue-group env vars. |
 | `combiner` | Pulls from green and blue output subjects, republishes to `combiner.outputSubject`, and derives route metadata from the source subject. | Patches green and blue output subject env vars. |
 | `observer` | Applies `observer.match`, extracts `testId`, posts `observer.notifyPath`, then registers operator cases for `blue`, `both`, and `unknown` routes. | None. |
 | `writer` | Exposes `/write` and publishes the supplied JSON payload to `writer.targetSubject`. | Test-container env injection can point callers to the writer service. |
@@ -94,6 +94,16 @@ for example `fluidbg-green-in-incomiada9-<hash>`.
 
 `duplicator`, `splitter`, `combiner`, and `consumer` are mutually exclusive
 movement roles for one NATS inceptor. `observer` and `writer` are additive.
+
+For queue-like no-loss semantics, configure `queueGroup`,
+`greenQueueGroup`, `blueQueueGroup`, `greenQueueGroupEnvVar`, and
+`blueQueueGroupEnvVar` on `duplicator` or `splitter` roles. The application
+should consume JetStream with a durable derived from the subject plus the
+current queue-group env var. The inceptor uses the same base queue-group
+durable while it is active, so it work-shares with the current green app
+instead of creating an independent replaying subscription. During drain, it
+uses the green/blue durable names to detect messages already delivered to app
+pods and to move only still-pending temporary work back to the base subject.
 
 ## Runtime State Machine
 
@@ -113,9 +123,11 @@ stateDiagram-v2
 ```
 
 The source message is acknowledged only after required downstream publish work
-and verifier notification have succeeded. If an error occurs first, the message
-is left unacknowledged so JetStream can redeliver according to its consumer
-policy.
+and verifier notification have succeeded. Plugin-owned acknowledgements use
+JetStream confirmed ACKs, so drain status is based on server-observed consumer
+state instead of a best-effort client send. If an error occurs first, the
+message is left unacknowledged so JetStream can redeliver according to its
+consumer policy.
 
 ## Failure Behavior
 
@@ -132,10 +144,13 @@ policy.
 ## Drain And Cleanup
 
 During drain, input roles stop pulling new base-subject work and move available
-messages from temporary green/blue streams back to the base subject. Combiner
-roles move temporary output stream messages back to the base output subject.
-Drain status returns success only after the temporary streams report zero
-messages.
+messages from temporary green/blue streams back to the base subject. They use
+the configured green/blue queue-group durables, so messages already delivered
+to an app pod remain visible as ack-pending until the app acknowledges or
+JetStream redelivers them. Combiner roles move temporary output stream
+messages back to the base output subject using the same durable the active
+combiner uses. Drain status returns success only after all relevant temporary
+durables have zero pending and zero ack-pending messages.
 
 Cleanup deletes only derived stream names recomputed from token claims and
 active roles. Derived subjects and stream names include purpose plus a bounded

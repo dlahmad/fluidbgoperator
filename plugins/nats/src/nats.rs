@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_nats::jetstream::{
     self,
-    consumer::pull,
+    consumer::{DeliverPolicy, pull},
     stream::{
         Config as StreamConfig, DiscardPolicy, PersistenceMode, Placement, RetentionPolicy,
         StorageType, SubjectTransform,
@@ -18,8 +18,9 @@ pub(crate) struct NatsClient {
 }
 
 #[derive(Debug)]
-pub(crate) struct StreamDepth {
-    pub(crate) messages: u64,
+pub(crate) struct ConsumerBacklog {
+    pub(crate) pending: u64,
+    pub(crate) ack_pending: usize,
 }
 
 impl NatsClient {
@@ -70,7 +71,17 @@ impl NatsClient {
         subject: &str,
         durable: &str,
     ) -> Result<Option<jetstream::Message>> {
-        self.next_message_inner(subject, durable, None).await
+        self.next_message_inner(subject, durable, None, DeliverPolicy::All)
+            .await
+    }
+
+    pub(crate) async fn next_message_new(
+        &self,
+        subject: &str,
+        durable: &str,
+    ) -> Result<Option<jetstream::Message>> {
+        self.next_message_inner(subject, durable, None, DeliverPolicy::New)
+            .await
     }
 
     async fn next_message_for_drain(
@@ -82,6 +93,7 @@ impl NatsClient {
             subject,
             durable,
             Some(std::time::Duration::from_millis(250)),
+            DeliverPolicy::All,
         )
         .await
     }
@@ -91,6 +103,7 @@ impl NatsClient {
         subject: &str,
         durable: &str,
         timeout: Option<std::time::Duration>,
+        deliver_policy: DeliverPolicy,
     ) -> Result<Option<jetstream::Message>> {
         let stream = self
             .jetstream
@@ -106,6 +119,7 @@ impl NatsClient {
                 pull::Config {
                     durable_name: Some(durable.to_string()),
                     ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                    deliver_policy,
                     ..Default::default()
                 },
             )
@@ -122,16 +136,34 @@ impl NatsClient {
         Ok(next)
     }
 
-    pub(crate) async fn stream_depth(&self, subject: &str) -> Result<StreamDepth> {
-        match self.jetstream.get_stream(stream_name(subject)).await {
-            Ok(mut stream) => {
-                let info = stream.info().await?;
-                Ok(StreamDepth {
-                    messages: info.state.messages,
-                })
-            }
-            Err(_) => Ok(StreamDepth { messages: 0 }),
-        }
+    pub(crate) async fn consumer_backlog(
+        &self,
+        subject: &str,
+        durable: &str,
+    ) -> Result<ConsumerBacklog> {
+        let stream = self
+            .jetstream
+            .get_or_create_stream(StreamConfig {
+                name: stream_name(subject),
+                subjects: vec![subject.to_string()],
+                ..Default::default()
+            })
+            .await?;
+        let mut consumer = stream
+            .get_or_create_consumer(
+                durable,
+                pull::Config {
+                    durable_name: Some(durable.to_string()),
+                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let info = consumer.info().await?;
+        Ok(ConsumerBacklog {
+            pending: info.num_pending,
+            ack_pending: info.num_ack_pending,
+        })
     }
 
     pub(crate) async fn move_subject_messages(
@@ -148,7 +180,7 @@ impl NatsClient {
             };
             self.publish(target, message.payload.to_vec()).await?;
             message
-                .ack()
+                .double_ack()
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             moved += 1;
@@ -248,6 +280,10 @@ pub(crate) fn stream_name(subject: &str) -> String {
 
 pub(crate) fn durable_name(prefix: &str, subject: &str) -> String {
     stream_name(&format!("{prefix}_{subject}"))
+}
+
+pub(crate) fn queue_group_durable(queue_group: &str, subject: &str) -> String {
+    stream_name(&format!("{queue_group}_{subject}"))
 }
 
 #[cfg(test)]

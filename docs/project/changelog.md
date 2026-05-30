@@ -4,7 +4,7 @@ title: Changelog
 
 # Changelog
 
-## 0.6.0 - 2026-05-29
+## 0.6.0 - 2026-05-30
 
 - Added the built-in NATS JetStream plugin with manager/inceptor split,
   JetStream stream management, duplicator/splitter/combiner/observer/writer

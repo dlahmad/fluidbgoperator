@@ -4,6 +4,8 @@ import time
 import asyncio
 
 import nats
+from nats.errors import TimeoutError
+from nats.js.errors import FetchTimeoutError, NotFoundError, NoStreamResponseError
 import pika
 import requests
 
@@ -79,12 +81,38 @@ def process_message(ch, method, properties, body):
         ch.basic_nack(method.delivery_tag, requeue=True)
 
 
-async def publish_nats_json(nc, subject, payload):
-    await nc.publish(subject, json.dumps(payload).encode())
-    await nc.flush()
+def nats_stream_name(subject):
+    hash_value = 5381
+    for byte in subject.encode():
+        hash_value = ((hash_value * 33) + byte) & 0xFFFFFFFFFFFFFFFF
+    hint = "".join(
+        char for char in subject if char.isascii() and (char.isalnum() or char in "-_")
+    )[:24]
+    return f"fbg_{hint}_{hash_value:016x}"
 
 
-async def handle_nats_message(nc, msg):
+def nats_durable_name(queue_group, subject):
+    return nats_stream_name(f"{queue_group}_{subject}")
+
+
+async def ensure_nats_stream(js, subject):
+    name = nats_stream_name(subject)
+    try:
+        await js.stream_info(name)
+    except (NotFoundError, NoStreamResponseError):
+        try:
+            await js.add_stream(name=name, subjects=[subject])
+        except Exception:
+            await js.stream_info(name)
+    return name
+
+
+async def publish_nats_json(js, subject, payload):
+    await ensure_nats_stream(js, subject)
+    await js.publish(subject, json.dumps(payload).encode())
+
+
+async def handle_nats_message(js, msg):
     try:
         body = msg.data.decode()
         payload = json.loads(body)
@@ -97,25 +125,36 @@ async def handle_nats_message(nc, msg):
             "processedBy": "blue",
             "instanceName": INSTANCE_NAME,
         }
-        await publish_nats_json(nc, OUTPUT_SUBJECT, result)
+        await publish_nats_json(js, OUTPUT_SUBJECT, result)
+        await msg.ack()
     except Exception as exc:
         print(f"blue-app failed to process NATS message: {exc}", flush=True)
+        await msg.nak()
 
 
 async def nats_main():
     while True:
         try:
             nc = await nats.connect(NATS_URL)
-            async def callback(msg):
-                await handle_nats_message(nc, msg)
-
-            await nc.subscribe(INPUT_SUBJECT, queue=NATS_QUEUE_GROUP, cb=callback)
+            js = nc.jetstream()
+            stream = await ensure_nats_stream(js, INPUT_SUBJECT)
+            durable = nats_durable_name(NATS_QUEUE_GROUP, INPUT_SUBJECT)
+            subscription = await js.pull_subscribe(
+                INPUT_SUBJECT,
+                durable=durable,
+                stream=stream,
+            )
             print(
                 f"blue-app consuming NATS subject={INPUT_SUBJECT} queueGroup={NATS_QUEUE_GROUP}",
                 flush=True,
             )
             while True:
-                await asyncio.sleep(3600)
+                try:
+                    messages = await subscription.fetch(1, timeout=1)
+                except (FetchTimeoutError, TimeoutError):
+                    continue
+                for msg in messages:
+                    await handle_nats_message(js, msg)
         except Exception as exc:
             print(f"blue-app NATS error: {exc}, reconnecting...", flush=True)
             await asyncio.sleep(3)

@@ -1,11 +1,13 @@
-use fluidbg_plugin_sdk::{FilterCondition, ObserverConfig, TestIdSelector, TrafficRoute};
+use fluidbg_plugin_sdk::{
+    FilterCondition, ObserverConfig, TestIdSelector, TrafficRoute, extract_json_path,
+};
 use serde_json::Value;
 
 use crate::config::{AppState, CombinerConfig};
 
 pub(crate) fn matches_filter(conditions: &[FilterCondition], body: &Value) -> bool {
     conditions.iter().all(|condition| {
-        fluidbg_plugin_sdk::condition_matches(resolve_field(&condition.field, body), condition)
+        fluidbg_plugin_sdk::condition_matches(resolve_field(condition, body), condition)
     })
 }
 
@@ -55,11 +57,71 @@ pub(crate) fn route_from_output_source(config: &CombinerConfig, subject: &str) -
     }
 }
 
-fn resolve_field(field: &str, body: &Value) -> Option<String> {
-    match field {
-        "nats.body" | "queue.body" => serde_json::to_string(body).ok(),
-        _ => field
+fn resolve_field(condition: &FilterCondition, body: &Value) -> Option<String> {
+    match condition.field.as_str() {
+        "nats.body" | "queue.body" => condition
+            .json_path
+            .as_deref()
+            .and_then(|path| extract_json_path(body, path))
+            .or_else(|| serde_json::to_string(body).ok()),
+        field => field
             .strip_prefix("nats.body.")
             .and_then(|path| fluidbg_plugin_sdk::extract_json_path(body, path)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fluidbg_plugin_sdk::{FilterCondition, TestIdSelector, TrafficRoute};
+    use serde_json::json;
+
+    use super::{extract_test_id, matches_filter, route_from_output_source};
+    use crate::config::CombinerConfig;
+
+    #[test]
+    fn matches_nats_body_filter_with_json_path() {
+        let body = json!({"orderId": "case-1", "type": "order"});
+        let conditions = vec![FilterCondition {
+            field: "nats.body".to_string(),
+            equals: None,
+            matches: Some("^order$".to_string()),
+            json_path: Some("$.type".to_string()),
+        }];
+
+        assert!(matches_filter(&conditions, &body));
+    }
+
+    #[test]
+    fn extracts_test_id_from_nats_body_json_path() {
+        let body = json!({"orderId": "case-1"});
+        let selector = TestIdSelector {
+            field: Some("nats.body".to_string()),
+            json_path: Some("$.orderId".to_string()),
+            path_segment: None,
+            value: None,
+        };
+
+        assert_eq!(extract_test_id(&selector, &body).as_deref(), Some("case-1"));
+    }
+
+    #[test]
+    fn resolves_route_from_combiner_source_subject() {
+        let config = CombinerConfig {
+            output_subject: Some("results".to_string()),
+            green_output_subject: Some("results-green".to_string()),
+            blue_output_subject: Some("results-blue".to_string()),
+            green_output_subject_env_var: None,
+            blue_output_subject_env_var: None,
+            temporary_subject_identifier: None,
+        };
+
+        assert_eq!(
+            route_from_output_source(&config, "results-green"),
+            TrafficRoute::Green
+        );
+        assert_eq!(
+            route_from_output_source(&config, "results-blue"),
+            TrafficRoute::Blue
+        );
     }
 }

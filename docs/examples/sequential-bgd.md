@@ -9,7 +9,7 @@ demo. It is intentionally shaped like a normal service topology instead of a
 test-only toy:
 
 - a producer publishes incrementing order messages to RabbitMQ by default; the
-  same images also support NATS with `TRANSPORT=nats`
+  NATS manifests run the same flow on NATS JetStream
 - the input inceptor progressively routes each order to either the current app
   or the candidate app
 - the selected application instance consumes the order
@@ -71,12 +71,14 @@ flowchart LR
 
 ## Files
 
-- `01-base.yaml` creates the demo namespace, RabbitMQ, the producer, the
+- `01-base.yaml` creates the demo namespace, RabbitMQ, NATS, the producer, the
   downstream sink, and the initial `BlueGreenDeployment` with `OUTPUT_PREFIX=v1`.
 - `02-upgrade.yaml` updates the same `BlueGreenDeployment` to
   `OUTPUT_PREFIX=v2`, defines the verifier with native Kubernetes
   `deployment`/`service` specs, and enables the RabbitMQ and HTTP inception
   points.
+- `01-base-nats.yaml` and `02-upgrade-nats.yaml` run the same demo with the
+  NATS JetStream plugin for the splitter and combiner roles.
 - `app/`, `producer/`, `sink/`, and `verifier/` contain the small demo
   container images.
 
@@ -198,6 +200,49 @@ kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bgd/order-flow
 kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bgd/order-flow -n fluidbg-demo --timeout=300s
 kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow -n fluidbg-demo --timeout=300s
 ```
+
+### NATS JetStream Variant
+
+The setup helper installs both RabbitMQ and NATS plugin managers. To run the
+same demo on NATS JetStream, apply the NATS manifests instead:
+
+```bash
+kubectl apply -f examples/sequential-bgd/01-base-nats.yaml
+
+kubectl wait --for=condition=available deployment/nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-nats-sink -n fluidbg-demo --timeout=180s
+kubectl wait --for=condition=available deployment/order-flow-nats-producer -n fluidbg-demo --timeout=180s
+
+GEN=$(kubectl get bgd order-flow-nats -n fluidbg-demo -o jsonpath='{.metadata.generation}')
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bgd/order-flow-nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bgd/order-flow-nats -n fluidbg-demo --timeout=180s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow-nats -n fluidbg-demo --timeout=180s
+
+kubectl apply -f examples/sequential-bgd/02-upgrade-nats.yaml
+GEN=$(kubectl get bgd order-flow-nats -n fluidbg-demo -o jsonpath='{.metadata.generation}')
+kubectl wait --for=jsonpath='{.status.observedGeneration}'="$GEN" bgd/order-flow-nats -n fluidbg-demo --timeout=300s
+kubectl wait --for=jsonpath='{.status.rolloutGeneration}'="$GEN" bgd/order-flow-nats -n fluidbg-demo --timeout=300s
+kubectl wait --for=jsonpath='{.status.phase}'=Completed bgd/order-flow-nats -n fluidbg-demo --timeout=300s
+```
+
+Inspect the NATS sink logs:
+
+```bash
+kubectl logs -n fluidbg-demo deploy/order-flow-nats-producer
+kubectl logs -n fluidbg-demo deploy/order-flow-nats-sink --tail=300
+kubectl logs -n fluidbg-demo -l fluidbg.io/test-name=verifier --tail=100
+```
+
+The NATS variant uses `incoming-nats-orders` as splitter/observer and
+`outgoing-nats-results` as combiner. It keeps the same HTTP audit inceptor and
+the same verifier contract: the verifier passes only after the downstream sink
+has observed the candidate HTTP audit call and the candidate output message.
+
+The NATS demo services use JetStream durable pull consumers. The BGD patches
+both `INPUT_SUBJECT` and `NATS_QUEUE_GROUP`, so the NATS inceptor can use the
+same base durable as the app while active and the green/blue durables during
+drain. Do not use plain core NATS subscriptions for a no-loss rollout demo;
+they cannot replay messages published while a subscriber is briefly absent.
 
 Useful checks:
 

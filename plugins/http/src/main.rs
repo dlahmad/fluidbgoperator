@@ -5,8 +5,8 @@ use std::sync::{
 
 use anyhow::{Context, Result};
 use fluidbg_plugin_sdk::{
-    ControlPlaneServerTls, PluginInceptorRuntime, env_port, serve_control_plane,
-    traffic_percent_from_env,
+    ControlPlaneServerTls, PluginInceptorRuntime, env_port, install_rustls_crypto_provider,
+    serve_control_plane, traffic_percent_from_env,
 };
 use tracing::info;
 
@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
     let control_plane_tls_enabled = control_plane_tls.enabled;
 
     if state.config.tls.inbound.enabled {
+        install_rustls_crypto_provider();
         let https_port = state.config.inbound_https_port();
         if !(control_plane_tls_enabled && https_port == control_plane_tls_port) {
             let https_addr = std::net::SocketAddr::from(([0, 0, 0, 0], https_port));

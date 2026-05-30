@@ -8,6 +8,7 @@ use fluidbg_operator::http_api;
 use fluidbg_operator::inception::InceptionTracker;
 use fluidbg_operator::state_store::{StateStore, memory::MemoryStore, postgres::PostgresStore};
 use fluidbg_operator::state_store::{azure_identity, cosmos::CosmosStore};
+use fluidbg_plugin_sdk::install_rustls_crypto_provider;
 
 const DEFAULT_LOG_FILTER: &str = "warn,fluidbg_operator=info";
 
@@ -93,6 +94,7 @@ async fn serve_operator_api(app: axum::Router) -> anyhow::Result<()> {
     if env_flag("FLUIDBG_OPERATOR_API_TLS_ENABLED") {
         let cert = required_env("FLUIDBG_OPERATOR_API_TLS_CERT_PATH");
         let key = required_env("FLUIDBG_OPERATOR_API_TLS_KEY_PATH");
+        install_rustls_crypto_provider();
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await?;
         info!("operator HTTPS API listening on {addr}");
         axum_server::bind_rustls(addr, tls_config)

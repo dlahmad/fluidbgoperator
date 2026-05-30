@@ -1,7 +1,16 @@
 use anyhow::{Context, Result};
 use axum::Router;
+use std::sync::Once;
 
 use crate::config::ControlPlaneServerTls;
+
+static RUSTLS_PROVIDER: Once = Once::new();
+
+pub fn install_rustls_crypto_provider() {
+    RUSTLS_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
 
 pub async fn serve_control_plane(
     app: Router,
@@ -18,6 +27,7 @@ pub async fn serve_control_plane(
         let key = tls.key_path.as_deref().context(
             "FLUIDBG_CONTROL_PLANE_TLS_KEY_PATH is required when control-plane TLS is enabled",
         )?;
+        install_rustls_crypto_provider();
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
             .await
             .with_context(|| {

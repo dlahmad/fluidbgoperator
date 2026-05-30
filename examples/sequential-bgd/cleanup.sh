@@ -18,6 +18,12 @@ else
     kubectl delete bluegreendeployment order-flow -n "$NAMESPACE" --ignore-not-found
 fi
 
+if kubectl get bluegreendeployment order-flow-nats -n "$NAMESPACE" >/dev/null 2>&1; then
+    kubectl delete bluegreendeployment order-flow-nats -n "$NAMESPACE" --wait=true --timeout=180s
+else
+    kubectl delete bluegreendeployment order-flow-nats -n "$NAMESPACE" --ignore-not-found
+fi
+
 helm uninstall "$RELEASE_NAME" -n "$SYSTEM_NAMESPACE" --ignore-not-found --wait >/dev/null 2>&1 || true
 
 if kubectl get crd bluegreendeployments.fluidbg.io >/dev/null 2>&1; then
