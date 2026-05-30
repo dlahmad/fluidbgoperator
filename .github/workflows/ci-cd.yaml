@@ -291,11 +291,16 @@ jobs:
           kind load docker-image fluidbg/test-app:dev --name fluidbg-dev
           kind load docker-image rabbitmq:4-management-alpine --name fluidbg-dev
           kind load docker-image nats:2.14.1-alpine --name fluidbg-dev
-      - name: Run full e2e
+      - name: Run e2e non-TLS suite
         env:
           KIND_CLUSTER: fluidbg-dev
           BUILD_IMAGES: "0"
-        run: ./e2e/run-test.sh
+        run: timeout 35m ./e2e/run-test.sh full_kind_e2e_suite
+      - name: Run e2e full-TLS suite
+        env:
+          KIND_CLUSTER: fluidbg-dev
+          BUILD_IMAGES: "0"
+        run: timeout 35m ./e2e/run-test.sh full_tls_kind_e2e_suite
 
   image-build:
     name: Build container images (${{ matrix.arch }})

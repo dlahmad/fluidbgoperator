@@ -207,8 +207,11 @@ impl Kube {
 
     pub async fn bgd(&self, name: &str, namespace: &str) -> Result<BlueGreenDeployment> {
         let api: Api<BlueGreenDeployment> = Api::namespaced(self.client.clone(), namespace);
-        api.get(name)
+        tokio::time::timeout(Duration::from_secs(10), api.get(name))
             .await
+            .with_context(|| {
+                format!("timed out reading bluegreendeployment/{name} in {namespace}")
+            })?
             .with_context(|| format!("get bluegreendeployment/{name} in {namespace}"))
     }
 

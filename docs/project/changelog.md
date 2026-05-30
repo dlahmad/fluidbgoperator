@@ -4,6 +4,13 @@ title: Changelog
 
 # Changelog
 
+## 0.6.2 - 2026-05-30
+
+- Split release e2e execution into separate non-TLS and full-TLS CI steps with
+  hard per-suite timeouts so slow or stuck runs are diagnosable.
+- Added a bounded Kubernetes request timeout to e2e BGD reads to prevent a
+  stalled API request from hanging the release job indefinitely.
+
 ## 0.6.1 - 2026-05-30
 
 - Added explicit NATS `mode: core` support for plain best-effort NATS
