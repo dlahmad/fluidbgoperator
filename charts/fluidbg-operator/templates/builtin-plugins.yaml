@@ -458,11 +458,11 @@ spec:
     ports:
       - name: health
         containerPort: 9090
-    {{- with $root.Values.builtinPlugins.nats.inceptorVolumeMounts }}
     volumeMounts:
       - name: plugin-config
         mountPath: /etc/fluidbg
         readOnly: true
+    {{- with $root.Values.builtinPlugins.nats.inceptorVolumeMounts }}
 {{ toYaml . | nindent 6 }}
     {{- end }}
 {{- end }}
