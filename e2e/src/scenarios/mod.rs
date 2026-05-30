@@ -4,6 +4,7 @@ mod force_replace;
 mod helm_cleanup;
 mod http_proxy;
 mod namespace_deletion;
+mod nats_core_promotion;
 mod nats_promotion;
 mod progressive_splitter;
 mod progressive_unsupported;
@@ -25,6 +26,7 @@ const E2E_BGDS: &[&str] = &[
     "order-processor-force-replace",
     "order-processor-force-delete",
     "order-processor-nats",
+    "order-processor-nats-core",
 ];
 
 pub async fn run_full_suite(harness: &mut E2eHarness) -> Result<()> {
@@ -44,6 +46,8 @@ pub async fn run_full_suite(harness: &mut E2eHarness) -> Result<()> {
     let http = http_proxy::http_proxy_observer_promotion(harness, &progressive).await?;
     eprintln!("e2e scenario: NATS JetStream promotion");
     let _nats = nats_promotion::successful_nats_promotion(harness).await?;
+    eprintln!("e2e scenario: core NATS best-effort promotion");
+    let _core_nats = nats_core_promotion::successful_core_nats_promotion(harness).await?;
     eprintln!("e2e scenario: forced replacement with drain");
     let force_replaced =
         force_replace::force_replace_drains_before_new_generation(harness, &http).await?;

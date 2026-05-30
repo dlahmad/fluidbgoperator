@@ -4,6 +4,16 @@ title: Changelog
 
 # Changelog
 
+## 0.6.1 - 2026-05-30
+
+- Added explicit NATS `mode: core` support for plain best-effort NATS
+  publish/subscribe in duplicator, splitter, combiner, observer, and writer
+  roles.
+- Kept `mode: jetStream` as the default and documented the exact difference
+  between JetStream no-loss drain and core NATS best-effort drain.
+- Added e2e coverage for core NATS promotion alongside the existing JetStream
+  NATS promotion scenario.
+
 ## 0.6.0 - 2026-05-30
 
 - Added the built-in NATS JetStream plugin with manager/inceptor split,

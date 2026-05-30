@@ -243,6 +243,9 @@ both `INPUT_SUBJECT` and `NATS_QUEUE_GROUP`, so the NATS inceptor can use the
 same base durable as the app while active and the green/blue durables during
 drain. Do not use plain core NATS subscriptions for a no-loss rollout demo;
 they cannot replay messages published while a subscriber is briefly absent.
+The built-in NATS plugin can also run with `mode: core`, but that mode is
+only best-effort live pub/sub: no durable backlog, ACK state, redelivery, or
+temporary-subject move-back exists during drain.
 
 Useful checks:
 

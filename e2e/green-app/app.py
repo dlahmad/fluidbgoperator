@@ -12,6 +12,7 @@ import requests
 TRANSPORT = os.environ.get("TRANSPORT", "rabbitmq")
 AMQP_URL = os.environ.get("AMQP_URL", "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/")
 NATS_URL = os.environ.get("NATS_URL", "nats://nats.fluidbg-system:4222")
+NATS_MODE = os.environ.get("NATS_MODE", "jetstream")
 INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 INPUT_SUBJECT = os.environ.get("INPUT_SUBJECT", INPUT_QUEUE)
@@ -21,6 +22,12 @@ HTTP_UPSTREAM = os.environ.get("HTTP_UPSTREAM", "http://httpbin.org/post")
 INSTANCE_NAME = os.environ.get("HOSTNAME", "unknown")
 TEMP_QUEUE_DURABLE = os.environ.get("AMQP_TEMP_QUEUE_DURABLE", "false").lower() == "true"
 TEMP_QUEUE_ARGUMENTS = json.loads(os.environ.get("AMQP_TEMP_QUEUE_ARGUMENTS_JSON", "{}"))
+READY_FILE = "/tmp/fluidbg-ready"
+
+
+def mark_ready():
+    with open(READY_FILE, "w", encoding="utf-8") as ready_file:
+        ready_file.write("ready\n")
 
 
 def queue_declaration(queue):
@@ -119,6 +126,11 @@ async def publish_nats_json(js, subject, payload):
     await js.publish(subject, json.dumps(payload).encode())
 
 
+async def publish_core_nats_json(nc, subject, payload):
+    await nc.publish(subject, json.dumps(payload).encode())
+    await nc.flush()
+
+
 async def handle_nats_message(js, msg):
     try:
         payload = json.loads(msg.data.decode())
@@ -146,6 +158,45 @@ async def handle_nats_message(js, msg):
         await msg.nak()
 
 
+async def handle_core_nats_message(nc, msg):
+    try:
+        payload = json.loads(msg.data.decode())
+        order_id = payload.get("orderId", "unknown")
+        http_status = call_http_upstream_if_required(payload)
+        result = {
+            "orderId": order_id,
+            "httpStatus": http_status,
+            "originalMessage": payload,
+            "processedBy": "green",
+            "instanceName": INSTANCE_NAME,
+        }
+        await publish_core_nats_json(nc, OUTPUT_SUBJECT, result)
+    except Exception as exc:
+        print(f"green-app failed to process core NATS message: {exc}", flush=True)
+
+
+async def core_nats_main():
+    while True:
+        try:
+            nc = await nats.connect(NATS_URL)
+            subscription = await nc.subscribe(INPUT_SUBJECT, queue=NATS_QUEUE_GROUP)
+            await nc.flush()
+            mark_ready()
+            print(
+                f"green-app consuming core NATS subject={INPUT_SUBJECT} queueGroup={NATS_QUEUE_GROUP}",
+                flush=True,
+            )
+            while True:
+                try:
+                    msg = await subscription.next_msg(timeout=1)
+                except TimeoutError:
+                    continue
+                await handle_core_nats_message(nc, msg)
+        except Exception as exc:
+            print(f"green-app core NATS error: {exc}, reconnecting...", flush=True)
+            await asyncio.sleep(3)
+
+
 async def nats_main():
     while True:
         try:
@@ -158,6 +209,7 @@ async def nats_main():
                 durable=durable,
                 stream=stream,
             )
+            mark_ready()
             print(
                 f"green-app consuming NATS subject={INPUT_SUBJECT} queueGroup={NATS_QUEUE_GROUP}",
                 flush=True,
@@ -180,6 +232,7 @@ def rabbitmq_main():
             conn, ch = get_channel()
             ch.basic_qos(prefetch_count=1)
             ch.basic_consume(INPUT_QUEUE, process_message, auto_ack=False)
+            mark_ready()
             print(f"green-app consuming from {INPUT_QUEUE}", flush=True)
             ch.start_consuming()
         except Exception as e:
@@ -189,7 +242,10 @@ def rabbitmq_main():
 
 def main():
     if TRANSPORT == "nats":
-        asyncio.run(nats_main())
+        if NATS_MODE == "core":
+            asyncio.run(core_nats_main())
+        else:
+            asyncio.run(nats_main())
     else:
         rabbitmq_main()
 

@@ -15,6 +15,7 @@ app = Flask(__name__)
 TRANSPORT = os.environ.get("TRANSPORT", "rabbitmq")
 AMQP_URL = os.environ.get("AMQP_URL", "amqp://fluidbg:fluidbg@rabbitmq.fluidbg-system:5672/")
 NATS_URL = os.environ.get("NATS_URL", "nats://nats.fluidbg-system:4222")
+NATS_MODE = os.environ.get("NATS_MODE", "jetstream")
 INPUT_QUEUE = os.environ.get("INPUT_QUEUE", "orders")
 OUTPUT_QUEUE = os.environ.get("OUTPUT_QUEUE", "results")
 INPUT_SUBJECT = os.environ.get("INPUT_SUBJECT", INPUT_QUEUE)
@@ -111,9 +112,13 @@ def publish_transport(payload):
         async def publish():
             nc = await nats.connect(NATS_URL)
             try:
-                js = nc.jetstream()
-                await ensure_nats_stream(js, INPUT_SUBJECT)
-                await js.publish(INPUT_SUBJECT, json.dumps(payload).encode())
+                if NATS_MODE == "core":
+                    await nc.publish(INPUT_SUBJECT, json.dumps(payload).encode())
+                    await nc.flush()
+                else:
+                    js = nc.jetstream()
+                    await ensure_nats_stream(js, INPUT_SUBJECT)
+                    await js.publish(INPUT_SUBJECT, json.dumps(payload).encode())
             finally:
                 await nc.close()
 
@@ -181,7 +186,11 @@ def observe(test_id, inception_point):
         case = cases[test_id]
         case["observation"] = data
         case["observation_seen"] = True
-        if inception_point in ("outgoing-results", "outgoing-nats-results"):
+        if inception_point in (
+            "outgoing-results",
+            "outgoing-nats-results",
+            "outgoing-core-nats-results",
+        ):
             payload = data.get("payload") or {}
             original = payload.get("originalMessage") or {}
             route = data.get("route")

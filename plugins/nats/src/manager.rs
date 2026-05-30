@@ -107,6 +107,9 @@ async fn reconcile_streams(
     config: &Config,
     create: bool,
 ) -> Result<(), StatusCode> {
+    if config.mode.is_core() {
+        return Ok(());
+    }
     let client = NatsClient::connect(&state.nats_url)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -165,6 +168,9 @@ fn active_stream_names(
             &active.inception_point,
         );
         if let Ok(config) = serde_json::from_value::<Config>(value) {
+            if config.mode.is_core() {
+                continue;
+            }
             for subject in temporary_subjects(&parse_roles(&active.roles), &config) {
                 streams.insert(stream_name(&subject));
             }

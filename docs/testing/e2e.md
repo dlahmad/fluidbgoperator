@@ -49,6 +49,9 @@ flowchart TD
 - NATS JetStream promotion through the same app/verifier flow used by RabbitMQ,
   proving the NATS plugin manager, inceptors, stream creation, observation, and
   cleanup path.
+- Core NATS best-effort promotion through the same app/verifier flow, proving
+  plain NATS subscribe/publish routing works while documenting that durable
+  drain and move-back guarantees are intentionally unavailable.
 - Full TLS mode for the built-in plugin control-plane path: operator API HTTPS,
   operator-to-manager HTTPS, operator-to-inceptor HTTPS, RabbitMQ management
   HTTPS, and RabbitMQ AMQPS with a generated private CA.

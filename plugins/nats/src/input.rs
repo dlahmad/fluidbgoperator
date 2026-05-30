@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use fluidbg_plugin_sdk::{PluginRole, TrafficRoute};
+use futures::StreamExt;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::{
-    AppState, Config, RuntimeMode, consumer_config, duplicator_config, has_role, required,
-    routes_to_blue, splitter_config,
+    AppState, CORE_READY_INPUT, Config, RuntimeMode, consumer_config, duplicator_config, has_role,
+    required, routes_to_blue, splitter_config,
 };
 use crate::filtering::{extract_test_id, matches_filter, notify_observer};
 use crate::nats::{NatsClient, durable_name, queue_group_durable};
@@ -17,28 +18,36 @@ async fn process_input_message(
     client: &NatsClient,
     message: async_nats::jetstream::Message,
 ) -> Result<()> {
-    let body = message.payload.to_vec();
+    process_input_payload(state, client, message.payload.to_vec()).await?;
+    message
+        .double_ack()
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    Ok(())
+}
+
+async fn process_input_payload(state: &AppState, client: &NatsClient, body: Vec<u8>) -> Result<()> {
     let body_json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut route = TrafficRoute::Unknown;
 
     if has_role(&state.roles, PluginRole::Duplicator) {
         let config = duplicator_config(&state.config)?;
         if let Some(subject) = &config.green_input_subject {
-            client.publish(subject, body.clone()).await?;
+            publish_to_subject(state, client, subject, body.clone()).await?;
         }
         if let Some(subject) = &config.blue_input_subject {
-            client.publish(subject, body.clone()).await?;
+            publish_to_subject(state, client, subject, body.clone()).await?;
         }
         route = TrafficRoute::Both;
     } else if has_role(&state.roles, PluginRole::Splitter) {
         let config = splitter_config(&state.config)?;
         if routes_to_blue(&body, state.traffic_percent()) {
             if let Some(subject) = &config.blue_input_subject {
-                client.publish(subject, body.clone()).await?;
+                publish_to_subject(state, client, subject, body.clone()).await?;
             }
             route = TrafficRoute::Blue;
         } else if let Some(subject) = &config.green_input_subject {
-            client.publish(subject, body.clone()).await?;
+            publish_to_subject(state, client, subject, body.clone()).await?;
             route = TrafficRoute::Green;
         }
     }
@@ -55,14 +64,26 @@ async fn process_input_message(
         }
     }
 
-    message
-        .double_ack()
-        .await
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(())
 }
 
+async fn publish_to_subject(
+    state: &AppState,
+    client: &NatsClient,
+    subject: &str,
+    body: Vec<u8>,
+) -> Result<()> {
+    if state.config.mode.is_core() {
+        client.publish_core(subject, body).await
+    } else {
+        client.publish(subject, body).await
+    }
+}
+
 pub(crate) async fn drain_input_subjects(state: &AppState) -> Result<()> {
+    if state.config.mode.is_core() {
+        return Ok(());
+    }
     if !has_role(&state.roles, PluginRole::Duplicator)
         && !has_role(&state.roles, PluginRole::Splitter)
     {
@@ -137,6 +158,9 @@ fn input_consumer_durable(queue_group: Option<&str>, subject: &str) -> String {
 }
 
 pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
+    if state.config.mode.is_core() {
+        return run_core_input_pipeline(state).await;
+    }
     loop {
         if matches!(state.runtime_mode(), RuntimeMode::Idle) {
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -218,6 +242,91 @@ pub(crate) async fn run_input_pipeline(state: AppState) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+async fn run_core_input_pipeline(state: AppState) -> Result<()> {
+    loop {
+        if matches!(
+            state.runtime_mode(),
+            RuntimeMode::Idle | RuntimeMode::Draining
+        ) {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let input_subject = input_source_subject(&state.config, &state.roles)?.to_string();
+        let queue_group = input_source_queue_group(&state.config, &state.roles);
+        let client = match NatsClient::connect(&state.nats_url).await {
+            Ok(client) => client,
+            Err(err) => {
+                warn!("nats core input connect failed, reconnecting: {}", err);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        let mut subscriber = match client
+            .subscribe_core(&input_subject, queue_group.as_deref())
+            .await
+        {
+            Ok(subscriber) => subscriber,
+            Err(err) => {
+                warn!("nats core subscribe failed, reconnecting: {}", err);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        info!(
+            "nats core input pipeline subscribed to {} queueGroup={}",
+            input_subject,
+            queue_group.as_deref().unwrap_or("<none>")
+        );
+        state.mark_core_ready(CORE_READY_INPUT);
+        while matches!(state.runtime_mode(), RuntimeMode::Active) {
+            match tokio::time::timeout(Duration::from_millis(500), subscriber.next()).await {
+                Ok(Some(message)) => {
+                    if let Err(err) =
+                        process_input_payload(&state, &client, message.payload.to_vec()).await
+                    {
+                        warn!("nats core input message processing failed: {}", err);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+    }
+}
+
+fn input_source_subject<'a>(config: &'a Config, roles: &[PluginRole]) -> Result<&'a str> {
+    if has_role(roles, PluginRole::Duplicator) {
+        required(
+            &duplicator_config(config)?.input_subject,
+            "duplicator.inputSubject",
+        )
+    } else if has_role(roles, PluginRole::Splitter) {
+        required(
+            &splitter_config(config)?.input_subject,
+            "splitter.inputSubject",
+        )
+    } else {
+        required(
+            &consumer_config(config)?.input_subject,
+            "consumer.inputSubject",
+        )
+    }
+}
+
+fn input_source_queue_group(config: &Config, roles: &[PluginRole]) -> Option<String> {
+    if has_role(roles, PluginRole::Duplicator) {
+        duplicator_config(config)
+            .ok()
+            .and_then(|config| config.queue_group.clone())
+    } else if has_role(roles, PluginRole::Splitter) {
+        splitter_config(config)
+            .ok()
+            .and_then(|config| config.queue_group.clone())
+    } else {
+        None
     }
 }
 

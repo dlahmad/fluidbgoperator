@@ -14,6 +14,7 @@ use crate::config;
 
 #[derive(Clone)]
 pub(crate) struct NatsClient {
+    client: async_nats::Client,
     jetstream: jetstream::Context,
 }
 
@@ -34,8 +35,33 @@ impl NatsClient {
         }
         let client = options.connect(url).await?;
         Ok(Self {
-            jetstream: jetstream::new(client),
+            jetstream: jetstream::new(client.clone()),
+            client,
         })
+    }
+
+    pub(crate) async fn publish_core(&self, subject: &str, payload: Vec<u8>) -> Result<()> {
+        self.client
+            .publish(subject.to_string(), Bytes::from(payload))
+            .await?;
+        self.client.flush().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn subscribe_core(
+        &self,
+        subject: &str,
+        queue_group: Option<&str>,
+    ) -> Result<async_nats::Subscriber> {
+        let subscriber = if let Some(queue_group) = queue_group.filter(|value| !value.is_empty()) {
+            self.client
+                .queue_subscribe(subject.to_string(), queue_group.to_string())
+                .await?
+        } else {
+            self.client.subscribe(subject.to_string()).await?
+        };
+        self.client.flush().await?;
+        Ok(subscriber)
     }
 
     pub(crate) async fn ensure_subject_stream(

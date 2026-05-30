@@ -12,12 +12,22 @@ use fluidbg_plugin_sdk::{
 use crate::assignments::{build_drain_assignments, build_prepare_assignments};
 use crate::combiner::{combiner_durable, drain_output_subjects};
 use crate::config::{
-    AppState, RuntimeMode, combiner_config, duplicator_config, has_role, required, splitter_config,
+    AppState, CORE_READY_BLUE_OUTPUT, CORE_READY_GREEN_OUTPUT, CORE_READY_INPUT, RuntimeMode,
+    combiner_config, duplicator_config, has_role, required, splitter_config,
 };
 use crate::input::{drain_input_subjects, input_drain_targets};
 use crate::nats::NatsClient;
 
 pub(crate) async fn compute_drain_status(state: &AppState) -> Result<PluginDrainStatusResponse> {
+    if state.config.mode.is_core() {
+        return Ok(PluginDrainStatusResponse {
+            drained: true,
+            message: Some(
+                "core NATS mode has no durable pending or ack-pending state; drain is best-effort"
+                    .to_string(),
+            ),
+        });
+    }
     if matches!(state.runtime_mode(), RuntimeMode::Draining) {
         drain_input_subjects(state).await?;
         drain_output_subjects(state).await?;
@@ -49,14 +59,16 @@ pub(crate) async fn prepare_handler(
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Idle);
-    let client = NatsClient::connect(&state.nats_url)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    for subject in managed_subjects(&state) {
-        client
-            .ensure_subject_stream(&subject, &state.config.stream)
+    if !state.config.mode.is_core() {
+        let client = NatsClient::connect(&state.nats_url)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        for subject in managed_subjects(&state) {
+            client
+                .ensure_subject_stream(&subject, &state.config.stream)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(Json(PluginLifecycleResponse {
         assignments: build_prepare_assignments(&state.config, &state.roles),
@@ -69,7 +81,16 @@ pub(crate) async fn activate_handler(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     authorize_operator(&state, &headers)?;
+    let expected_core_readiness = core_readiness_mask(&state);
+    state.reset_core_readiness();
     state.set_runtime_mode(RuntimeMode::Active);
+    if state.config.mode.is_core()
+        && !state
+            .wait_for_core_ready(expected_core_readiness, std::time::Duration::from_secs(10))
+            .await
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
@@ -102,14 +123,16 @@ pub(crate) async fn cleanup_handler(
 ) -> Result<Json<PluginLifecycleResponse>, StatusCode> {
     authorize_operator(&state, &headers)?;
     state.set_runtime_mode(RuntimeMode::Idle);
-    let client = NatsClient::connect(&state.nats_url)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    for subject in drain_sensitive_subjects(&state).map_err(|_| StatusCode::BAD_REQUEST)? {
-        client
-            .delete_subject_stream(&subject)
+    if !state.config.mode.is_core() {
+        let client = NatsClient::connect(&state.nats_url)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        for subject in drain_sensitive_subjects(&state).map_err(|_| StatusCode::BAD_REQUEST)? {
+            client
+                .delete_subject_stream(&subject)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
     }
     Ok(Json(PluginLifecycleResponse {
         assignments: build_drain_assignments(&state.config, &state.roles),
@@ -141,6 +164,19 @@ fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), Statu
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+fn core_readiness_mask(state: &AppState) -> u8 {
+    if has_role(&state.roles, PluginRole::Combiner) {
+        CORE_READY_GREEN_OUTPUT | CORE_READY_BLUE_OUTPUT
+    } else if has_role(&state.roles, PluginRole::Duplicator)
+        || has_role(&state.roles, PluginRole::Splitter)
+        || has_role(&state.roles, PluginRole::Consumer)
+    {
+        CORE_READY_INPUT
+    } else {
+        0
     }
 }
 

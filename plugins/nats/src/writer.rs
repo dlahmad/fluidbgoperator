@@ -16,9 +16,16 @@ pub(crate) async fn write_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let payload = serde_json::to_vec(&req.payload).map_err(|_| StatusCode::BAD_REQUEST)?;
-    client
-        .publish(&subject, payload)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if state.config.mode.is_core() {
+        client
+            .publish_core(&subject, payload)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        client
+            .publish(&subject, payload)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     Ok(Json(serde_json::json!({"ok": true})))
 }

@@ -2,8 +2,8 @@ apiVersion: v2
 name: fluidbg-operator
 description: FluidBG Kubernetes operator and built-in inception plugin definitions
 type: application
-version: 0.6.0
-appVersion: 0.6.0
+version: 0.6.1
+appVersion: 0.6.1
 kubeVersion: ">=1.30.0-0"
 keywords:
   - blue-green

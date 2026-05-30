@@ -289,13 +289,13 @@ metadata:
   labels:
     {{- include "fluidbg.labels" $root | nindent 4 }}
 spec:
-  description: "NATS JetStream transport plugin"
+  description: "NATS transport plugin with JetStream no-loss and core best-effort modes"
   image: "{{ $root.Values.builtinPlugins.nats.image.repository }}:{{ $root.Values.builtinPlugins.nats.image.tag | default $root.Values.global.imageTag | default $root.Chart.AppVersion }}"
   supportedRoles: [duplicator, splitter, observer, writer, consumer, combiner]
   roleConstraints:
     mutuallyExclusive:
       - roles: [duplicator, splitter, combiner, consumer]
-        reason: "Only one transport movement role can own the NATS JetStream polling loop for an inceptor. Observer and writer are additive."
+        reason: "Only one transport movement role can own the NATS polling loop for an inceptor. Observer and writer are additive."
   topology: standalone
   lifecycle:
     preparePath: /prepare
@@ -329,6 +329,9 @@ spec:
     type: object
     additionalProperties: false
     properties:
+      mode:
+        type: string
+        enum: [jetStream, core]
       stream:
         type: object
         properties:

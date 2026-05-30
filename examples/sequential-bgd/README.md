@@ -236,6 +236,9 @@ core NATS subscriptions. The BGD sets `NATS_QUEUE_GROUP` through the NATS
 inceptor so the base subject and the temporary green/blue subjects each have a
 known durable. That is what lets the plugin drain pending work safely during
 promotion and rollback.
+The built-in NATS plugin can also run with `mode: core`, but that mode is
+only best-effort live pub/sub: no durable backlog, ACK state, redelivery, or
+temporary-subject move-back exists during drain.
 
 Watch what happened:
 

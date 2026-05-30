@@ -1,0 +1,155 @@
+apiVersion: fluidbg.io/v1alpha1
+kind: BlueGreenDeployment
+metadata:
+  name: order-processor-nats-core
+  namespace: fluidbg-test
+spec:
+  selector:
+    matchLabels:
+      fluidbg.io/name: nats-core-processor
+  deployment:
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: nats-core-processor-blue
+      template:
+        metadata:
+          labels:
+            app: nats-core-processor-blue
+            fluidbg.io/name: nats-core-processor
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: order-processor
+              image: fluidbg/blue-app:dev
+              imagePullPolicy: Never
+              readinessProbe:
+                exec:
+                  command:
+                    - test
+                    - -f
+                    - /tmp/fluidbg-ready
+                periodSeconds: 1
+                failureThreshold: 60
+              env:
+                - name: TRANSPORT
+                  value: nats
+                - name: NATS_URL
+                  value: nats://nats.fluidbg-system:4222
+                - name: NATS_MODE
+                  value: core
+                - name: INPUT_SUBJECT
+                  value: orders-nats-core
+                - name: OUTPUT_SUBJECT
+                  value: results-nats-core
+                - name: NATS_QUEUE_GROUP
+                  value: order-processor-nats-core
+                - name: HTTP_UPSTREAM
+                  value: http://httpbin.fluidbg-system/post
+  inceptionPoints:
+    - name: incoming-core-nats-orders
+      pluginRef:
+        name: nats
+      roles:
+        - duplicator
+        - observer
+      drain:
+        maxWaitSeconds: 20
+      config:
+        mode: core
+        duplicator:
+          inputSubject: orders-nats-core
+          queueGroup: order-processor-nats-core
+          greenInputSubjectEnvVar: INPUT_SUBJECT
+          blueInputSubjectEnvVar: INPUT_SUBJECT
+          greenQueueGroupEnvVar: NATS_QUEUE_GROUP
+          blueQueueGroupEnvVar: NATS_QUEUE_GROUP
+          greenQueueGroup: order-processor-nats-core-green
+          blueQueueGroup: order-processor-nats-core-blue
+          temporarySubjectIdentifier: incoming-core-nats-orders
+        observer:
+          testId:
+            field: nats.body
+            jsonPath: $.orderId
+          match:
+            - field: nats.body
+              jsonPath: $.type
+              matches: ^order$
+          notifyPath: /observe/{testId}/incoming-core-nats-orders
+    - name: outgoing-core-nats-results
+      pluginRef:
+        name: nats
+      roles:
+        - combiner
+        - observer
+      drain:
+        maxWaitSeconds: 20
+      config:
+        mode: core
+        combiner:
+          outputSubject: results-nats-core
+          greenOutputSubjectEnvVar: OUTPUT_SUBJECT
+          blueOutputSubjectEnvVar: OUTPUT_SUBJECT
+          temporarySubjectIdentifier: outgoing-core-nats-results
+        observer:
+          testId:
+            field: nats.body
+            jsonPath: $.orderId
+          match:
+            - field: nats.body
+              jsonPath: $.originalMessage.type
+              matches: ^order$
+          notifyPath: /observe/{testId}/outgoing-core-nats-results
+  test:
+    name: test-container
+    deployment:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: nats-test-container
+      template:
+        metadata:
+          labels:
+            app: nats-test-container
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: test-container
+              image: fluidbg/test-app:dev
+              imagePullPolicy: Never
+              ports:
+                - containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                periodSeconds: 1
+                failureThreshold: 60
+              env:
+                - name: PORT
+                  value: "8080"
+                - name: TRANSPORT
+                  value: nats
+                - name: NATS_URL
+                  value: nats://nats.fluidbg-system:4222
+                - name: NATS_MODE
+                  value: core
+                - name: INPUT_SUBJECT
+                  value: orders-nats-core
+    service:
+      selector:
+        app: nats-test-container
+      ports:
+        - port: 8080
+          targetPort: 8080
+    dataVerification:
+      verifyPath: /result/{testId}
+      timeoutSeconds: 120
+  promotion:
+    data:
+      minTestCases: 3
+      successRate: 1.0
+      timeoutSeconds: 180
+    strategy:
+      type: hard-switch

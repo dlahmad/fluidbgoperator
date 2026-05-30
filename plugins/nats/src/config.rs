@@ -8,11 +8,18 @@ use fluidbg_plugin_sdk::{ObserverConfig, PluginInceptorRuntime, PluginRole};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use tokio::sync::Notify;
+
+pub(crate) const CORE_READY_INPUT: u8 = 0b0000_0001;
+pub(crate) const CORE_READY_GREEN_OUTPUT: u8 = 0b0000_0010;
+pub(crate) const CORE_READY_BLUE_OUTPUT: u8 = 0b0000_0100;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
+    #[serde(default)]
+    pub(crate) mode: NatsMode,
     #[serde(default)]
     pub(crate) stream: StreamConfig,
     #[serde(default)]
@@ -27,6 +34,20 @@ pub(crate) struct Config {
     pub(crate) consumer: Option<ConsumerConfig>,
     #[serde(default)]
     pub(crate) observer: Option<ObserverConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum NatsMode {
+    #[default]
+    JetStream,
+    Core,
+}
+
+impl NatsMode {
+    pub(crate) fn is_core(self) -> bool {
+        matches!(self, Self::Core)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -153,6 +174,8 @@ pub(crate) struct AppState {
     pub(crate) nats_url: String,
     mode: Arc<AtomicU8>,
     traffic_percent: Arc<AtomicU8>,
+    core_ready_mask: Arc<AtomicU8>,
+    core_ready_notify: Arc<Notify>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -188,6 +211,8 @@ impl AppState {
             traffic_percent: Arc::new(
                 AtomicU8::new(fluidbg_plugin_sdk::traffic_percent_from_env()),
             ),
+            core_ready_mask: Arc::new(AtomicU8::new(0)),
+            core_ready_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -206,6 +231,39 @@ impl AppState {
     pub(crate) fn set_traffic_percent(&self, percent: u8) {
         self.traffic_percent
             .store(percent.min(100), Ordering::Relaxed);
+    }
+
+    pub(crate) fn reset_core_readiness(&self) {
+        self.core_ready_mask.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn mark_core_ready(&self, mask: u8) {
+        self.core_ready_mask.fetch_or(mask, Ordering::Relaxed);
+        self.core_ready_notify.notify_waiters();
+    }
+
+    pub(crate) fn core_ready(&self, expected: u8) -> bool {
+        expected == 0 || (self.core_ready_mask.load(Ordering::Relaxed) & expected) == expected
+    }
+
+    pub(crate) async fn wait_for_core_ready(
+        &self,
+        expected: u8,
+        timeout: std::time::Duration,
+    ) -> bool {
+        if self.core_ready(expected) {
+            return true;
+        }
+        tokio::time::timeout(timeout, async {
+            loop {
+                self.core_ready_notify.notified().await;
+                if self.core_ready(expected) {
+                    break;
+                }
+            }
+        })
+        .await
+        .is_ok()
     }
 }
 
@@ -271,6 +329,7 @@ pub(crate) fn routes_to_blue(payload: &[u8], traffic_percent: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Config;
+    use super::NatsMode;
     use serde_json::json;
 
     #[test]
@@ -299,5 +358,17 @@ mod tests {
                 .as_deref(),
             Some("incoming-orders")
         );
+    }
+
+    #[test]
+    fn nats_mode_defaults_to_jetstream() {
+        let parsed: Config = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(parsed.mode, NatsMode::JetStream);
+    }
+
+    #[test]
+    fn nats_mode_accepts_core() {
+        let parsed: Config = serde_json::from_value(json!({"mode": "core"})).unwrap();
+        assert_eq!(parsed.mode, NatsMode::Core);
     }
 }
