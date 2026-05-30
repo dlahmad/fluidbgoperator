@@ -162,6 +162,7 @@ pub async fn http_proxy_observer_promotion(
             status.test_cases_passed
         );
     }
+    eprintln!("HTTP proxy scenario: waiting for previous green deployment cleanup");
     harness
         .kube
         .wait_deleted(
@@ -171,6 +172,7 @@ pub async fn http_proxy_observer_promotion(
             Duration::from_secs(30),
         )
         .await?;
+    eprintln!("HTTP proxy scenario: waiting for verifier deployment cleanup");
     harness
         .kube
         .wait_deleted(
@@ -180,6 +182,7 @@ pub async fn http_proxy_observer_promotion(
             Duration::from_secs(30),
         )
         .await?;
+    eprintln!("HTTP proxy scenario: waiting for verifier service cleanup");
     harness
         .kube
         .wait_deleted(
@@ -189,10 +192,12 @@ pub async fn http_proxy_observer_promotion(
             Duration::from_secs(30),
         )
         .await?;
+    eprintln!("HTTP proxy scenario: waiting for inception resource cleanup");
     harness
         .kube
         .wait_no_inception_resources(&cfg.namespace)
         .await?;
+    eprintln!("HTTP proxy scenario: waiting for promoted deployment labels and replicas");
     harness
         .kube
         .wait_deployment_label(&deployment, &cfg.namespace, "fluidbg.io/green", "true")

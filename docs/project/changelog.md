@@ -4,6 +4,15 @@ title: Changelog
 
 # Changelog
 
+## 0.6.3 - 2026-05-30
+
+- Added explicit operator HTTP timeouts for plugin manager, plugin inceptor,
+  and verifier polling calls so a stalled endpoint cannot pin a reconcile or
+  tracker task indefinitely.
+- Improved e2e diagnostics with per-scenario timeouts and phase waits that
+  print BGD conditions, generations, and test-case counters instead of hiding
+  missing status or read failures as an empty phase.
+
 ## 0.6.2 - 2026-05-30
 
 - Split release e2e execution into separate non-TLS and full-TLS CI steps with

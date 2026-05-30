@@ -48,6 +48,11 @@ operator:
   reconcileLease:
     durationSeconds: 30
     renewIntervalSeconds: 10
+  timeouts:
+    pluginControlPlaneSeconds: 10
+    pluginControlPlaneConnectSeconds: 3
+    verifierPollSeconds: 5
+    verifierPollConnectSeconds: 3
   nodeSelector: {}
   tolerations: []
   affinity: {}

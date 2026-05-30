@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
-use fluidbg_operator::crd::blue_green::BlueGreenDeployment;
+use fluidbg_operator::crd::blue_green::{BlueGreenDeployment, BlueGreenDeploymentStatus};
 use fluidbg_operator::crd::inception_plugin::InceptionPlugin;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::batch::v1::Job;
@@ -237,23 +237,31 @@ impl Kube {
         expected: &str,
         attempts: u32,
     ) -> Result<()> {
+        let mut last_state = String::from("<not read yet>");
         for i in 1..=attempts {
-            let phase = self
-                .bgd(bgd, namespace)
-                .await
-                .ok()
-                .and_then(|bgd| bgd.status.and_then(|status| status.phase))
-                .map(|phase| format!("{phase:?}"))
-                .unwrap_or_default();
-            if phase == expected {
-                return Ok(());
+            match self.bgd(bgd, namespace).await {
+                Ok(bgd_resource) => {
+                    let status = bgd_resource.status.as_ref();
+                    if status
+                        .and_then(|status| status.phase.as_ref())
+                        .is_some_and(|phase| format!("{phase:?}") == expected)
+                    {
+                        return Ok(());
+                    }
+                    last_state = describe_bgd_status(status);
+                }
+                Err(err) => {
+                    last_state = format!("<read error: {err:#}>");
+                }
             }
             eprintln!(
-                "waiting for bluegreendeployment/{bgd} phase {expected}, current={phase:?} ({i}/{attempts})"
+                "waiting for bluegreendeployment/{bgd} phase {expected}, current={last_state} ({i}/{attempts})"
             );
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        bail!("bluegreendeployment/{bgd} did not reach phase {expected}")
+        bail!(
+            "bluegreendeployment/{bgd} did not reach phase {expected}; last observed state: {last_state}"
+        )
     }
 
     pub async fn wait_inception_deployment_name(
@@ -1071,6 +1079,61 @@ where
     bail!("timed out waiting for value")
 }
 
+fn describe_bgd_status(status: Option<&BlueGreenDeploymentStatus>) -> String {
+    let Some(status) = status else {
+        return "<no status>".to_string();
+    };
+    let phase = status
+        .phase
+        .as_ref()
+        .map(|phase| format!("{phase:?}"))
+        .unwrap_or_else(|| "<no phase>".to_string());
+    let conditions = if status.conditions.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " conditions=[{}]",
+            status
+                .conditions
+                .iter()
+                .map(|condition| format!(
+                    "{}={:?}:{}:{}",
+                    condition.condition_type,
+                    condition.status,
+                    condition.reason,
+                    truncate_for_log(&condition.message, 160)
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    };
+    format!(
+        "{phase} observedGeneration={} rolloutGeneration={} cases(observed={}, passed={}, failed={}, pending={}, timedOut={}){conditions}",
+        optional_i64(status.observed_generation),
+        optional_i64(status.rollout_generation),
+        optional_i64(status.test_cases_observed),
+        optional_i64(status.test_cases_passed),
+        optional_i64(status.test_cases_failed),
+        optional_i64(status.test_cases_pending),
+        optional_i64(status.test_cases_timed_out),
+    )
+}
+
+fn optional_i64(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 fn yaml_documents(contents: &str) -> impl Iterator<Item = &str> {
     contents
         .split("\n---")
@@ -1518,6 +1581,9 @@ builtinPlugins:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluidbg_operator::crd::blue_green::{
+        BGDPhase, BlueGreenDeploymentCondition, ConditionStatus,
+    };
 
     #[test]
     fn yaml_path_reads_nested_scalar_values() {
@@ -1561,5 +1627,40 @@ queueDeclaration:
 
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn bgd_status_description_shows_missing_status() {
+        assert_eq!(describe_bgd_status(None), "<no status>");
+    }
+
+    #[test]
+    fn bgd_status_description_includes_conditions_and_counts() {
+        let status = BlueGreenDeploymentStatus {
+            phase: Some(BGDPhase::Pending),
+            observed_generation: Some(2),
+            rollout_generation: Some(1),
+            test_cases_observed: Some(3),
+            test_cases_passed: Some(2),
+            test_cases_failed: Some(1),
+            test_cases_pending: Some(0),
+            test_cases_timed_out: Some(0),
+            conditions: vec![BlueGreenDeploymentCondition {
+                condition_type: "Ready".to_string(),
+                status: ConditionStatus::False,
+                reason: "PluginError".to_string(),
+                message: "manager endpoint did not respond".to_string(),
+                observed_generation: 2,
+                last_transition_time: "2026-05-30T00:00:00Z".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let description = describe_bgd_status(Some(&status));
+
+        assert!(description.contains("Pending"));
+        assert!(description.contains("observedGeneration=2"));
+        assert!(description.contains("Ready=False:PluginError"));
+        assert!(description.contains("cases(observed=3, passed=2"));
     }
 }

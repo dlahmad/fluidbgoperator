@@ -83,3 +83,25 @@ roles: [splitter, observer, writer]
 Transient reconcile failures add `ReconcileFailed=True` and `Degraded=True`
 while the operator keeps retrying. A later successful phase update replaces the
 condition set and clears the stale failure.
+
+## Operator HTTP Timeouts
+
+The operator bounds all HTTP calls it owns. This prevents a plugin manager,
+plugin inceptor, or verifier endpoint that accepts a connection but never
+responds from blocking a reconcile or verifier polling task indefinitely.
+
+| Variable | Default | Scope |
+|---|---:|---|
+| `FLUIDBG_PLUGIN_CONTROL_PLANE_TIMEOUT_SECONDS` | `10` | Full request timeout for operator-to-manager and operator-to-inceptor lifecycle, drain-status, sync, and traffic-shift calls. |
+| `FLUIDBG_PLUGIN_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS` | `3` | TCP/TLS connect timeout for plugin control-plane calls. |
+| `FLUIDBG_VERIFIER_POLL_TIMEOUT_SECONDS` | `5` | Full request timeout for operator polling of verifier `verifyPath` results. |
+| `FLUIDBG_VERIFIER_POLL_CONNECT_TIMEOUT_SECONDS` | `3` | TCP/TLS connect timeout for verifier polling. |
+
+Set these through the operator Deployment environment when running plugins or
+verifiers behind unusually slow service meshes. Do not use them to hide broken
+readiness probes; plugin and verifier Services should become ready only when
+their HTTP handlers can answer.
+
+Helm exposes the same controls under `operator.timeouts.*`:
+`pluginControlPlaneSeconds`, `pluginControlPlaneConnectSeconds`,
+`verifierPollSeconds`, and `verifierPollConnectSeconds`.

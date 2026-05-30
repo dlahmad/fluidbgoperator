@@ -84,6 +84,14 @@ spec:
               value: {{ .Values.operator.reconcileLease.durationSeconds | quote }}
             - name: FLUIDBG_RECONCILE_LEASE_RENEW_INTERVAL_SECONDS
               value: {{ .Values.operator.reconcileLease.renewIntervalSeconds | quote }}
+            - name: FLUIDBG_PLUGIN_CONTROL_PLANE_TIMEOUT_SECONDS
+              value: {{ .Values.operator.timeouts.pluginControlPlaneSeconds | quote }}
+            - name: FLUIDBG_PLUGIN_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS
+              value: {{ .Values.operator.timeouts.pluginControlPlaneConnectSeconds | quote }}
+            - name: FLUIDBG_VERIFIER_POLL_TIMEOUT_SECONDS
+              value: {{ .Values.operator.timeouts.verifierPollSeconds | quote }}
+            - name: FLUIDBG_VERIFIER_POLL_CONNECT_TIMEOUT_SECONDS
+              value: {{ .Values.operator.timeouts.verifierPollConnectSeconds | quote }}
             {{- if eq .Values.stateStore.type "postgres" }}
             - name: FLUIDBG_POSTGRES_AUTH_MODE
               value: {{ .Values.stateStore.postgres.authMode | quote }}

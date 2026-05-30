@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use reqwest::Client;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
@@ -8,9 +9,15 @@ use crate::state_store::{StateStore, VerificationMode};
 
 pub struct InceptionTracker {
     store: Arc<dyn StateStore>,
+    http: Client,
     poll_interval: time::Duration,
     timeout_check_interval: time::Duration,
 }
+
+const VERIFIER_POLL_TIMEOUT_ENV: &str = "FLUIDBG_VERIFIER_POLL_TIMEOUT_SECONDS";
+const VERIFIER_POLL_CONNECT_TIMEOUT_ENV: &str = "FLUIDBG_VERIFIER_POLL_CONNECT_TIMEOUT_SECONDS";
+const DEFAULT_VERIFIER_POLL_TIMEOUT_SECONDS: u64 = 5;
+const DEFAULT_VERIFIER_POLL_CONNECT_TIMEOUT_SECONDS: u64 = 3;
 
 impl InceptionTracker {
     pub fn new(
@@ -20,6 +27,7 @@ impl InceptionTracker {
     ) -> Self {
         Self {
             store,
+            http: verifier_http_client(),
             poll_interval,
             timeout_check_interval,
         }
@@ -48,7 +56,7 @@ impl InceptionTracker {
     async fn poll_pending(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pending = self.store.list_pending().await?;
         for run in &pending {
-            let mut request = reqwest::Client::new().get(&run.verify_url);
+            let mut request = self.http.get(&run.verify_url);
             if !run.verifier_auth_token.is_empty() {
                 request = request.header(
                     fluidbg_plugin_sdk::AUTHORIZATION_HEADER,
@@ -139,4 +147,28 @@ struct TestResultResponse {
     passed: Option<bool>,
     #[serde(rename = "errorMessage")]
     error_message: Option<String>,
+}
+
+fn verifier_http_client() -> Client {
+    Client::builder()
+        .connect_timeout(env_duration_seconds(
+            VERIFIER_POLL_CONNECT_TIMEOUT_ENV,
+            DEFAULT_VERIFIER_POLL_CONNECT_TIMEOUT_SECONDS,
+        ))
+        .timeout(env_duration_seconds(
+            VERIFIER_POLL_TIMEOUT_ENV,
+            DEFAULT_VERIFIER_POLL_TIMEOUT_SECONDS,
+        ))
+        .build()
+        .expect("verifier HTTP client configuration must be valid")
+}
+
+fn env_duration_seconds(name: &str, default_seconds: u64) -> time::Duration {
+    time::Duration::from_secs(
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(default_seconds),
+    )
 }

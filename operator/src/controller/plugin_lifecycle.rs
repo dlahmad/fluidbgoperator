@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use kube::api::Api;
 use tracing::debug;
 
@@ -17,6 +19,12 @@ pub(super) use fluidbg_plugin_sdk::{
     PluginDrainStatusResponse, PluginLifecycleResponse, PluginManagerLifecycleRequest,
     PluginManagerSyncRequest, PropertyAssignment, bearer_value,
 };
+
+const CONTROL_PLANE_TIMEOUT_ENV: &str = "FLUIDBG_PLUGIN_CONTROL_PLANE_TIMEOUT_SECONDS";
+const CONTROL_PLANE_CONNECT_TIMEOUT_ENV: &str =
+    "FLUIDBG_PLUGIN_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS";
+const DEFAULT_CONTROL_PLANE_TIMEOUT_SECONDS: u64 = 10;
+const DEFAULT_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS: u64 = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PluginLifecycleStage {
@@ -529,7 +537,15 @@ fn control_plane_url(
 }
 
 fn control_plane_client(tls: Option<&ControlPlaneTls>) -> Result<reqwest::Client, ReconcileError> {
-    let mut builder = reqwest::Client::builder();
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(env_duration_seconds(
+            CONTROL_PLANE_CONNECT_TIMEOUT_ENV,
+            DEFAULT_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS,
+        ))
+        .timeout(env_duration_seconds(
+            CONTROL_PLANE_TIMEOUT_ENV,
+            DEFAULT_CONTROL_PLANE_TIMEOUT_SECONDS,
+        ));
     if let Some(tls) = tls {
         if tls.insecure_skip_verify {
             builder = builder.danger_accept_invalid_certs(true);
@@ -557,6 +573,18 @@ fn control_plane_client(tls: Option<&ControlPlaneTls>) -> Result<reqwest::Client
             "failed to build plugin control-plane client: {err}"
         ))
     })
+}
+
+fn env_duration_seconds(name: &str, default_seconds: u64) -> Duration {
+    Duration::from_secs(env_positive_u64(name, default_seconds))
+}
+
+fn env_positive_u64(name: &str, default_value: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_value)
 }
 
 pub(super) async fn start_plugin_draining(
